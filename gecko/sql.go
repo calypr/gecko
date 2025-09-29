@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ACED-IDP/gecko/gecko/config"
+	"github.com/calypr/gecko/gecko/config"
 	"github.com/jmoiron/sqlx"
 )
 

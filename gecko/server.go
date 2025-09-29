@@ -6,14 +6,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
-	"github.com/ACED-IDP/gecko/gecko/config"
+	"github.com/calypr/gecko/gecko/config"
 	"github.com/jmoiron/sqlx"
 	"github.com/kataras/iris/v12"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/arborist/arborist"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type LogHandler struct {
@@ -21,11 +26,12 @@ type LogHandler struct {
 }
 
 type Server struct {
-	iris   *iris.Application
-	db     *sqlx.DB
-	jwtApp arborist.JWTDecoder
-	logger *LogHandler
-	stmts  *arborist.CachedStmts
+	iris         *iris.Application
+	db           *sqlx.DB
+	jwtApp       arborist.JWTDecoder
+	logger       *LogHandler
+	stmts        *arborist.CachedStmts
+	qdrantClient *qdrant.Client
 }
 
 func NewServer() *Server {
@@ -48,6 +54,11 @@ func (server *Server) WithDB(db *sqlx.DB) *Server {
 	return server
 }
 
+func (server *Server) WithQdrantClient(client *qdrant.Client) *Server {
+	server.qdrantClient = client
+	return server
+}
+
 func (server *Server) Init() (*Server, error) {
 	if server.db == nil {
 		return nil, errors.New("gecko server initialized without database")
@@ -59,6 +70,31 @@ func (server *Server) Init() (*Server, error) {
 		return nil, errors.New("gecko server initialized without logger")
 	}
 	server.logger.Info("DB: %#v, JWTApp: %#v, Logger: %#v", server.db, server.jwtApp, server.logger)
+	if server.qdrantClient == nil {
+		qdrantHost := os.Getenv("QDRANT_HOST")
+		if qdrantHost == "" {
+			qdrantHost = "qdrant"
+		}
+		qdrantPort := 6334
+		qdrantAPIKey := os.Getenv("QDRANT_API_KEY")
+		qdrantConfig := &qdrant.Config{
+			Host:   qdrantHost,
+			Port:   qdrantPort,
+			APIKey: qdrantAPIKey,
+			UseTLS: false,
+		}
+		var err error
+		server.qdrantClient, err = qdrant.NewClient(qdrantConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize Qdrant client: %w", err)
+		}
+		server.logger.Info("Initialized Qdrant client with host: %s, port: %d (from environment/default)", qdrantHost, qdrantPort)
+	} else {
+		server.logger.Info("Qdrant client provided via WithQdrantClient, skipping internal initialization.")
+	}
+	if server.qdrantClient == nil {
+		return nil, errors.New("Qdrant client is nil after all initialization attempts")
+	}
 	return server, nil
 }
 
@@ -74,6 +110,28 @@ func (server *Server) MakeRouter() *iris.Application {
 	router.Put("/config/{configId}", server.handleConfigPUT)
 	router.Get("/config/list", server.handleConfigListGET)
 	router.Delete("/config/{configId}", server.handleConfigDELETE)
+
+	// Add Qdrant vector endpoints under /vector
+	vectorRouter := router.Party("/vector")
+	{
+		collections := vectorRouter.Party("/collections")
+		{
+			collections.Get("", server.handleListCollections)
+			collections.Put("/{collection}", server.handleCreateCollection)
+			collections.Get("/{collection}", server.handleGetCollection)
+			collections.Patch("/{collection}", server.handleUpdateCollection)
+			collections.Delete("/{collection}", server.handleDeleteCollection)
+
+			points := collections.Party("/{collection}/points")
+			{
+				points.Put("", server.handleUpsertPoints)
+				points.Get("/{id}", server.handleGetPoint)
+				points.Post("/search", server.handleQueryPoints) // Using Query as per client
+				points.Post("/delete", server.handleDeletePoints)
+				points.Post("/scroll", server.handleScrollPoints)
+			}
+		}
+	}
 
 	// Optionally keep UseRouter if needed, with safety checks
 	router.UseRouter(func(ctx iris.Context) {
@@ -106,22 +164,210 @@ func recoveryMiddleware(ctx iris.Context) {
 	ctx.Next()
 }
 
-func (server *Server) handleConfigListGET(ctx iris.Context) {
-	configList, err := configList(server.db)
-	if configList == nil && err == nil {
-		errResponse := newErrorResponse("No configs found", 404, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
+func (server *Server) handleListCollections(ctx iris.Context) {
+	resp, err := server.qdrantClient.ListCollections(ctx.Request().Context())
 	if err != nil {
-		errResponse := newErrorResponse(fmt.Sprintf("%s", err), 500, nil)
+		msg := fmt.Sprintf("failed to list collections: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
-	server.logger.Info("Configs: %#v", configList)
-	_ = jsonResponseFrom(configList, http.StatusOK).write(ctx)
+
+	successResponse := map[string]any{
+		"result": resp,
+		"status": "ok",
+	}
+
+	_ = jsonResponseFrom(successResponse, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleCreateCollection(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.CreateCollection
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	req.CollectionName = collection
+	err := server.qdrantClient.CreateCollection(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to create collection: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleGetCollection(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	resp, err := server.qdrantClient.GetCollectionInfo(ctx.Request().Context(), collection)
+	if err != nil {
+		msg := fmt.Sprintf("failed to get collection info: %s", err.Error())
+		statusCode := mapQdrantErrorToHTTPStatus(err)
+		errResponse := newErrorResponse(msg, statusCode, nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleUpdateCollection(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.UpdateCollection
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	req.CollectionName = collection
+	err := server.qdrantClient.UpdateCollection(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to update collection: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleDeleteCollection(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	err := server.qdrantClient.DeleteCollection(ctx.Request().Context(), collection)
+	if err != nil {
+		msg := fmt.Sprintf("failed to delete collection: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleGetPoint(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	idStr := ctx.Params().Get("id")
+	idUint, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		errResponse := newErrorResponse("invalid point ID", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	pointId := qdrant.NewIDNum(idUint)
+	req := &qdrant.GetPoints{
+		CollectionName: collection,
+		Ids:            []*qdrant.PointId{pointId},
+		WithPayload:    qdrant.NewWithPayload(true),
+		WithVectors:    qdrant.NewWithVectors(true),
+	}
+	resp, err := server.qdrantClient.Get(ctx.Request().Context(), req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to get point: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	if len(resp) == 0 {
+		errResponse := newErrorResponse("point not found", http.StatusNotFound, nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleUpsertPoints(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.UpsertPoints
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	server.logger.Info("Collection: %s", collection)
+	req.CollectionName = collection
+	resp, err := server.qdrantClient.Upsert(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to upsert points: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleQueryPoints(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.QueryPoints
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	req.CollectionName = collection
+	resp, err := server.qdrantClient.Query(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to query points: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleDeletePoints(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.DeletePoints
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	req.CollectionName = collection
+	_, err := server.qdrantClient.Delete(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to delete points: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleScrollPoints(ctx iris.Context) {
+	collection := ctx.Params().Get("collection")
+	var req qdrant.ScrollPoints
+	if err := ctx.ReadJSON(&req); err != nil {
+		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	req.CollectionName = collection
+	resp, err := server.qdrantClient.Scroll(ctx.Request().Context(), &req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to scroll points: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
 }
 
 func (server *Server) handleConfigGET(ctx iris.Context) {
@@ -269,3 +515,30 @@ func loggableJSON(bytes []byte) []byte {
 }
 
 var regWhitespace *regexp.Regexp = regexp.MustCompile(`\s`)
+
+func mapQdrantErrorToHTTPStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		// Not a standard gRPC error, treat as a server issue
+		return http.StatusInternalServerError
+	}
+
+	switch st.Code() {
+	case codes.NotFound:
+		return http.StatusNotFound // 404
+	case codes.InvalidArgument:
+		return http.StatusBadRequest // 400
+	case codes.Unauthenticated:
+		return http.StatusUnauthorized // 401
+	case codes.AlreadyExists:
+		return http.StatusConflict // 409
+	case codes.Unavailable:
+		return http.StatusServiceUnavailable // 503
+	default:
+		// Default for unhandled gRPC errors
+		return http.StatusInternalServerError // 500
+	}
+}
