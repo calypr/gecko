@@ -6,6 +6,8 @@ import (
 
 	"github.com/kataras/iris/v12"
 	"github.com/uc-cdis/arborist/arborist"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type jsonResponse struct {
@@ -37,16 +39,34 @@ func (response *jsonResponse) write(ctx iris.Context) error {
 	} else {
 		ctx.StatusCode(http.StatusOK)
 	}
+
 	var bytes []byte
 	var err error
-	if wantPrettyJSON(ctx.Request()) {
-		bytes, err = json.MarshalIndent(response.content, "", "    ")
+
+	// Handle protobufs specially
+	if msg, ok := response.content.(proto.Message); ok {
+		opts := protojson.MarshalOptions{
+			EmitUnpopulated: true,
+			UseProtoNames:   true,
+			Indent:          "",
+		}
+		if wantPrettyJSON(ctx.Request()) {
+			opts.Indent = "    "
+		}
+		bytes, err = opts.Marshal(msg)
 	} else {
-		bytes, err = json.Marshal(response.content)
+		// Normal JSON case
+		if wantPrettyJSON(ctx.Request()) {
+			bytes, err = json.MarshalIndent(response.content, "", "    ")
+		} else {
+			bytes, err = json.Marshal(response.content)
+		}
 	}
+
 	if err != nil {
 		return err
 	}
+
 	_, err = ctx.Write(bytes)
 	if err != nil {
 		return err

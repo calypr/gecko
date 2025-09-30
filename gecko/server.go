@@ -9,10 +9,11 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 
+	"github.com/calypr/gecko/gecko/adapter"
 	"github.com/calypr/gecko/gecko/config"
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/kataras/iris/v12"
 	"github.com/qdrant/go-client/qdrant"
@@ -184,15 +185,41 @@ func (server *Server) handleListCollections(ctx iris.Context) {
 
 func (server *Server) handleCreateCollection(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
-	var req qdrant.CreateCollection
-	if err := ctx.ReadJSON(&req); err != nil {
+
+	var reqBody adapter.CreateCollectionRequest
+	if err := ctx.ReadJSON(&reqBody); err != nil {
 		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
-	req.CollectionName = collection
-	err := server.qdrantClient.CreateCollection(ctx.Request().Context(), &req)
+
+	namedVectorsMap := map[string]*qdrant.VectorParams{}
+	for name, params := range reqBody.Vectors {
+		distanceVal, ok := qdrant.Distance_value[params.Distance]
+		if !ok {
+			msg := fmt.Sprintf("invalid distance: %s", params.Distance)
+			errResponse := newErrorResponse(msg, http.StatusBadRequest, nil)
+			_ = errResponse.write(ctx)
+			return
+		}
+		namedVectorsMap[name] = &qdrant.VectorParams{
+			Size:     params.Size,
+			Distance: qdrant.Distance(distanceVal),
+		}
+	}
+
+	// 3. Construct the gRPC Vector Configuration using the available helper.
+	var vectorsConfig *qdrant.VectorsConfig
+	if len(namedVectorsMap) > 0 {
+		vectorsConfig = qdrant.NewVectorsConfigMap(namedVectorsMap)
+	}
+
+	qdrantReq := &qdrant.CreateCollection{
+		CollectionName: collection,
+		VectorsConfig:  vectorsConfig,
+	}
+
+	err := server.qdrantClient.CreateCollection(ctx.Request().Context(), qdrantReq)
 	if err != nil {
 		msg := fmt.Sprintf("failed to create collection: %s", err.Error())
 		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
@@ -200,6 +227,7 @@ func (server *Server) handleCreateCollection(ctx iris.Context) {
 		_ = errResponse.write(ctx)
 		return
 	}
+
 	_ = jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
 }
 
@@ -254,20 +282,28 @@ func (server *Server) handleDeleteCollection(ctx iris.Context) {
 func (server *Server) handleGetPoint(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	idStr := ctx.Params().Get("id")
-	idUint, err := strconv.ParseUint(idStr, 10, 64)
-	if err != nil {
-		errResponse := newErrorResponse("invalid point ID", http.StatusBadRequest, &err)
+	if idStr == "" || collection == "" {
+		err := fmt.Errorf("collection or id not provide")
+		errResponse := newErrorResponse("collection or id is not provided", http.StatusBadRequest, &err)
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
-	pointId := qdrant.NewIDNum(idUint)
+
+	_, err := uuid.Parse(idStr)
+	if err != nil {
+		errResponse := newErrorResponse("invalid UUID", http.StatusBadRequest, &err)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
 	req := &qdrant.GetPoints{
 		CollectionName: collection,
-		Ids:            []*qdrant.PointId{pointId},
+		Ids:            []*qdrant.PointId{qdrant.NewIDUUID(idStr)},
 		WithPayload:    qdrant.NewWithPayload(true),
 		WithVectors:    qdrant.NewWithVectors(true),
 	}
+
 	resp, err := server.qdrantClient.Get(ctx.Request().Context(), req)
 	if err != nil {
 		msg := fmt.Sprintf("failed to get point: %s", err.Error())
@@ -287,23 +323,29 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 
 func (server *Server) handleUpsertPoints(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
-	var req qdrant.UpsertPoints
-	if err := ctx.ReadJSON(&req); err != nil {
+
+	var reqBody adapter.UpsertRequest
+	if err := ctx.ReadJSON(&reqBody); err != nil {
 		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
-	server.logger.Info("Collection: %s", collection)
-	req.CollectionName = collection
-	resp, err := server.qdrantClient.Upsert(ctx.Request().Context(), &req)
+
+	upsertReq, err := adapter.ToQdrantUpsert(reqBody, collection)
+	if err != nil {
+		errResponse := newErrorResponse(err.Error(), http.StatusBadRequest, &err)
+		_ = errResponse.write(ctx)
+		return
+	}
+
+	resp, err := server.qdrantClient.Upsert(ctx.Request().Context(), upsertReq)
 	if err != nil {
 		msg := fmt.Sprintf("failed to upsert points: %s", err.Error())
 		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
+
 	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
 }
 
@@ -330,15 +372,25 @@ func (server *Server) handleQueryPoints(ctx iris.Context) {
 
 func (server *Server) handleDeletePoints(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
-	var req qdrant.DeletePoints
+	var req adapter.DeletePoints
 	if err := ctx.ReadJSON(&req); err != nil {
 		errResponse := newErrorResponse("invalid request body", http.StatusBadRequest, &err)
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
-	req.CollectionName = collection
-	_, err := server.qdrantClient.Delete(ctx.Request().Context(), &req)
+
+	Deletereq, err := adapter.ToQdrantDelete(req, collection)
+	if err != nil {
+		msg := fmt.Sprintf("failed to delete points: %s", err.Error())
+		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+
+	Deletereq.CollectionName = collection
+	_, err = server.qdrantClient.Delete(ctx.Request().Context(), Deletereq)
 	if err != nil {
 		msg := fmt.Sprintf("failed to delete points: %s", err.Error())
 		errResponse := newErrorResponse(msg, mapQdrantErrorToHTTPStatus(err), nil)
@@ -368,6 +420,24 @@ func (server *Server) handleScrollPoints(ctx iris.Context) {
 		return
 	}
 	_ = jsonResponseFrom(resp, http.StatusOK).write(ctx)
+}
+
+func (server *Server) handleConfigListGET(ctx iris.Context) {
+	configList, err := configList(server.db)
+	if configList == nil && err == nil {
+		errResponse := newErrorResponse("No configs found", 404, nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	if err != nil {
+		errResponse := newErrorResponse(fmt.Sprintf("%s", err), 500, nil)
+		errResponse.log.write(server.logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+	server.logger.Info("Configs: %#v", configList)
+	_ = jsonResponseFrom(configList, http.StatusOK).write(ctx)
 }
 
 func (server *Server) handleConfigGET(ctx iris.Context) {

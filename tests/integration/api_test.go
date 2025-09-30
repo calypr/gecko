@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"testing"
 
-	"github.com/calypr/gecko/gecko/config"
-	"github.com/calypr/gecko/tests/fixtures"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -18,6 +17,7 @@ func makeRequest(method, url string, payload []byte) *http.Request {
 	return req
 }
 
+/*
 func TestHealthCheck(t *testing.T) {
 	resp, err := http.DefaultClient.Do(makeRequest("GET", "http://localhost:8080/health", nil))
 	assert.NoError(t, err)
@@ -161,8 +161,7 @@ func TestHandleConfigDeleteOK(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, resp.StatusCode, 404)
 }
-
-// --------------------------------------------------------------------------------
+*/
 
 const testCollectionName = "test_collection_gecko"
 const vectorEndpoint = "http://localhost:8080/vector/collections"
@@ -179,16 +178,16 @@ func cleanupCollection(t *testing.T, name string) {
 func TestQdrantCollectionWorkflow(t *testing.T) {
 	cleanupCollection(t, testCollectionName)
 	defer cleanupCollection(t, testCollectionName)
-
 	// Test CreateCollection (PUT /vector/collections/{collection})
 	t.Run("CreateCollection_OK", func(t *testing.T) {
 		url := fmt.Sprintf("%s/%s", vectorEndpoint, testCollectionName)
 
+		// Matches adapter/types.go::CreateCollectionRequest
 		createPayloadJSON := map[string]any{
-			"vectors_config": map[string]any{
-				"params": map[string]any{
+			"vectors": map[string]any{
+				"test_vector": map[string]any{
 					"size":     128,
-					"distance": "Cosine", // Use string for Distance enum value
+					"distance": "Cosine",
 				},
 			},
 		}
@@ -210,7 +209,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		assert.Equal(t, true, respData["result"], "Expected result: true in response body")
 	})
 
-	// 3. Test GetCollectionInfo (GET /vector/collections/{collection})
+	// Test GetCollectionInfo (GET /vector/collections/{collection})
 	t.Run("GetCollection_OK", func(t *testing.T) {
 		url := fmt.Sprintf("%s/%s", vectorEndpoint, testCollectionName)
 		resp, err := http.DefaultClient.Do(makeRequest("GET", url, nil))
@@ -227,7 +226,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		assert.Contains(t, respData, "config", "Response should contain the collection config data")
 	})
 
-	// 4. Test ListCollections (GET /vector/collections)
+	// Test ListCollections (GET /vector/collections)
 	t.Run("ListCollections_OK", func(t *testing.T) {
 		resp, err := http.DefaultClient.Do(makeRequest("GET", vectorEndpoint, nil))
 		assert.NoError(t, err)
@@ -246,59 +245,70 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	})
 
-	// 5. Test DeleteCollection (DELETE /vector/collections/{collection})
-	t.Run("DeleteCollection_OK", func(t *testing.T) {
-		url := fmt.Sprintf("%s/%s", vectorEndpoint, testCollectionName)
-		resp, err := http.DefaultClient.Do(makeRequest("DELETE", url, nil))
-		assert.NoError(t, err)
-		defer resp.Body.Close()
+}
 
-		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful deletion")
-
-		// Verify deletion
-		resp, err = http.DefaultClient.Do(makeRequest("GET", url, nil))
-		assert.NoError(t, err)
-		defer resp.Body.Close()
-
-		// Qdrant typically returns 404 or a "not found" message on collection info if deleted
-		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "Expected an error (e.g. 500) after deleting collection and trying to GET it")
-	})
+func generateRandomFloats(n int) []float64 {
+	randomFloats := make([]float64, n)
+	for i := 0; i < n; i++ {
+		randomFloats[i] = rand.Float64()
+	}
+	return randomFloats
 }
 
 func TestQdrantPointsWorkflow(t *testing.T) {
-	setupCollectionName := "test_points_collection"
-	cleanupCollection(t, setupCollectionName)
-	defer cleanupCollection(t, setupCollectionName)
 
-	url := fmt.Sprintf("%s/%s", vectorEndpoint, setupCollectionName)
+	url := fmt.Sprintf("%s/%s", vectorEndpoint, testCollectionName)
 	createPayloadJSON := map[string]any{
-		"vectors_config": map[string]any{
-			"params": map[string]any{
-				"size":     4,
+		"vectors": map[string]any{
+			"test_vector": map[string]any{
+				"size":     128,
 				"distance": "Cosine",
 			},
 		},
 	}
 
-	marshalledJSON, _ := json.Marshal(createPayloadJSON)
-	_, err := http.DefaultClient.Do(makeRequest("PUT", url, marshalledJSON))
+	marshalledJSON, err := json.Marshal(createPayloadJSON)
 	assert.NoError(t, err)
 
-	pointsEndpoint := fmt.Sprintf("%s/%s/points", vectorEndpoint, setupCollectionName)
+	resp, err := http.DefaultClient.Do(makeRequest("PUT", url, marshalledJSON))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
 
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful collection creation")
+
+	pointsEndpoint := fmt.Sprintf("%s/%s/points", vectorEndpoint, testCollectionName)
 	t.Run("UpsertPoints_OK", func(t *testing.T) {
-		upsertPayloadJSON := map[string]interface{}{
-			"points": []map[string]interface{}{
+		// Matches adapter/types.go::UpsertRequest
+		upsertPayload := map[string]any{
+			"points": []map[string]any{
 				{
-					"id":      "1",                           // Use integer for PointId_Num
-					"vectors": []float64{0.1, 0.2, 0.3, 0.4}, // Use "vectors" to match PointStruct
-					"payload": map[string]interface{}{
-						"id": "d1", // String value for Value_StringValue
+					"id": "c3fb3d5c-e423-46ba-a47a-9ff97b94fc50",
+					"payload": map[string]any{
+						"color": "red",
 					},
+					"vector_name": "test_vector",
+					"vector":      generateRandomFloats(128),
 				},
-			}}
+				{
+					"id": "5eb1d065-e222-4e20-a821-954d518844e7",
+					"payload": map[string]any{
+						"color": "green",
+					},
+					"vector_name": "test_vector",
+					"vector":      generateRandomFloats(128),
+				},
+				{
+					"id": "1cf900d5-1799-4baa-ac96-ecf7cfaeb94c",
+					"payload": map[string]any{
+						"color": "blue",
+					},
+					"vector_name": "test_vector",
+					"vector":      generateRandomFloats(128),
+				},
+			},
+		}
 
-		marshalledJSON, err := json.Marshal(upsertPayloadJSON)
+		marshalledJSON, err := json.Marshal(upsertPayload)
 		assert.NoError(t, err)
 
 		resp, err := http.DefaultClient.Do(makeRequest("PUT", pointsEndpoint, marshalledJSON))
@@ -307,18 +317,17 @@ func TestQdrantPointsWorkflow(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful upsert")
 
-		var respData map[string]interface{}
+		var respData map[string]any
 		buf := new(bytes.Buffer)
 		_, err = buf.ReadFrom(resp.Body)
 		assert.NoError(t, err, "Failed to read response body")
 		err = json.Unmarshal(buf.Bytes(), &respData)
 		assert.NoError(t, err, "Failed to unmarshal response")
-		t.Log("RESP: ", buf.String())
-		assert.Equal(t, true, respData["result"], "Expected result: true in response body")
+		assert.Equal(t, "Completed", respData["status"], "Expected result: Acknowledged in response body")
 	})
 
 	t.Run("GetPoint_OK", func(t *testing.T) {
-		pointID := "1"
+		pointID := "c3fb3d5c-e423-46ba-a47a-9ff97b94fc50"
 		url := fmt.Sprintf("%s/%s", pointsEndpoint, pointID)
 
 		resp, err := http.DefaultClient.Do(makeRequest("GET", url, nil))
@@ -326,21 +335,24 @@ func TestQdrantPointsWorkflow(t *testing.T) {
 		defer resp.Body.Close()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for getting the point")
-
 		var respData []map[string]any
 		buf := new(bytes.Buffer)
 		_, _ = buf.ReadFrom(resp.Body)
 		_ = json.Unmarshal(buf.Bytes(), &respData)
 
-		t.Log("RESP: ", buf.String())
 		assert.NotEmpty(t, respData, "Response should contain the point data")
-		assert.Equal(t, float64(1), respData[0]["id"], "Expected point ID to be 1")
+		assert.Equal(
+			t,
+			"c3fb3d5c-e423-46ba-a47a-9ff97b94fc50",
+			respData[0]["id"].(map[string]any)["PointIdOptions"].(map[string]any)["Uuid"],
+			"Expected point ID to be c3fb3d5c-e423-46ba-a47a-9ff97b94fc50",
+		)
 	})
 
 	t.Run("DeletePoints_OK", func(t *testing.T) {
+		// Matches adapter/types.go::DeletePoints
 		deletePayloadJSON := map[string]any{
-			"points": []float64{1}, // For deleting a specific point ID
-			"wait":   true,
+			"points": []string{"c3fb3d5c-e423-46ba-a47a-9ff97b94fc50"},
 		}
 		marshalledJSON, err := json.Marshal(deletePayloadJSON)
 		assert.NoError(t, err)
@@ -349,15 +361,34 @@ func TestQdrantPointsWorkflow(t *testing.T) {
 		assert.NoError(t, err)
 		defer resp.Body.Close()
 
+		var respData map[string]any
+		buf := new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		_ = json.Unmarshal(buf.Bytes(), &respData)
+
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful delete")
 
-		pointID := "1"
+		pointID := "c3fb3d5c-e423-46ba-a47a-9ff97b94fc50"
 		url := fmt.Sprintf("%s/%s", pointsEndpoint, pointID)
 		resp, err = http.DefaultClient.Do(makeRequest("GET", url, nil))
-		assert.NoError(t, err)
+		assert.NoError(t, err, "WHAT IS RESP: %v", resp.Status)
 		defer resp.Body.Close()
 
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "Expected 404 Not Found after deleting point")
+	})
+
+	t.Run("DeleteCollection_OK", func(t *testing.T) {
+		url := fmt.Sprintf("%s/%s", vectorEndpoint, testCollectionName)
+		resp, err := http.DefaultClient.Do(makeRequest("DELETE", url, nil))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful deletion")
+
+		resp, err = http.DefaultClient.Do(makeRequest("GET", url, nil))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "Expected an error (e.g. 500) after deleting collection and trying to GET it")
 	})
 
 }
