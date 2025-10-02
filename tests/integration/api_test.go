@@ -7,9 +7,13 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/calypr/gecko/gecko/adapter"
+	"github.com/calypr/gecko/gecko/config"
+	"github.com/calypr/gecko/tests/fixtures"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -22,14 +26,13 @@ func makeRequest(method, url string, payload []byte) *http.Request {
 	return req
 }
 
-/*
 func TestHealthCheck(t *testing.T) {
 	resp, err := http.DefaultClient.Do(makeRequest("GET", "http://localhost:8080/health", nil))
 	assert.NoError(t, err)
 	buf := new(bytes.Buffer)
 	buf.ReadFrom(resp.Body)
 	body := buf.String()
-	t.Log("health check resp body: ", body)
+	//t.Log("health check resp body: ", body)
 	assert.Contains(t, body, "Healthy")
 }
 
@@ -52,7 +55,7 @@ func TestHandleConfigPUT(t *testing.T) {
 	var outData map[string]any
 	err = json.Unmarshal(buf.Bytes(), &outData)
 	assert.NoError(t, err)
-	t.Log("RESP: ", outData)
+	//t.Log("RESP: ", outData)
 
 	expected200Response := map[string]any{
 		"code": float64(200), "message": "ACCEPTED: 123",
@@ -72,7 +75,7 @@ func TestHandleConfigPUTInvalidJson(t *testing.T) {
 
 	var errData map[string]any
 	err = json.Unmarshal(buf.Bytes(), &errData)
-	t.Log("BYTES: ", string(buf.Bytes()))
+	//t.Log("BYTES: ", string(buf.Bytes()))
 	assert.NoError(t, err)
 
 	expectedErrorResponse := map[string]any{
@@ -101,7 +104,7 @@ func TestHandleConfigPUTInvalidObject(t *testing.T) {
 	err = json.Unmarshal(buf.Bytes(), &errData)
 	assert.NoError(t, err)
 
-	t.Log("BYTES: ", string(buf.Bytes()))
+	//t.Log("BYTES: ", string(buf.Bytes()))
 	expectedErrorResponse := map[string]any{
 		"error": map[string]any{
 			"code":    float64(400),
@@ -166,7 +169,6 @@ func TestHandleConfigDeleteOK(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, resp.StatusCode, 404)
 }
-*/
 
 func ptr[T any](v T) *T {
 	return &v
@@ -385,7 +387,186 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		var errResp map[string]any
 		err = json.NewDecoder(resp.Body).Decode(&errResp)
 		assert.NoError(t, err)
-		assert.Contains(t, errResp["error"].(map[string]any)["message"], "invalid query parameter: must specify either 'query' vector or 'lookup_id'")
+		assert.Contains(t, errResp["error"].(map[string]any)["message"], "invalid query parameter: ")
+	})
+
+	ids := []string{}
+	t.Run("BulkUpsertPoints_OK", func(t *testing.T) {
+		// Generate 10 points for bulk upsert
+		points := []map[string]any{}
+		for i := range 10 {
+			id := uuid.NewString()
+			ids = append(ids, id)
+			color := "color_" + strconv.Itoa(i%3) // For filtering later
+			point := map[string]any{
+				"id":          id,
+				"payload":     map[string]any{"color": color},
+				"vector_name": VECTOR_NAME,
+				"vector":      generateRandomFloats(128),
+			}
+			points = append(points, point)
+		}
+
+		upsertPayload := map[string]any{"points": points}
+
+		marshalledJSON, err := json.Marshal(upsertPayload)
+		assert.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(makeRequest(http.MethodPut, pointsEndpoint, marshalledJSON))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful bulk upsert")
+
+		var respData map[string]any
+		buf := new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		assert.NoError(t, err, "Failed to read response body")
+		err = json.Unmarshal(buf.Bytes(), &respData)
+		assert.NoError(t, err, "Failed to unmarshal response")
+		assert.Equal(t, "Completed", respData["status"], "Expected status: Completed in response body")
+	})
+
+	t.Run("QueryPoints_ByColorFilter_Success", func(t *testing.T) {
+		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		requestBody := adapter.QueryPointsRequest{
+			LookupID:    ptr(ids[0]), // Use first ID, which has color_0
+			Limit:       10,
+			VectorName:  VECTOR_NAME,
+			WithVector:  ptr(true),
+			WithPayload: ptr(true),
+			Filter: &adapter.HeadFilter{
+				Must: []adapter.IndFilter{
+					{
+						Key: "color",
+						Match: adapter.MatchFilter{
+							Value: "color_0",
+						},
+					},
+				},
+			},
+		}
+
+		bodyBytes, err := json.Marshal(requestBody)
+		assert.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(makeRequest(http.MethodPost, url, bodyBytes))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful query with color filter")
+
+		var actualResponse []map[string]any
+		buf := new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		assert.NoError(t, err, "Failed to read response body")
+		err = json.Unmarshal(buf.Bytes(), &actualResponse)
+		assert.NoError(t, err, "Failed to unmarshal response")
+		assert.Len(t, actualResponse, 3, "Expected 3 points with color_0 (4 total, excluding self)") // 4 points have color_0, exclude self
+
+		for _, point := range actualResponse {
+			payload := point["payload"].(map[string]any)
+			assert.Equal(t, "color_0", payload["color"], "Expected all returned points to have color_0")
+		}
+	})
+
+	t.Run("QueryPoints_ByVector_Success", func(t *testing.T) {
+		// First, get a point to extract its vector
+		pointID := ids[0] // From bulk upsert
+		getUrl := fmt.Sprintf("%s/%s", pointsEndpoint, pointID)
+		getResp, err := http.DefaultClient.Do(makeRequest(http.MethodGet, getUrl, nil))
+		assert.NoError(t, err)
+		defer getResp.Body.Close()
+
+		var pointData []map[string]any
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(getResp.Body)
+		_ = json.Unmarshal(buf.Bytes(), &pointData)
+		//t.Log("POINT DATA: ", pointData[0]["vectors"].(map[string]any)["VectorsOptions"].(map[string]any)["Vectors"].(map[string]any)["vectors"].(map[string]any)[VECTOR_NAME].(map[string]any))
+		vectorMap := pointData[0]["vectors"].(map[string]any)["VectorsOptions"].(map[string]any)["Vectors"].(map[string]any)["vectors"].(map[string]any)[VECTOR_NAME].(map[string]any)
+		vector := vectorMap["data"].([]any)
+		queryVector := make([]float32, len(vector))
+		for i, v := range vector {
+			queryVector[i] = float32(v.(float64))
+		}
+
+		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		requestBody := adapter.QueryPointsRequest{
+			Query:      queryVector,
+			Limit:      10,
+			VectorName: VECTOR_NAME,
+			WithVector: ptr(true),
+		}
+
+		bodyBytes, err := json.Marshal(requestBody)
+		assert.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(makeRequest(http.MethodPost, url, bodyBytes))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful vector query")
+
+		var actualResponse []map[string]any
+		buf = new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		assert.NoError(t, err)
+		err = json.Unmarshal(buf.Bytes(), &actualResponse)
+		assert.NoError(t, err)
+		assert.Len(t, actualResponse, 10)
+		assert.GreaterOrEqual(t, actualResponse[0]["score"], float64(0.9999))
+	})
+
+	t.Run("QueryPoints_BySingleID_Success", func(t *testing.T) {
+		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		requestBody := adapter.QueryPointsRequest{
+			LookupID:   ptr(ids[0]),
+			Limit:      10,
+			VectorName: VECTOR_NAME,
+			WithVector: ptr(true),
+		}
+
+		bodyBytes, err := json.Marshal(requestBody)
+		assert.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(makeRequest(http.MethodPost, url, bodyBytes))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful single ID query")
+
+		var actualResponse []map[string]any
+		buf := new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		assert.NoError(t, err)
+		err = json.Unmarshal(buf.Bytes(), &actualResponse)
+		//t.Log("actual RESpnse: ", actualResponse)
+		assert.NoError(t, err)
+		assert.Len(t, actualResponse, 10)
+	})
+
+	t.Run("QueryPoints_ByMultipleIDs_Success", func(t *testing.T) {
+		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		requestBody := adapter.QueryPointsRequest{
+			Positives:  []string{ids[0], ids[1]},
+			Negatives:  []string{ids[9]},
+			Limit:      7,
+			VectorName: VECTOR_NAME,
+			WithVector: ptr(true),
+		}
+
+		bodyBytes, err := json.Marshal(requestBody)
+		assert.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(makeRequest(http.MethodPost, url, bodyBytes))
+		assert.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful multi ID query")
+
+		var actualResponse []map[string]any
+		buf := new(bytes.Buffer)
+		_, err = buf.ReadFrom(resp.Body)
+		assert.NoError(t, err)
+		err = json.Unmarshal(buf.Bytes(), &actualResponse)
+		assert.NoError(t, err)
+		assert.Len(t, actualResponse, 7) // 10 total, excludes 3 used in positives/negatives
 	})
 
 	t.Run("DeletePoints_OK", func(t *testing.T) {

@@ -101,29 +101,56 @@ func ToQdrantSearchParams(req *SearchParamsRequest) *qdrant.SearchParams {
 func ToQdrantQuery(req QueryPointsRequest, collection string) (*qdrant.QueryPoints, error) {
 	var queryVariant *qdrant.Query
 
-	hasQueryVector := len(req.Query) > 0
-	hasLookupID := req.LookupID != nil
+	var positives []*qdrant.VectorInput
+	var negatives []*qdrant.VectorInput
 
-	if hasQueryVector && hasLookupID {
-		return nil, fmt.Errorf("cannot use both 'query' vector and 'lookup_id' simultaneously")
-	}
-
-	if hasLookupID {
-		lookupIDString := *req.LookupID
-		pointID, err := toPointID(lookupIDString)
+	if req.LookupID != nil {
+		pointID, err := toPointID(*req.LookupID)
 		if err != nil {
 			return nil, fmt.Errorf("invalid lookup_id: %w", err)
 		}
+		positives = append(positives, qdrant.NewVectorInputID(pointID))
+	}
+
+	for _, p := range req.Positives {
+		pointID, err := toPointID(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid positive ID: %w", err)
+		}
+		positives = append(positives, qdrant.NewVectorInputID(pointID))
+	}
+
+	for _, n := range req.Negatives {
+		pointID, err := toPointID(n)
+		if err != nil {
+			return nil, fmt.Errorf("invalid negative ID: %w", err)
+		}
+		negatives = append(negatives, qdrant.NewVectorInputID(pointID))
+	}
+
+	hasQueryVector := len(req.Query) > 0
+	hasRecommend := len(positives) > 0 || len(negatives) > 0
+
+	if hasQueryVector && hasRecommend {
+		return nil, fmt.Errorf("cannot use both 'query' vector and recommend inputs (positives/negatives/lookup_id) simultaneously")
+	}
+
+	if hasRecommend {
+		if len(positives) == 0 {
+			return nil, fmt.Errorf("must provide at least one positive for recommend query")
+		}
 		queryVariant = qdrant.NewQueryRecommend(
 			&qdrant.RecommendInput{
-				Positive: []*qdrant.VectorInput{qdrant.NewVectorInputID(pointID)},
+				Positive: positives,
+				Negative: negatives,
 			},
 		)
 	} else if hasQueryVector {
 		queryVariant = qdrant.NewQueryNearest(qdrant.NewVectorInput(req.Query...))
 	} else {
-		return nil, fmt.Errorf("must specify either 'query' vector or 'lookup_id'")
+		return nil, fmt.Errorf("must specify either 'query' vector or recommend inputs (positives/negatives/lookup_id)")
 	}
+
 	var using *string
 	if req.VectorName != "" {
 		using = ptr(req.VectorName)
@@ -157,8 +184,8 @@ func ToQdrantFilter(filter *HeadFilter) *qdrant.Filter {
 		switch v := cond.Match.Value.(type) {
 		case string:
 			mustConditions[i] = qdrant.NewMatch(cond.Key, v)
-		case float32:
-			mustConditions[i] = qdrant.NewMatchInt(cond.Key, int64(v))
+		case int64:
+			mustConditions[i] = qdrant.NewMatchInt(cond.Key, v)
 		case bool:
 			mustConditions[i] = qdrant.NewMatchBool(cond.Key, v)
 		default:

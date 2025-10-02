@@ -36,8 +36,11 @@ type DeletePoints struct {
 type QueryPointsRequest struct {
 	// Query is for standard kNN search (vector input)
 	Query []float32 `json:"query,omitempty"`
-	// LookupID is for ID-based lookup/recommendation
-	LookupID *string `json:"lookup_id,omitempty"` // New field for Recommendation Query
+	// LookupID is for single-ID recommendation (backward compatible)
+	LookupID *string `json:"lookup_id,omitempty"`
+	// Positives and Negatives for multi-ID recommendation
+	Positives []string `json:"positives,omitempty"`
+	Negatives []string `json:"negatives,omitempty"`
 
 	VectorName     string               `json:"vector_name"`
 	Limit          uint64               `json:"limit"`
