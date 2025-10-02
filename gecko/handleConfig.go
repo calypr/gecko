@@ -23,8 +23,7 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 		_ = errResponse.write(ctx)
 		return
 	}
-	server.logger.Info("Configs: %#v", configList)
-	_ = jsonResponseFrom(configList, http.StatusOK).write(ctx)
+	jsonResponseFrom(configList, http.StatusOK).write(ctx)
 }
 
 func (server *Server) handleConfigGET(ctx iris.Context) {
@@ -44,8 +43,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 		_ = errResponse.write(ctx)
 		return
 	}
-	server.logger.Info("%#v", doc)
-	_ = jsonResponseFrom(doc, http.StatusOK).write(ctx)
+	jsonResponseFrom(doc, http.StatusOK).write(ctx)
 }
 
 func (server *Server) handleConfigDELETE(ctx iris.Context) {
@@ -67,8 +65,7 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 	}
 
 	okmsg := map[string]any{"code": 200, "message": fmt.Sprintf("DELETED: %s", configId)}
-	server.logger.Info("%#v", okmsg)
-	_ = jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
+	jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
 }
 
 func (server *Server) handleConfigPUT(ctx iris.Context) {
@@ -107,6 +104,5 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	}
 
 	okmsg := map[string]any{"code": 200, "message": fmt.Sprintf("ACCEPTED: %s", configId)}
-	server.logger.Info("%#v", okmsg)
-	_ = jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
+	jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
 }

@@ -43,7 +43,6 @@ func (response *jsonResponse) write(ctx iris.Context) error {
 	var bytes []byte
 	var err error
 
-	// Handle protobufs specially
 	if msg, ok := response.content.(proto.Message); ok {
 		opts := protojson.MarshalOptions{
 			EmitUnpopulated: true,
@@ -55,14 +54,12 @@ func (response *jsonResponse) write(ctx iris.Context) error {
 		}
 		bytes, err = opts.Marshal(msg)
 	} else {
-		// Normal JSON case
 		if wantPrettyJSON(ctx.Request()) {
 			bytes, err = json.MarshalIndent(response.content, "", "    ")
 		} else {
 			bytes, err = json.Marshal(response.content)
 		}
 	}
-
 	if err != nil {
 		return err
 	}

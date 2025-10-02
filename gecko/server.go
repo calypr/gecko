@@ -100,6 +100,7 @@ func (server *Server) MakeRouter() *iris.Application {
 		server.logger.Error("Failed to initialize router")
 	}
 	router.Use(recoveryMiddleware)
+	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
 	router.Get("/health", server.handleHealth)
 	router.Get("/config/{configId}", server.handleConfigGET)

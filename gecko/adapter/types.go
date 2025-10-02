@@ -1,5 +1,12 @@
 package adapter
 
+import (
+	"net/http"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
 // Upsert Structs
 type UpsertRequest struct {
 	Points []Point `json:"points"`
@@ -70,4 +77,30 @@ type IndFilter struct {
 
 type MatchFilter struct {
 	Value any `json:"value"`
+}
+
+func MapQdrantErrorToHTTPStatus(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return http.StatusInternalServerError
+	}
+
+	switch st.Code() {
+	case codes.NotFound:
+		return http.StatusNotFound // 404
+	case codes.InvalidArgument:
+		return http.StatusBadRequest // 400
+	case codes.Unauthenticated:
+		return http.StatusUnauthorized // 401
+	case codes.AlreadyExists:
+		return http.StatusConflict // 409
+	case codes.Unavailable:
+		return http.StatusServiceUnavailable // 503
+	default:
+		// Default for unhandled gRPC errors
+		return http.StatusInternalServerError // 500
+	}
 }

@@ -38,6 +38,27 @@ func ConvertQdrantPointsResponse(resp []*qdrant.ScoredPoint) []map[string]any {
 	return result
 }
 
+func ConvertQdrantCollectionInfo(info *qdrant.CollectionInfo) map[string]any {
+	if info == nil {
+		return nil
+	}
+	status := "Unknown"
+	if s := info.GetStatus(); s != qdrant.CollectionStatus_UnknownCollectionStatus {
+		status = s.String()
+	}
+
+	return map[string]any{
+		"status":                status,
+		"optimizer_status":      info.GetOptimizerStatus().String(),
+		"vectors_count":         info.GetVectorsCount(),
+		"segments_count":        info.GetSegmentsCount(),
+		"config":                info.GetConfig(),
+		"payloadSchema":         info.GetPayloadSchema(),
+		"points_count":          info.GetPointsCount(),
+		"indexed_vectors_count": info.GetIndexedVectorsCount(),
+	}
+}
+
 func convertQdrantValueToJSON(value *qdrant.Value) any {
 	if value == nil || value.Kind == nil {
 		return nil
