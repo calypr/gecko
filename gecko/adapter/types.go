@@ -32,6 +32,30 @@ type DeletePoints struct {
 	Filter HeadFilter `json:"filter,omitempty"`
 }
 
+// Query Structs
+type QueryPointsRequest struct {
+	// Query is for standard kNN search (vector input)
+	Query []float32 `json:"query,omitempty"`
+	// LookupID is for ID-based lookup/recommendation
+	LookupID *string `json:"lookup_id,omitempty"` // New field for Recommendation Query
+
+	VectorName     string               `json:"vector_name"`
+	Limit          uint64               `json:"limit"`
+	Offset         *uint64              `json:"offset,omitempty"`
+	ScoreThreshold *float32             `json:"score_threshold,omitempty"`
+	Filter         *HeadFilter          `json:"filter,omitempty"`
+	Params         *SearchParamsRequest `json:"params,omitempty"`
+	WithPayload    *bool                `json:"with_payload,omitempty"`
+	WithVector     *bool                `json:"with_vector,omitempty"`
+}
+
+type SearchParamsRequest struct {
+	HnswEf        *uint64 `json:"hnsw_ef,omitempty"`
+	Exact         *bool   `json:"exact,omitempty"`
+	Quantization  *bool   `json:"quantization,omitempty"`
+	SearchWithout *bool   `json:"search_without_vectors,omitempty"`
+}
+
 type HeadFilter struct {
 	Must []IndFilter `json:"must"`
 }
