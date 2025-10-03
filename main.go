@@ -18,7 +18,7 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 
-	var port = flag.Uint("port", 8080, "port on which to expose the API")
+	var port = flag.Uint("port", 80, "port on which to expose the API")
 	var jwkEndpoint = flag.String("jwks", "", "endpoint for JWKS")
 	var dbUrl = flag.String("db", "", "URL to connect to database")
 
