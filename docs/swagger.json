@@ -1,7 +1,7 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "API for managing configurations and Qdrant vector collections",
+        "description": "API for managing configurations and a generalizable vector database API",
         "title": "Gecko API",
         "contact": {},
         "version": "1.0.0"
@@ -213,14 +213,14 @@
         },
         "/vector/collections": {
             "get": {
-                "description": "Retrieve all Qdrant collections",
+                "description": "Retrieve all collections",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Vector Collections"
                 ],
-                "summary": "List all Qdrant collections",
+                "summary": "List all collections",
                 "responses": {
                     "200": {
                         "description": "Collections listed",
@@ -288,7 +288,7 @@
                 }
             },
             "put": {
-                "description": "Create a Qdrant collection with vector configuration",
+                "description": "Create a collection with vector configuration",
                 "consumes": [
                     "application/json"
                 ],
@@ -549,7 +549,7 @@
         },
         "/vector/collections/{collection}/points/search": {
             "post": {
-                "description": "Executes a kNN or recommendation query against a Qdrant collection",
+                "description": "Executes a kNN or recommendation query against a collection",
                 "consumes": [
                     "application/json"
                 ],

@@ -654,7 +654,8 @@ definitions:
 host: localhost:8080
 info:
   contact: {}
-  description: API for managing configurations and Qdrant vector collections
+  description: API for managing configurations and a generalizable vector database
+    API
   title: Gecko API
   version: 1.0.0
 paths:
@@ -795,7 +796,7 @@ paths:
       - Health
   /vector/collections:
     get:
-      description: Retrieve all Qdrant collections
+      description: Retrieve all collections
       produces:
       - application/json
       responses:
@@ -808,7 +809,7 @@ paths:
           description: Server error
           schema:
             $ref: '#/definitions/gecko.ErrorResponse'
-      summary: List all Qdrant collections
+      summary: List all collections
       tags:
       - Vector Collections
   /vector/collections/{collection}:
@@ -913,7 +914,7 @@ paths:
     put:
       consumes:
       - application/json
-      description: Create a Qdrant collection with vector configuration
+      description: Create a collection with vector configuration
       parameters:
       - description: Collection name
         in: path
@@ -1058,7 +1059,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Executes a kNN or recommendation query against a Qdrant collection
+      description: Executes a kNN or recommendation query against a collection
       parameters:
       - description: Collection name
         in: path

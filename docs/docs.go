@@ -219,14 +219,14 @@ const docTemplate = `{
         },
         "/vector/collections": {
             "get": {
-                "description": "Retrieve all Qdrant collections",
+                "description": "Retrieve all collections",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Vector Collections"
                 ],
-                "summary": "List all Qdrant collections",
+                "summary": "List all collections",
                 "responses": {
                     "200": {
                         "description": "Collections listed",
@@ -294,7 +294,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Create a Qdrant collection with vector configuration",
+                "description": "Create a collection with vector configuration",
                 "consumes": [
                     "application/json"
                 ],
@@ -555,7 +555,7 @@ const docTemplate = `{
         },
         "/vector/collections/{collection}/points/search": {
             "post": {
-                "description": "Executes a kNN or recommendation query against a Qdrant collection",
+                "description": "Executes a kNN or recommendation query against a collection",
                 "consumes": [
                     "application/json"
                 ],
@@ -1600,7 +1600,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Gecko API",
-	Description:      "API for managing configurations and Qdrant vector collections",
+	Description:      "API for managing configurations and a generalizable vector database API",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",
