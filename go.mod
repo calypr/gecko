@@ -9,7 +9,7 @@ require (
 	github.com/kataras/iris/v12 v12.2.11
 	github.com/qdrant/go-client v1.15.0
 	github.com/stretchr/testify v1.9.0
-	github.com/swaggo/swag v1.8.10
+	github.com/swaggo/swag v1.16.6
 	github.com/uc-cdis/arborist v0.0.0-20241016192742-6190d06f1061
 	github.com/uc-cdis/go-authutils v0.1.2
 	google.golang.org/grpc v1.66.0
@@ -63,10 +63,11 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yosssi/ace v0.0.5 // indirect
-	golang.org/x/crypto v0.31.0 // indirect
+	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/exp v0.0.0-20240404231335-c0f41cb1a7a0 // indirect
-	golang.org/x/net v0.28.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/mod v0.17.0 // indirect
+	golang.org/x/net v0.34.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d // indirect
