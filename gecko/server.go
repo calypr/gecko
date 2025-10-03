@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -65,32 +64,10 @@ func (server *Server) Init() (*Server, error) {
 	if server.logger == nil {
 		return nil, errors.New("gecko server initialized without logger")
 	}
-	server.logger.Info("DB: %#v, JWTApp: %#v, Logger: %#v", server.db, server.jwtApp, server.logger)
 	if server.qdrantClient == nil {
-		qdrantHost := os.Getenv("QDRANT_HOST")
-		if qdrantHost == "" {
-			qdrantHost = "qdrant"
-		}
-		qdrantPort := 6334
-		qdrantAPIKey := os.Getenv("QDRANT_API_KEY")
-		qdrantConfig := &qdrant.Config{
-			Host:   qdrantHost,
-			Port:   qdrantPort,
-			APIKey: qdrantAPIKey,
-			UseTLS: false,
-		}
-		var err error
-		server.qdrantClient, err = qdrant.NewClient(qdrantConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize Qdrant client: %w", err)
-		}
-		server.logger.Info("Initialized Qdrant client with host: %s, port: %d (from environment/default)", qdrantHost, qdrantPort)
-	} else {
-		server.logger.Info("Qdrant client provided via WithQdrantClient, skipping internal initialization.")
+		return nil, errors.New("gecko server initialized without Qdrant client")
 	}
-	if server.qdrantClient == nil {
-		return nil, errors.New("Qdrant client is nil after all initialization attempts")
-	}
+	server.logger.Info("Gecko server initialized successfully.")
 	return server, nil
 }
 
@@ -129,7 +106,6 @@ func (server *Server) MakeRouter() *iris.Application {
 		}
 	}
 
-	// Optionally keep UseRouter if needed, with safety checks
 	router.UseRouter(func(ctx iris.Context) {
 		req := ctx.Request()
 		if req == nil || req.URL == nil {
@@ -142,7 +118,6 @@ func (server *Server) MakeRouter() *iris.Application {
 		ctx.Next()
 	})
 
-	// Build the router to ensure it's ready for net/http
 	if err := router.Build(); err != nil {
 		server.logger.Error("Failed to build Iris router: %v", err)
 	}

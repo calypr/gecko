@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/calypr/gecko/gecko"
@@ -17,100 +18,88 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 
-	var jwkEndpointEnv string = os.Getenv("JWKS_ENDPOINT")
+	var port = flag.Uint("port", 8080, "port on which to expose the API")
+	var jwkEndpoint = flag.String("jwks", "", "endpoint for JWKS")
+	var dbUrl = flag.String("db", "", "URL to connect to database")
 
-	// EXISTING FLAGS
-	var port *uint = flag.Uint("port", 80, "port on which to expose the API")
-	var jwkEndpoint *string = flag.String(
-		"jwks",
-		jwkEndpointEnv,
-		"endpoint from which the application can fetch a JWKS",
-	)
+	var qdrantHostFlag = flag.String("qdrant-host", "", "Qdrant host (overrides QDRANT_HOST env var)")
+	var qdrantPortFlag = flag.Int("qdrant-port", 0, "Qdrant port (overrides QDRANT_PORT env var)")
+	var qdrantAPIKeyFlag = flag.String("qdrant-api-key", "", "Qdrant API Key (overrides QDRANT_API_KEY env var)")
 
-	// NEW FLAGS FOR QDRANT CONFIGURATION
-	var qdrantHost *string = flag.String(
-		"qdrant-host",
-		"localhost:6334", // Default to common gRPC port
-		"The host and port for the Qdrant gRPC endpoint (e.g., localhost:6334)",
-	)
-	var qdrantPort *uint = flag.Uint( // Add a new flag for the port
-		"qdrant-port",
-		6334,
-		"The port for the Qdrant gRPC endpoint (default 6334)",
-	)
-	var qdrantAPIKey *string = flag.String(
-		"qdrant-api-key",
-		"",
-		"API Key for Qdrant authentication (optional)",
-	)
+	flag.Parse()
 
-	if *jwkEndpoint == "" {
+	qdrantHost := *qdrantHostFlag
+	if qdrantHost == "" {
+		qdrantHost = os.Getenv("QDRANT_HOST")
+	}
+	if qdrantHost == "" {
+		qdrantHost = "localhost" // Final default
+	}
+
+	qdrantPort := *qdrantPortFlag
+	if qdrantPort == 0 {
+		portStr := os.Getenv("QDRANT_PORT")
+		if portStr != "" {
+			parsedPort, err := strconv.Atoi(portStr)
+			if err == nil {
+				qdrantPort = parsedPort
+			}
+		}
+	}
+	if qdrantPort == 0 {
+		qdrantPort = 6334 // Final default
+	}
+
+	qdrantAPIKey := *qdrantAPIKeyFlag
+	if qdrantAPIKey == "" {
+		qdrantAPIKey = os.Getenv("QDRANT_API_KEY")
+	}
+
+	finalJwkEndpoint := *jwkEndpoint
+	if finalJwkEndpoint == "" {
+		finalJwkEndpoint = os.Getenv("JWKS_ENDPOINT")
+	}
+	if finalJwkEndpoint == "" {
 		logger.Println("WARNING: no $JWKS_ENDPOINT or --jwks specified; endpoints requiring JWT validation will error")
 	}
 
-	var dbUrl *string = flag.String(
-		"db",
-		"",
-		"URL to connect to database: postgresql://user:password@netloc:port/dbname\n"+
-			"can also be specified through the postgres\n"+
-			"environment variables. If using the commandline argument, add\n"+
-			"?sslmode=disable",
-	)
-
-	// IMPORTANT: flag.Parse() is correctly placed here before accessing any flag values
-	flag.Parse()
-
-	// --- Database Initialization (Existing Logic) ---
 	db, err := sqlx.Open("postgres", *dbUrl)
 	if err != nil {
 		logger.Fatalf("Failed to connect to database: %v", err)
-		panic(err)
 	}
-
-	err = db.Ping()
-	if err != nil {
+	if err = db.Ping(); err != nil {
 		logger.Fatalf("DB ping failed: %v", err)
-		panic(err)
 	}
 	defer db.Close()
 
-	jwtApp := authutils.NewJWTApplication(*jwkEndpoint)
-	logger.Printf("JWT App Init: %#v\n", jwtApp.Keys)
+	jwtApp := authutils.NewJWTApplication(finalJwkEndpoint)
 
-	// --- Qdrant Client Initialization (NEW LOGIC) ---
+	logger.Printf("Connecting to Qdrant at %s:%d", qdrantHost, qdrantPort)
 	qdrantConfig := &qdrant.Config{
-		// Use the values from the command-line flags
-		Host:   *qdrantHost,
-		APIKey: *qdrantAPIKey,
-		Port:   int(*qdrantPort),
-		// Add UseTLS: true if you need TLS/SSL for cloud
+		Host:   qdrantHost,
+		Port:   qdrantPort,
+		APIKey: qdrantAPIKey,
 	}
 
 	qdrantClient, err := qdrant.NewClient(qdrantConfig)
 	if err != nil {
 		logger.Fatalf("Failed to initialize Qdrant client: %v", err)
-		panic(err)
 	}
 
-	// --- Server Initialization (UPDATED LOGIC) ---
+	// 4. Initialize the server. It will now use the correctly configured client.
 	geckoServer, err := gecko.NewServer().
 		WithLogger(logger).
 		WithJWTApp(jwtApp).
 		WithDB(db).
-		// NEW: Pass the initialized Qdrant client to the server builder
-		WithQdrantClient(qdrantClient).
+		WithQdrantClient(qdrantClient). // This client is now correctly configured
 		Init()
 	if err != nil {
 		log.Fatalf("Failed to initialize gecko server: %v", err)
 	}
 
-	// ... (rest of the server setup remains the same)
 	app := geckoServer.MakeRouter()
-
-	// Configure Iris logger to output to your httpLogger
 	httpLogger := log.New(os.Stdout, "", log.LstdFlags)
 	app.Logger().SetOutput(httpLogger.Writer())
-
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *port),
 		ReadTimeout:  10 * time.Second,
@@ -120,8 +109,7 @@ func main() {
 	}
 
 	httpLogger.Println("gecko serving at", httpServer.Addr)
-	err = httpServer.ListenAndServe()
-	if err != nil {
+	if err = httpServer.ListenAndServe(); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
 }
