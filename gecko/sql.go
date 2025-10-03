@@ -39,7 +39,7 @@ func configGET(db *sqlx.DB, name string) (map[string]any, error) {
 		return nil, err
 	}
 
-	var content []config.ConfigItem
+	var content config.Config
 	err = json.Unmarshal(doc.Content, &content)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func configDELETE(db *sqlx.DB, name string) (bool, error) {
 	return true, nil
 }
 
-func configPUT(db *sqlx.DB, name string, data []config.ConfigItem) error {
+func configPUT(db *sqlx.DB, name string, data config.Config) error {
 	stmt := `
                 INSERT INTO documents (name, content)
                 VALUES ($1, $2)

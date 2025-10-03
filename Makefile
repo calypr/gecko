@@ -6,3 +6,6 @@ bin/gecko: gecko/*.go # help: run the server
 
 clean:
 	rm -f bin/gecko
+
+swagger: # help: generate swagger docs
+	swag init --dir . --parseDependency --parseInternal --parseDepth 2

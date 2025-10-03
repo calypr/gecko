@@ -37,7 +37,7 @@ func TestHealthCheck(t *testing.T) {
 }
 
 func TestHandleConfigPUT(t *testing.T) {
-	var configs []config.ConfigItem
+	var configs config.Config
 	err := json.Unmarshal([]byte(fixtures.TestConfig), &configs)
 	assert.NoError(t, err)
 	marshalledJSON, err := json.Marshal(configs)
@@ -108,14 +108,14 @@ func TestHandleConfigPUTInvalidObject(t *testing.T) {
 	expectedErrorResponse := map[string]any{
 		"error": map[string]any{
 			"code":    float64(400),
-			"message": "body data unmarshal failed: json: cannot unmarshal object into Go value of type []config.ConfigItem",
+			"message": "body data unmarshal failed: json: unknown field \"foo\"",
 		},
 	}
 	assert.Equal(t, expectedErrorResponse, errData)
 }
 
 func TestHandleConfigGET(t *testing.T) {
-	var configs []config.ConfigItem
+	var configs config.Config
 	err := json.Unmarshal([]byte(fixtures.TestConfig), &configs)
 
 	payloadBytes, err := json.Marshal(configs)
@@ -133,7 +133,7 @@ func TestHandleConfigGET(t *testing.T) {
 	var outdata map[string]any
 	json.Unmarshal(buf.Bytes(), &outdata)
 
-	var Resconfigs []config.ConfigItem
+	var Resconfigs config.Config
 	data, _ := json.Marshal(outdata["content"])
 	err = json.Unmarshal(data, &Resconfigs)
 	assert.NoError(t, err)
@@ -154,7 +154,7 @@ func TestHandle404ConfigDelete(t *testing.T) {
 }
 
 func TestHandleConfigDeleteOK(t *testing.T) {
-	var configs []config.ConfigItem
+	var configs config.Config
 	err := json.Unmarshal([]byte(fixtures.TestConfig), &configs)
 	payloadBytes, err := json.Marshal(configs)
 	assert.NoError(t, err)

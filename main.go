@@ -15,6 +15,15 @@ import (
 	"github.com/uc-cdis/go-authutils/authutils"
 )
 
+// @title Gecko API
+// @version 1.0.0
+// @description API for managing configurations and a generalizable vector database API
+// @host localhost:8080
+// @BasePath /
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name Authorization
+// @description JWT token for authentication
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 

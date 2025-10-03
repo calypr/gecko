@@ -10,6 +10,14 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// handleListCollections godoc
+// @Summary List all collections
+// @Description Retrieve all collections
+// @Tags Vector Collections
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Collections listed"
+// @Failure 500 {object} ErrorResponse "Server error"
+// @Router /vector/collections [get]
 func (server *Server) handleListCollections(ctx iris.Context) {
 	resp, err := server.qdrantClient.ListCollections(ctx.Request().Context())
 	if err != nil {
@@ -28,6 +36,18 @@ func (server *Server) handleListCollections(ctx iris.Context) {
 	jsonResponseFrom(successResponse, http.StatusOK).write(ctx)
 }
 
+// handleCreateCollection godoc
+// @Summary Create a new collection
+// @Description Create a collection with vector configuration
+// @Tags Vector Collections
+// @Accept json
+// @Produce json
+// @Param collection path string true "Collection name"
+// @Param body body adapter.CreateCollectionRequest true "Collection configuration"
+// @Success 200 {object} map[string]bool "Collection created"
+// @Failure 400 {object} ErrorResponse "Invalid request"
+// @Failure 500 {object} ErrorResponse "Server error"
+// @Router /vector/collections/{collection} [put]
 func (server *Server) handleCreateCollection(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 
@@ -79,7 +99,20 @@ func (server *Server) handleCreateCollection(ctx iris.Context) {
 	jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
 }
 
+// handleGetCollection retrieves metadata/info for a specific collection.
+// @Summary Get collection info
+// @Description Returns information about a collection by name
+// @Tags Vector Collections
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Success 200 {object} jsonResponse "Collection info"
+// @Failure 400 {object} ErrorResponse "Invalid collection name"
+// @Failure 404 {object} ErrorResponse "Collection not found"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection} [get]
 func (server *Server) handleGetCollection(ctx iris.Context) {
+
 	collection := ctx.Params().Get("collection")
 	resp, err := server.qdrantClient.GetCollectionInfo(ctx.Request().Context(), collection)
 	if err != nil {
@@ -95,6 +128,19 @@ func (server *Server) handleGetCollection(ctx iris.Context) {
 	jsonResponse.write(ctx)
 }
 
+// handleUpdateCollection updates metadata/settings for a specific collection.
+// @Summary Update collection
+// @Description Updates an existing collection by name
+// @Tags Vector Collections
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Param body body qdrant.UpdateCollection true "Update collection request"
+// @Success 200 {object} jsonResponse "Update successful"
+// @Failure 400 {object} ErrorResponse "Invalid request"
+// @Failure 404 {object} ErrorResponse "Collection not found"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection} [patch]
 func (server *Server) handleUpdateCollection(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	var req qdrant.UpdateCollection
@@ -117,6 +163,17 @@ func (server *Server) handleUpdateCollection(ctx iris.Context) {
 	jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
 }
 
+// handleDeleteCollection deletes a collection by name.
+// @Summary Delete collection
+// @Description Deletes a collection and all its points
+// @Tags Vector Collections
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Success 200 {object} jsonResponse "Delete successful"
+// @Failure 404 {object} ErrorResponse "Collection not found"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection} [delete]
 func (server *Server) handleDeleteCollection(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	err := server.qdrantClient.DeleteCollection(ctx.Request().Context(), collection)
@@ -130,6 +187,19 @@ func (server *Server) handleDeleteCollection(ctx iris.Context) {
 	jsonResponseFrom(map[string]bool{"result": true}, http.StatusOK).write(ctx)
 }
 
+// handleGetPoint retrieves a single point from a collection.
+// @Summary Get point
+// @Description Returns a single point (with vectors and payload) by ID
+// @Tags Vector
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Param id path string true "Point UUID"
+// @Success 200 {object} jsonResponse "Point found"
+// @Failure 400 {object} ErrorResponse "Invalid request or ID"
+// @Failure 404 {object} ErrorResponse "Point not found"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection}/points/{id} [get]
 func (server *Server) handleGetPoint(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	idStr := ctx.Params().Get("id")
@@ -172,6 +242,19 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 	jsonResponseFrom(resp, http.StatusOK).write(ctx)
 }
 
+// handleQueryPoints godoc
+// @Summary Query points in a collection
+// @Description Executes a kNN or recommendation query against a collection
+// @Tags Vector Search
+// @Accept json
+// @Produce json
+// @Param collection path string true "Collection name"
+// @Param request body adapter.QueryPointsRequest true "Query request body"
+// @Success 200 {object} adapter.QueryPointsResponseItem
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /vector/collections/{collection}/points/search [post]
 func (server *Server) handleQueryPoints(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	var req adapter.QueryPointsRequest
@@ -201,6 +284,18 @@ func (server *Server) handleQueryPoints(ctx iris.Context) {
 	jsonResponseFrom(adapter.ConvertQdrantPointsResponse(resp), http.StatusOK).write(ctx)
 }
 
+// handleUpsertPoints inserts or updates points in a collection.
+// @Summary Upsert points
+// @Description Inserts new points or updates existing ones
+// @Tags Vector
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Param body body adapter.UpsertRequest true "Upsert request"
+// @Success 200 {object} jsonResponse "Upsert successful"
+// @Failure 400 {object} ErrorResponse "Invalid request"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection}/points [put]
 func (server *Server) handleUpsertPoints(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 
@@ -230,6 +325,18 @@ func (server *Server) handleUpsertPoints(ctx iris.Context) {
 	jsonResponseFrom(resp, http.StatusOK).write(ctx)
 }
 
+// handleDeletePoints deletes one or more points from a collection.
+// @Summary Delete points
+// @Description Deletes points in a collection based on filter or IDs
+// @Tags Vector
+// @Accept  json
+// @Produce  json
+// @Param collection path string true "Collection name"
+// @Param body body adapter.DeletePoints true "Delete points request"
+// @Success 200 {object} jsonResponse "Delete successful"
+// @Failure 400 {object} ErrorResponse "Invalid request"
+// @Failure 500 {object} ErrorResponse "Internal server error"
+// @Router /vector/collections/{collection}/points/delete [post]
 func (server *Server) handleDeletePoints(ctx iris.Context) {
 	collection := ctx.Params().Get("collection")
 	var req adapter.DeletePoints

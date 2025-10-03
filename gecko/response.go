@@ -10,11 +10,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// jsonResponse represents a generic JSON response structure
+// @Schema
 type jsonResponse struct {
 	content any
 	code    int
 }
 
+// ErrorResponse represents an error response structure
+// @Schema
 type ErrorResponse struct {
 	HTTPError arborist.HTTPError `json:"error"`
 	// err stores an internal representation of an error in case it needs to be
@@ -25,6 +29,12 @@ type ErrorResponse struct {
 	log LogCache
 }
 
+// jsonResponseFrom creates a JSON response
+// @Summary Create a JSON response
+// @Description Constructs a JSON response with content and HTTP status code, supporting both JSON and Protobuf marshaling
+// @Param content body any true "Response content (JSON or Protobuf message)"
+// @Param code body int true "HTTP status code"
+// @Return jsonResponse
 func jsonResponseFrom(content any, code int) *jsonResponse {
 	return &jsonResponse{
 		content: content,
@@ -32,6 +42,11 @@ func jsonResponseFrom(content any, code int) *jsonResponse {
 	}
 }
 
+// write serializes and writes the JSON response to the Iris context
+// @Summary Write JSON response
+// @Description Serializes the response content (JSON or Protobuf) and writes it to the HTTP response
+// @Param ctx body iris.Context true "Iris context"
+// @Return error
 func (response *jsonResponse) write(ctx iris.Context) error {
 	ctx.ContentType("application/json")
 	if response.code > 0 {
@@ -80,6 +95,13 @@ func wantPrettyJSON(r *http.Request) bool {
 	return prettyJSON
 }
 
+// newErrorResponse creates an error response
+// @Summary Create an error response
+// @Description Constructs an error response with a message, HTTP status code, and optional error
+// @Param message body string true "Error message"
+// @Param code body int true "HTTP status code"
+// @Param err body error false "Optional internal error"
+// @Return ErrorResponse
 func newErrorResponse(message string, code int, err *error) *ErrorResponse {
 	response := &ErrorResponse{
 		HTTPError: arborist.HTTPError{
@@ -98,6 +120,11 @@ func newErrorResponse(message string, code int, err *error) *ErrorResponse {
 	return response
 }
 
+// write serializes and writes the error response to the Iris context
+// @Summary Write error response
+// @Description Serializes the error response and writes it to the HTTP response
+// @Param ctx body iris.Context true "Iris context"
+// @Return error
 func (errorResponse *ErrorResponse) write(ctx iris.Context) error {
 	var bytes []byte
 	var err error

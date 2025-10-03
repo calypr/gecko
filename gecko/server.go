@@ -1,6 +1,7 @@
 package gecko
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/iris-contrib/swagger"
+	"github.com/iris-contrib/swagger/swaggerFiles"
 	"github.com/jmoiron/sqlx"
 	"github.com/kataras/iris/v12"
 	"github.com/qdrant/go-client/qdrant"
@@ -76,16 +79,31 @@ func (server *Server) MakeRouter() *iris.Application {
 	if router == nil {
 		server.logger.Error("Failed to initialize router")
 	}
+
+	// Serve your swagger.json from /swagger/doc.json
+	router.Get("/swagger/doc.json", func(ctx iris.Context) {
+		ctx.ServeFile("./docs/swagger.json")
+	})
+
+	// Swagger UI
+	swaggerUI := swagger.Handler(swaggerFiles.Handler,
+		swagger.URL("/swagger/doc.json"), // points UI to our served swagger.json
+		swagger.DeepLinking(true),
+		swagger.Prefix("/swagger"),
+	)
+
 	router.Use(recoveryMiddleware)
 	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
+	router.Get("/swagger", swaggerUI)
+	router.Get("/swagger/{any:path}", swaggerUI)
 	router.Get("/health", server.handleHealth)
 	router.Get("/config/{configId}", server.handleConfigGET)
 	router.Put("/config/{configId}", server.handleConfigPUT)
 	router.Get("/config/list", server.handleConfigListGET)
 	router.Delete("/config/{configId}", server.handleConfigDELETE)
 
-	// Add Qdrant vector endpoints under /vector
+	// Add vector endpoints under /vector
 	vectorRouter := router.Party("/vector")
 	{
 		collections := vectorRouter.Party("/collections")
@@ -135,6 +153,14 @@ func recoveryMiddleware(ctx iris.Context) {
 	ctx.Next()
 }
 
+// handleHealth godoc
+// @Summary Health check endpoint
+// @Description Checks the database connection and returns the server status
+// @Tags Health
+// @Produce json
+// @Success 200 {string} string "Healthy"
+// @Failure 500 {object} ErrorResponse "Database unavailable"
+// @Router /health [get]
 func (server *Server) handleHealth(ctx iris.Context) {
 	err := server.db.Ping()
 	if err != nil {
@@ -169,7 +195,10 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 	if len(body) == 0 {
 		return newErrorResponse("empty request body", http.StatusBadRequest, nil)
 	}
-	err := json.Unmarshal(body, x)
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(x)
 	if err != nil {
 		structType := reflect.TypeOf(x)
 		if structType.Kind() == reflect.Ptr {
@@ -188,6 +217,7 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 		)
 		return response
 	}
+
 	return nil
 }
 

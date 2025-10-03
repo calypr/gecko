@@ -12,6 +12,8 @@ type UpsertRequest struct {
 	Points []Point `json:"points"`
 }
 
+// Point represents a Qdrant point
+// @Schema
 type Point struct {
 	ID         string         `json:"id"`
 	VectorName string         `json:"vector_name"` // This comes from the collection when it is created
@@ -29,34 +31,64 @@ type VectorParams struct {
 	Distance string `json:"distance"`
 }
 
+// CreateCollectionRequest represents a Qdrant collection creation request
+// @Schema
 type CreateCollectionRequest struct {
 	Vectors map[string]VectorParams `json:"vectors"`
 }
 
-// Delete Points
+// DeletePoints represents a Qdrant points deletion request
+// @Schema
 type DeletePoints struct {
 	Points []string   `json:"points"`
 	Filter HeadFilter `json:"filter,omitempty"`
 }
 
-// Query Structs
+// QueryPointsRequest represents a Qdrant query request
+// @Description Request body for querying points in a Qdrant collection
 type QueryPointsRequest struct {
 	// Query is for standard kNN search (vector input)
 	Query []float32 `json:"query,omitempty"`
+
 	// LookupID is for single-ID recommendation (backward compatible)
 	LookupID *string `json:"lookup_id,omitempty"`
+
 	// Positives and Negatives for multi-ID recommendation
 	Positives []string `json:"positives,omitempty"`
 	Negatives []string `json:"negatives,omitempty"`
 
-	VectorName     string               `json:"vector_name"`
-	Limit          uint64               `json:"limit"`
-	Offset         *uint64              `json:"offset,omitempty"`
-	ScoreThreshold *float32             `json:"score_threshold,omitempty"`
-	Filter         *HeadFilter          `json:"filter,omitempty"`
-	Params         *SearchParamsRequest `json:"params,omitempty"`
-	WithPayload    *bool                `json:"with_payload,omitempty"`
-	WithVector     *bool                `json:"with_vector,omitempty"`
+	// Name of the vector to search
+	VectorName string `json:"vector_name"`
+
+	// Maximum number of results to return
+	Limit uint64 `json:"limit"`
+
+	// Number of results to skip
+	Offset *uint64 `json:"offset,omitempty"`
+
+	// Minimum score threshold for results
+	ScoreThreshold *float32 `json:"score_threshold,omitempty"`
+
+	// Optional filter for narrowing search
+	Filter *HeadFilter `json:"filter,omitempty"`
+
+	// Additional search parameters
+	Params *SearchParamsRequest `json:"params,omitempty"`
+
+	// Whether to return payload with results
+	WithPayload *bool `json:"with_payload,omitempty"`
+
+	// Whether to include vector values in results
+	WithVector *bool `json:"with_vector,omitempty"`
+}
+
+// QueryPointsResponseItem represents one point in the query response
+// @Description Simplified Qdrant point response
+type QueryPointsResponseItem struct {
+	ID      string                 `json:"id"`
+	Score   float32                `json:"score"`
+	Vectors map[string]interface{} `json:"vectors,omitempty"` // can’t type vector length
+	Payload map[string]interface{} `json:"payload,omitempty"`
 }
 
 type SearchParamsRequest struct {
