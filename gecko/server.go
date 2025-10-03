@@ -85,18 +85,9 @@ func (server *Server) MakeRouter() *iris.Application {
 		ctx.ServeFile("./docs/swagger.json")
 	})
 
-	// Swagger UI
-	swaggerUI := swagger.Handler(swaggerFiles.Handler,
-		swagger.URL("/swagger/doc.json"), // points UI to our served swagger.json
-		swagger.DeepLinking(true),
-		swagger.Prefix("/swagger"),
-	)
-
 	router.Use(recoveryMiddleware)
 	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
-	router.Get("/swagger", swaggerUI)
-	router.Get("/swagger/{any:path}", swaggerUI)
 	router.Get("/health", server.handleHealth)
 	router.Get("/config/{configId}", server.handleConfigGET)
 	router.Put("/config/{configId}", server.handleConfigPUT)
