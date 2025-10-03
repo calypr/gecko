@@ -103,9 +103,19 @@ func (server *Server) MakeRouter() *iris.Application {
 	router.Get("/config/list", server.handleConfigListGET)
 	router.Delete("/config/{configId}", server.handleConfigDELETE)
 
-	// Add vector endpoints under /vector
 	vectorRouter := router.Party("/vector")
 	{
+		swaggerUI := swagger.Handler(swaggerFiles.Handler,
+			swagger.URL("/vector/swagger/doc.json"),
+			swagger.DeepLinking(true),
+			swagger.Prefix("/vector/swagger"),
+		)
+
+		vectorRouter.Get("/swagger/doc.json", func(ctx iris.Context) {
+			ctx.ServeFile("./docs/swagger.json")
+		})
+		vectorRouter.Get("/swagger", swaggerUI)
+		vectorRouter.Get("/swagger/{any:path}", swaggerUI)
 		collections := vectorRouter.Party("/collections")
 		{
 			collections.Get("", server.handleListCollections)
@@ -113,12 +123,11 @@ func (server *Server) MakeRouter() *iris.Application {
 			collections.Get("/{collection}", server.handleGetCollection)
 			collections.Patch("/{collection}", server.handleUpdateCollection)
 			collections.Delete("/{collection}", server.handleDeleteCollection)
-
 			points := collections.Party("/{collection}/points")
 			{
 				points.Put("", server.handleUpsertPoints)
 				points.Get("/{id}", server.handleGetPoint)
-				points.Post("/search", server.handleQueryPoints) // Using Query as per client
+				points.Post("/search", server.handleQueryPoints)
 				points.Post("/delete", server.handleDeletePoints)
 			}
 		}
