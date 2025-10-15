@@ -41,7 +41,7 @@ type CreateCollectionRequest struct {
 // @Schema
 type DeletePoints struct {
 	Points []string   `json:"points"`
-	Filter HeadFilter `json:"filter,omitempty"`
+	Filter HeadFilter `json:"filter"`
 }
 
 // QueryPointsRequest represents a Qdrant query request
@@ -85,10 +85,10 @@ type QueryPointsRequest struct {
 // QueryPointsResponseItem represents one point in the query response
 // @Description Simplified Qdrant point response
 type QueryPointsResponseItem struct {
-	ID      string                 `json:"id"`
-	Score   float32                `json:"score"`
-	Vectors map[string]interface{} `json:"vectors,omitempty"` // can’t type vector length
-	Payload map[string]interface{} `json:"payload,omitempty"`
+	ID      string         `json:"id"`
+	Score   float32        `json:"score"`
+	Vectors map[string]any `json:"vectors,omitempty"` // can’t type vector length
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 type SearchParamsRequest struct {

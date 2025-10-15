@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bmeg/grip/gripql"
+	"github.com/bmeg/grip/util/rpc"
 	"github.com/calypr/gecko/gecko"
 	"github.com/jmoiron/sqlx"
 	"github.com/qdrant/go-client/qdrant"
@@ -95,12 +97,18 @@ func main() {
 		logger.Fatalf("Failed to initialize Qdrant client: %v", err)
 	}
 
+	gripqlClient, err := gripql.Connect(rpc.ConfigWithDefaults("grip-service:8202"), false)
+	if err != nil {
+		log.Fatalf("Failed to initialize gecko server: %v", err)
+	}
+
 	// 4. Initialize the server. It will now use the correctly configured client.
 	geckoServer, err := gecko.NewServer().
 		WithLogger(logger).
 		WithJWTApp(jwtApp).
 		WithDB(db).
 		WithQdrantClient(qdrantClient). // This client is now correctly configured
+		WithGripqlClient(&gripqlClient).
 		Init()
 	if err != nil {
 		log.Fatalf("Failed to initialize gecko server: %v", err)

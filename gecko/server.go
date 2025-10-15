@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bmeg/grip-graphql/middleware"
+	"github.com/bmeg/grip/gripql"
 	"github.com/iris-contrib/swagger"
 	"github.com/iris-contrib/swagger/swaggerFiles"
 	"github.com/jmoiron/sqlx"
@@ -24,12 +26,14 @@ type LogHandler struct {
 }
 
 type Server struct {
-	iris         *iris.Application
-	db           *sqlx.DB
-	jwtApp       arborist.JWTDecoder
-	logger       *LogHandler
-	stmts        *arborist.CachedStmts
-	qdrantClient *qdrant.Client
+	iris          *iris.Application
+	db            *sqlx.DB
+	jwtApp        arborist.JWTDecoder
+	logger        *LogHandler
+	stmts         *arborist.CachedStmts
+	qdrantClient  *qdrant.Client
+	gripqlClient  *gripql.Client
+	gripGraphName string
 }
 
 func NewServer() *Server {
@@ -54,6 +58,11 @@ func (server *Server) WithDB(db *sqlx.DB) *Server {
 
 func (server *Server) WithQdrantClient(client *qdrant.Client) *Server {
 	server.qdrantClient = client
+	return server
+}
+
+func (server *Server) WithGripqlClient(client *gripql.Client) *Server {
+	server.gripqlClient = client
 	return server
 }
 
@@ -89,6 +98,11 @@ func (server *Server) MakeRouter() *iris.Application {
 	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
 	router.Get("/health", server.handleHealth)
+
+	var mware middleware.JWTHandler = &middleware.ProdJWTHandler{}
+	router.Get("/dir", server.logRequestMiddleware, server.handleListProjects)
+	router.Get("/dir/{project_id:string}", server.logRequestMiddleware, server.ProjLevelAuthMware(mware), server.handleDirGet)
+
 	router.Get("/config/{configId}", server.handleConfigGET)
 	router.Put("/config/{configId}", server.handleConfigPUT)
 	router.Get("/config/list", server.handleConfigListGET)
