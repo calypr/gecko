@@ -4,8 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
-	"github.com/ACED-IDP/gecko/gecko/config"
+	"github.com/calypr/gecko/gecko/config"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -13,6 +14,18 @@ type Document struct {
 	ID      int             `db:"id"`
 	Name    string          `db:"name"`
 	Content json.RawMessage `db:"content"` // Store JSON as raw bytes
+}
+
+func configList(db *sqlx.DB) ([]string, error) {
+	var names []string
+	err := db.Select(&names, "SELECT name FROM documents")
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("error fetching config names: %w", err)
+	}
+	return names, nil
 }
 
 func configGET(db *sqlx.DB, name string) (map[string]any, error) {
@@ -26,7 +39,7 @@ func configGET(db *sqlx.DB, name string) (map[string]any, error) {
 		return nil, err
 	}
 
-	var content []config.ConfigItem
+	var content config.Config
 	err = json.Unmarshal(doc.Content, &content)
 	if err != nil {
 		return nil, err
@@ -53,7 +66,7 @@ func configDELETE(db *sqlx.DB, name string) (bool, error) {
 	return true, nil
 }
 
-func configPUT(db *sqlx.DB, name string, data []config.ConfigItem) error {
+func configPUT(db *sqlx.DB, name string, data config.Config) error {
 	stmt := `
                 INSERT INTO documents (name, content)
                 VALUES ($1, $2)

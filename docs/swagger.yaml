@@ -1,0 +1,1103 @@
+basePath: /
+definitions:
+  adapter.CreateCollectionRequest:
+    properties:
+      vectors:
+        additionalProperties:
+          $ref: '#/definitions/adapter.VectorParams'
+        type: object
+    type: object
+  adapter.DeletePoints:
+    properties:
+      filter:
+        $ref: '#/definitions/adapter.HeadFilter'
+      points:
+        items:
+          type: string
+        type: array
+    type: object
+  adapter.HeadFilter:
+    properties:
+      must:
+        items:
+          $ref: '#/definitions/adapter.IndFilter'
+        type: array
+    type: object
+  adapter.IndFilter:
+    properties:
+      key:
+        type: string
+      match:
+        $ref: '#/definitions/adapter.MatchFilter'
+    type: object
+  adapter.MatchFilter:
+    properties:
+      value: {}
+    type: object
+  adapter.Point:
+    properties:
+      id:
+        type: string
+      payload:
+        additionalProperties: {}
+        type: object
+      vector:
+        items:
+          type: number
+        type: array
+      vector_name:
+        description: This comes from the collection when it is created
+        type: string
+    type: object
+  adapter.QueryPointsRequest:
+    description: Request body for querying points in a Qdrant collection
+    properties:
+      filter:
+        allOf:
+        - $ref: '#/definitions/adapter.HeadFilter'
+        description: Optional filter for narrowing search
+      limit:
+        description: Maximum number of results to return
+        type: integer
+      lookup_id:
+        description: LookupID is for single-ID recommendation (backward compatible)
+        type: string
+      negatives:
+        items:
+          type: string
+        type: array
+      offset:
+        description: Number of results to skip
+        type: integer
+      params:
+        allOf:
+        - $ref: '#/definitions/adapter.SearchParamsRequest'
+        description: Additional search parameters
+      positives:
+        description: Positives and Negatives for multi-ID recommendation
+        items:
+          type: string
+        type: array
+      query:
+        description: Query is for standard kNN search (vector input)
+        items:
+          type: number
+        type: array
+      score_threshold:
+        description: Minimum score threshold for results
+        type: number
+      vector_name:
+        description: Name of the vector to search
+        type: string
+      with_payload:
+        description: Whether to return payload with results
+        type: boolean
+      with_vector:
+        description: Whether to include vector values in results
+        type: boolean
+    type: object
+  adapter.QueryPointsResponseItem:
+    description: Simplified Qdrant point response
+    properties:
+      id:
+        type: string
+      payload:
+        additionalProperties: true
+        type: object
+      score:
+        type: number
+      vectors:
+        additionalProperties: true
+        description: can’t type vector length
+        type: object
+    type: object
+  adapter.SearchParamsRequest:
+    properties:
+      exact:
+        type: boolean
+      hnsw_ef:
+        type: integer
+      quantization:
+        type: boolean
+      search_without_vectors:
+        type: boolean
+    type: object
+  adapter.UpsertRequest:
+    properties:
+      points:
+        items:
+          $ref: '#/definitions/adapter.Point'
+        type: array
+    type: object
+  adapter.VectorParams:
+    properties:
+      distance:
+        type: string
+      size:
+        type: integer
+    type: object
+  arborist.HTTPError:
+    properties:
+      code:
+        type: integer
+      message:
+        type: string
+    type: object
+  config.ButtonActionArgs:
+    properties:
+      fileFields:
+        items:
+          type: string
+        type: array
+      referenceIdFieldInDataIndex:
+        type: string
+      referenceIdFieldInResourceIndex:
+        type: string
+      resourceIdField:
+        type: string
+      resourceIndexType:
+        type: string
+    type: object
+  config.ButtonConfig:
+    properties:
+      action:
+        type: string
+      actionArgs:
+        $ref: '#/definitions/config.ButtonActionArgs'
+      enabled:
+        type: boolean
+      fileName:
+        type: string
+      leftIcon:
+        type: string
+      rightIcon:
+        type: string
+      title:
+        type: string
+      type:
+        type: string
+    type: object
+  config.Chart:
+    properties:
+      chartType:
+        type: string
+      title:
+        type: string
+    type: object
+  config.Config:
+    properties:
+      explorerConfig:
+        items:
+          $ref: '#/definitions/config.ConfigItem'
+        type: array
+      sharedFilters:
+        $ref: '#/definitions/config.SharedFiltersConfig'
+    type: object
+  config.ConfigItem:
+    properties:
+      buttons:
+        items:
+          $ref: '#/definitions/config.ButtonConfig'
+        type: array
+      charts:
+        additionalProperties:
+          $ref: '#/definitions/config.Chart'
+        type: object
+      dropdowns:
+        additionalProperties: {}
+        type: object
+      filters:
+        $ref: '#/definitions/config.FiltersConfig'
+      guppyConfig:
+        $ref: '#/definitions/config.GuppyConfig'
+      loginForDownload:
+        type: boolean
+      tabTitle:
+        type: string
+      table:
+        $ref: '#/definitions/config.TableConfig'
+    type: object
+  config.FieldConfig:
+    properties:
+      dataField:
+        type: string
+      field:
+        type: string
+      index:
+        type: string
+      label:
+        type: string
+      type:
+        type: string
+    type: object
+  config.FilterPair:
+    properties:
+      field:
+        type: string
+      index:
+        type: string
+    type: object
+  config.FilterTab:
+    properties:
+      fields:
+        items:
+          type: string
+        type: array
+      fieldsConfig:
+        additionalProperties:
+          $ref: '#/definitions/config.FieldConfig'
+        type: object
+      title:
+        type: string
+    type: object
+  config.FiltersConfig:
+    properties:
+      tabs:
+        items:
+          $ref: '#/definitions/config.FilterTab'
+        type: array
+    type: object
+  config.GuppyConfig:
+    properties:
+      accessibleFieldCheckList:
+        items:
+          type: string
+        type: array
+      accessibleValidationField:
+        type: string
+      dataType:
+        type: string
+      fieldMapping:
+        items:
+          $ref: '#/definitions/config.GuppyFieldMapping'
+        type: array
+      manifestMapping:
+        $ref: '#/definitions/config.ManifestMapping'
+      nodeCountTitle:
+        type: string
+    type: object
+  config.GuppyFieldMapping:
+    properties:
+      field:
+        type: string
+      name:
+        type: string
+    type: object
+  config.ManifestMapping:
+    properties:
+      referenceIdFieldInDataIndex:
+        type: string
+      referenceIdFieldInResourceIndex:
+        type: string
+      resourceIdField:
+        type: string
+      resourceIndexType:
+        type: string
+    type: object
+  config.SharedFiltersConfig:
+    properties:
+      defined:
+        additionalProperties:
+          items:
+            $ref: '#/definitions/config.FilterPair'
+          type: array
+        type: object
+    type: object
+  config.TableColumnsConfig:
+    properties:
+      field:
+        type: string
+      title:
+        type: string
+    type: object
+  config.TableConfig:
+    properties:
+      columns:
+        additionalProperties:
+          $ref: '#/definitions/config.TableColumnsConfig'
+        type: object
+      detailsConfig:
+        $ref: '#/definitions/config.TableDetailsConfig'
+      enabled:
+        type: boolean
+      fields:
+        items:
+          type: string
+        type: array
+    type: object
+  config.TableDetailsConfig:
+    properties:
+      filterField:
+        type: string
+      idField:
+        type: string
+      mode:
+        type: string
+      nodeFields:
+        additionalProperties:
+          type: string
+        type: object
+      nodeType:
+        type: string
+      panel:
+        type: string
+      title:
+        type: string
+    type: object
+  gecko.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/arborist.HTTPError'
+    type: object
+  gecko.jsonResponse:
+    type: object
+  qdrant.CollectionParamsDiff:
+    properties:
+      on_disk_payload:
+        description: If true - point's payload will not be stored in memory
+        type: boolean
+      read_fan_out_factor:
+        description: Fan-out every read request to these many additional remote nodes
+          (and return first available response)
+        type: integer
+      replication_factor:
+        description: Number of replicas of each shard that network tries to maintain
+        type: integer
+      write_consistency_factor:
+        description: How many replicas should apply the operation for us to consider
+          it successful
+        type: integer
+    type: object
+  qdrant.Datatype:
+    enum:
+    - 0
+    - 1
+    - 2
+    - 3
+    format: int32
+    type: integer
+    x-enum-varnames:
+    - Datatype_Default
+    - Datatype_Float32
+    - Datatype_Uint8
+    - Datatype_Float16
+  qdrant.HnswConfigDiff:
+    properties:
+      ef_construct:
+        description: Number of neighbours to consider during the index building. Larger
+          the value - more accurate the search, more time required to build the index.
+        type: integer
+      full_scan_threshold:
+        description: |-
+          Minimal size (in KiloBytes) of vectors for additional payload-based indexing.
+          If the payload chunk is smaller than `full_scan_threshold` additional indexing won't be used -
+          in this case full-scan search should be preferred by query planner and additional indexing is not required.
+          Note: 1 Kb = 1 vector of size 256
+        type: integer
+      m:
+        description: Number of edges per node in the index graph. Larger the value
+          - more accurate the search, more space required.
+        type: integer
+      max_indexing_threads:
+        description: |-
+          Number of parallel threads used for background index building.
+          If 0 - automatically select from 8 to 16.
+          Best to keep between 8 and 16 to prevent likelihood of building broken/inefficient HNSW graphs.
+          On small CPUs, less threads are used.
+        type: integer
+      on_disk:
+        description: Store HNSW index on disk. If set to false, the index will be
+          stored in RAM.
+        type: boolean
+      payload_m:
+        description: Number of additional payload-aware links per node in the index
+          graph. If not set - regular M parameter will be used.
+        type: integer
+    type: object
+  qdrant.MaxOptimizationThreads:
+    properties:
+      variant:
+        description: "Types that are assignable to Variant:\n\n\t*MaxOptimizationThreads_Value\n\t*MaxOptimizationThreads_Setting_"
+    type: object
+  qdrant.Modifier:
+    enum:
+    - 0
+    - 1
+    format: int32
+    type: integer
+    x-enum-comments:
+      Modifier_Idf: Apply Inverse Document Frequency
+    x-enum-descriptions:
+    - ""
+    - Apply Inverse Document Frequency
+    x-enum-varnames:
+    - Modifier_None
+    - Modifier_Idf
+  qdrant.OptimizersConfigDiff:
+    properties:
+      default_segment_number:
+        description: |-
+          Target amount of segments the optimizer will try to keep.
+          Real amount of segments may vary depending on multiple parameters:
+
+          - Amount of stored points.
+          - Current write RPS.
+
+          It is recommended to select the default number of segments as a factor of the number of search threads,
+          so that each segment would be handled evenly by one of the threads.
+        type: integer
+      deleted_threshold:
+        description: The minimal fraction of deleted vectors in a segment, required
+          to perform segment optimization
+        type: number
+      deprecated_max_optimization_threads:
+        description: Deprecated in favor of `max_optimization_threads`
+        type: integer
+      flush_interval_sec:
+        description: Interval between forced flushes.
+        type: integer
+      indexing_threshold:
+        description: |-
+          Maximum size (in kilobytes) of vectors allowed for plain index, exceeding this threshold will enable vector indexing
+
+          Default value is 20,000, based on <https://github.com/google-research/google-research/blob/master/scann/docs/algorithms.md>.
+
+          To disable vector indexing, set to `0`.
+
+          Note: 1kB = 1 vector of size 256.
+        type: integer
+      max_optimization_threads:
+        allOf:
+        - $ref: '#/definitions/qdrant.MaxOptimizationThreads'
+        description: |-
+          Max number of threads (jobs) for running optimizations per shard.
+          Note: each optimization job will also use `max_indexing_threads` threads by itself for index building.
+          If "auto" - have no limit and choose dynamically to saturate CPU.
+          If 0 - no optimization threads, optimizations will be disabled.
+      max_segment_size:
+        description: |-
+          Deprecated:
+
+          Do not create segments larger this size (in kilobytes).
+          Large segments might require disproportionately long indexation times,
+          therefore it makes sense to limit the size of segments.
+
+          If indexing speed is more important - make this parameter lower.
+          If search speed is more important - make this parameter higher.
+          Note: 1Kb = 1 vector of size 256
+          If not set, will be automatically selected considering the number of available CPUs.
+        type: integer
+      memmap_threshold:
+        description: |-
+          Maximum size (in kilobytes) of vectors to store in-memory per segment.
+          Segments larger than this threshold will be stored as read-only memmapped file.
+
+          Memmap storage is disabled by default, to enable it, set this threshold to a reasonable value.
+
+          To disable memmap storage, set this to `0`.
+
+          Note: 1Kb = 1 vector of size 256
+        type: integer
+      vacuum_min_vector_number:
+        description: The minimal number of vectors in a segment, required to perform
+          segment optimization
+        type: integer
+    type: object
+  qdrant.QuantizationConfigDiff:
+    properties:
+      quantization:
+        description: "Types that are assignable to Quantization:\n\n\t*QuantizationConfigDiff_Scalar\n\t*QuantizationConfigDiff_Product\n\t*QuantizationConfigDiff_Disabled\n\t*QuantizationConfigDiff_Binary"
+    type: object
+  qdrant.SparseIndexConfig:
+    properties:
+      datatype:
+        allOf:
+        - $ref: '#/definitions/qdrant.Datatype'
+        description: Datatype used to store weights in the index.
+      full_scan_threshold:
+        description: |-
+          Prefer a full scan search upto (excluding) this number of vectors.
+          Note: this is number of vectors, not KiloBytes.
+        type: integer
+      on_disk:
+        description: Store inverted index on disk. If set to false, the index will
+          be stored in RAM.
+        type: boolean
+    type: object
+  qdrant.SparseVectorConfig:
+    properties:
+      map:
+        additionalProperties:
+          $ref: '#/definitions/qdrant.SparseVectorParams'
+        type: object
+    type: object
+  qdrant.SparseVectorParams:
+    properties:
+      index:
+        allOf:
+        - $ref: '#/definitions/qdrant.SparseIndexConfig'
+        description: Configuration of sparse index
+      modifier:
+        allOf:
+        - $ref: '#/definitions/qdrant.Modifier'
+        description: If set - apply modifier to the vector values
+    type: object
+  qdrant.StrictModeConfig:
+    properties:
+      condition_max_size:
+        type: integer
+      enabled:
+        type: boolean
+      filter_max_conditions:
+        type: integer
+      max_collection_payload_size_bytes:
+        type: integer
+      max_collection_vector_size_bytes:
+        type: integer
+      max_points_count:
+        type: integer
+      max_query_limit:
+        type: integer
+      max_timeout:
+        type: integer
+      multivector_config:
+        $ref: '#/definitions/qdrant.StrictModeMultivectorConfig'
+      read_rate_limit:
+        description: Max number of read operations per minute per replica
+        type: integer
+      search_allow_exact:
+        type: boolean
+      search_max_hnsw_ef:
+        type: integer
+      search_max_oversampling:
+        type: number
+      sparse_config:
+        $ref: '#/definitions/qdrant.StrictModeSparseConfig'
+      unindexed_filtering_retrieve:
+        type: boolean
+      unindexed_filtering_update:
+        type: boolean
+      upsert_max_batchsize:
+        type: integer
+      write_rate_limit:
+        description: Max number of write operations per minute per replica
+        type: integer
+    type: object
+  qdrant.StrictModeMultivector:
+    properties:
+      max_vectors:
+        type: integer
+    type: object
+  qdrant.StrictModeMultivectorConfig:
+    properties:
+      multivector_config:
+        additionalProperties:
+          $ref: '#/definitions/qdrant.StrictModeMultivector'
+        type: object
+    type: object
+  qdrant.StrictModeSparse:
+    properties:
+      max_length:
+        type: integer
+    type: object
+  qdrant.StrictModeSparseConfig:
+    properties:
+      sparse_config:
+        additionalProperties:
+          $ref: '#/definitions/qdrant.StrictModeSparse'
+        type: object
+    type: object
+  qdrant.UpdateCollection:
+    properties:
+      collection_name:
+        description: Name of the collection
+        type: string
+      hnsw_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.HnswConfigDiff'
+        description: New HNSW parameters for the collection index
+      optimizers_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.OptimizersConfigDiff'
+        description: New configuration parameters for the collection. This operation
+          is blocking, it will only proceed once all current optimizations are complete
+      params:
+        allOf:
+        - $ref: '#/definitions/qdrant.CollectionParamsDiff'
+        description: New configuration parameters for the collection
+      quantization_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.QuantizationConfigDiff'
+        description: Quantization configuration of vector
+      sparse_vectors_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.SparseVectorConfig'
+        description: New sparse vector parameters
+      strict_mode_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.StrictModeConfig'
+        description: New strict mode configuration
+      timeout:
+        description: Wait timeout for operation commit in seconds if blocking, if
+          not specified - default value will be supplied
+        type: integer
+      vectors_config:
+        allOf:
+        - $ref: '#/definitions/qdrant.VectorsConfigDiff'
+        description: New vector parameters
+    type: object
+  qdrant.VectorsConfigDiff:
+    properties:
+      config:
+        description: "Types that are assignable to Config:\n\n\t*VectorsConfigDiff_Params\n\t*VectorsConfigDiff_ParamsMap"
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API for managing configurations and a generalizable vector database
+    API
+  title: Gecko API
+  version: 1.0.0
+paths:
+  /config/{configId}:
+    delete:
+      description: Delete configuration by ID
+      parameters:
+      - description: Configuration ID
+        in: path
+        name: configId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Configuration deleted
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Config not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Delete a configuration
+      tags:
+      - Config
+    get:
+      description: Retrieve configuration by ID
+      parameters:
+      - description: Configuration ID
+        in: path
+        name: configId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Configuration details
+          schema:
+            $ref: '#/definitions/config.Config'
+        "404":
+          description: Config not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Get a specific configuration
+      tags:
+      - Config
+    put:
+      consumes:
+      - application/json
+      description: Replaces or updates the configuration items for a given config
+        ID
+      parameters:
+      - description: Configuration ID
+        in: path
+        name: configId
+        required: true
+        type: string
+      - description: Configuration items to set
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/config.Config'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Configuration successfully updated
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid request body
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "404":
+          description: Config not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Update configuration
+      tags:
+      - Config
+  /config/list:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve a list of all available configurations
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/config.Config'
+            type: array
+        "404":
+          description: No configs found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: List all configurations
+      tags:
+      - Config
+  /health:
+    get:
+      description: Checks the database connection and returns the server status
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Healthy
+          schema:
+            type: string
+        "500":
+          description: Database unavailable
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Health check endpoint
+      tags:
+      - Health
+  /vector/collections:
+    get:
+      description: Retrieve all collections
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Collections listed
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: List all collections
+      tags:
+      - Vector Collections
+  /vector/collections/{collection}:
+    delete:
+      consumes:
+      - application/json
+      description: Deletes a collection and all its points
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Delete successful
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "404":
+          description: Collection not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Delete collection
+      tags:
+      - Vector Collections
+    get:
+      consumes:
+      - application/json
+      description: Returns information about a collection by name
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Collection info
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid collection name
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "404":
+          description: Collection not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Get collection info
+      tags:
+      - Vector Collections
+    patch:
+      consumes:
+      - application/json
+      description: Updates an existing collection by name
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Update collection request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/qdrant.UpdateCollection'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Update successful
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "404":
+          description: Collection not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Update collection
+      tags:
+      - Vector Collections
+    put:
+      consumes:
+      - application/json
+      description: Create a collection with vector configuration
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Collection configuration
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/adapter.CreateCollectionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Collection created
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Create a new collection
+      tags:
+      - Vector Collections
+  /vector/collections/{collection}/points:
+    put:
+      consumes:
+      - application/json
+      description: Inserts new points or updates existing ones
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Upsert request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/adapter.UpsertRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Upsert successful
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Upsert points
+      tags:
+      - Vector
+  /vector/collections/{collection}/points/{id}:
+    get:
+      consumes:
+      - application/json
+      description: Returns a single point (with vectors and payload) by ID
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Point UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Point found
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid request or ID
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "404":
+          description: Point not found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Get point
+      tags:
+      - Vector
+  /vector/collections/{collection}/points/delete:
+    post:
+      consumes:
+      - application/json
+      description: Deletes points in a collection based on filter or IDs
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Delete points request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/adapter.DeletePoints'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Delete successful
+          schema:
+            $ref: '#/definitions/gecko.jsonResponse'
+        "400":
+          description: Invalid request
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Delete points
+      tags:
+      - Vector
+  /vector/collections/{collection}/points/search:
+    post:
+      consumes:
+      - application/json
+      description: Executes a kNN or recommendation query against a collection
+      parameters:
+      - description: Collection name
+        in: path
+        name: collection
+        required: true
+        type: string
+      - description: Query request body
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/adapter.QueryPointsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/adapter.QueryPointsResponseItem'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Query points in a collection
+      tags:
+      - Vector Search
+securityDefinitions:
+  ApiKeyAuth:
+    description: JWT token for authentication
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -31,27 +31,27 @@ func (cache *LogCache) write(logger arborist.Logger) {
 	}
 }
 
-func (handler *LogHandler) Print(format string, a ...interface{}) {
+func (handler *LogHandler) Print(format string, a ...any) {
 	handler.logger.Print(sprintf(format, a...))
 }
 
-func (handler *LogHandler) Debug(format string, a ...interface{}) {
+func (handler *LogHandler) Debug(format string, a ...any) {
 	handler.logger.Print(logMsg(LogLevelDebug, format, a...))
 }
 
-func (handler *LogHandler) Info(format string, a ...interface{}) {
+func (handler *LogHandler) Info(format string, a ...any) {
 	handler.logger.Print(logMsg(LogLevelInfo, format, a...))
 }
 
-func (handler *LogHandler) Warning(format string, a ...interface{}) {
+func (handler *LogHandler) Warning(format string, a ...any) {
 	handler.logger.Print(logMsg(LogLevelWarning, format, a...))
 }
 
-func (handler *LogHandler) Error(format string, a ...interface{}) {
+func (handler *LogHandler) Error(format string, a ...any) {
 	handler.logger.Print(logMsg(LogLevelError, format, a...))
 }
 
-func (cache *LogCache) Debug(format string, a ...interface{}) {
+func (cache *LogCache) Debug(format string, a ...any) {
 	log := Log{
 		lvl: LogLevelDebug,
 		msg: logMsg(LogLevelDebug, format, a...),
@@ -59,7 +59,7 @@ func (cache *LogCache) Debug(format string, a ...interface{}) {
 	cache.logs = append(cache.logs, log)
 }
 
-func (cache *LogCache) Info(format string, a ...interface{}) {
+func (cache *LogCache) Info(format string, a ...any) {
 	log := Log{
 		lvl: LogLevelInfo,
 		msg: logMsg(LogLevelInfo, format, a...),
@@ -67,7 +67,7 @@ func (cache *LogCache) Info(format string, a ...interface{}) {
 	cache.logs = append(cache.logs, log)
 }
 
-func (cache *LogCache) Warning(format string, a ...interface{}) {
+func (cache *LogCache) Warning(format string, a ...any) {
 	log := Log{
 		lvl: LogLevelWarning,
 		msg: logMsg(LogLevelWarning, format, a...),
@@ -75,7 +75,7 @@ func (cache *LogCache) Warning(format string, a ...interface{}) {
 	cache.logs = append(cache.logs, log)
 }
 
-func (cache *LogCache) Error(format string, a ...interface{}) {
+func (cache *LogCache) Error(format string, a ...any) {
 	log := Log{
 		lvl: LogLevelError,
 		msg: logMsg(LogLevelError, format, a...),
@@ -83,7 +83,7 @@ func (cache *LogCache) Error(format string, a ...interface{}) {
 	cache.logs = append(cache.logs, log)
 }
 
-func logMsg(lvl arborist.LogLevel, format string, a ...interface{}) string {
+func logMsg(lvl arborist.LogLevel, format string, a ...any) string {
 	msg := sprintf(format, a...)
 	msg = fmt.Sprintf("%s: %s", lvl, msg)
 	// get the call from 2 stack frames above this
@@ -98,7 +98,7 @@ func logMsg(lvl arborist.LogLevel, format string, a ...interface{}) string {
 	return msg
 }
 
-func sprintf(format string, a ...interface{}) string {
+func sprintf(format string, a ...any) string {
 	var msg string
 	if len(a) == 0 {
 		msg = format

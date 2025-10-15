@@ -85,6 +85,8 @@ type ButtonActionArgs struct {
 	FileFields                      []string `json:"fileFields,omitempty"`
 }
 
+// ConfigItem represents an individual configuration item
+// @Schema
 type ConfigItem struct {
 	TabTitle         string           `json:"tabTitle"`
 	GuppyConfig      GuppyConfig      `json:"guppyConfig"`
@@ -94,4 +96,18 @@ type ConfigItem struct {
 	Dropdowns        map[string]any   `json:"dropdowns,omitempty"`
 	Buttons          []ButtonConfig   `json:"buttons,omitempty"`
 	LoginForDownload bool             `json:"loginForDownload,omitempty"`
+}
+
+type Config struct {
+	SharedFilters  SharedFiltersConfig `json:"sharedFilters,omitempty"`
+	ExplorerConfig []ConfigItem        `json:"explorerConfig"`
+}
+
+type SharedFiltersConfig struct {
+	SharedFilter map[string][]FilterPair `json:"defined"`
+}
+
+type FilterPair struct {
+	Index string `json:"index"`
+	Field string `json:"field"`
 }

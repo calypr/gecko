@@ -1,6 +1,7 @@
 package gecko
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +11,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ACED-IDP/gecko/gecko/config"
+	"github.com/iris-contrib/swagger"
+	"github.com/iris-contrib/swagger/swaggerFiles"
 	"github.com/jmoiron/sqlx"
 	"github.com/kataras/iris/v12"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/arborist/arborist"
 )
 
@@ -21,11 +24,12 @@ type LogHandler struct {
 }
 
 type Server struct {
-	iris   *iris.Application
-	db     *sqlx.DB
-	jwtApp arborist.JWTDecoder
-	logger *LogHandler
-	stmts  *arborist.CachedStmts
+	iris         *iris.Application
+	db           *sqlx.DB
+	jwtApp       arborist.JWTDecoder
+	logger       *LogHandler
+	stmts        *arborist.CachedStmts
+	qdrantClient *qdrant.Client
 }
 
 func NewServer() *Server {
@@ -48,6 +52,11 @@ func (server *Server) WithDB(db *sqlx.DB) *Server {
 	return server
 }
 
+func (server *Server) WithQdrantClient(client *qdrant.Client) *Server {
+	server.qdrantClient = client
+	return server
+}
+
 func (server *Server) Init() (*Server, error) {
 	if server.db == nil {
 		return nil, errors.New("gecko server initialized without database")
@@ -58,7 +67,10 @@ func (server *Server) Init() (*Server, error) {
 	if server.logger == nil {
 		return nil, errors.New("gecko server initialized without logger")
 	}
-	server.logger.Info("DB: %#v, JWTApp: %#v, Logger: %#v", server.db, server.jwtApp, server.logger)
+	if server.qdrantClient == nil {
+		return nil, errors.New("gecko server initialized without Qdrant client")
+	}
+	server.logger.Info("Gecko server initialized successfully.")
 	return server, nil
 }
 
@@ -67,14 +79,51 @@ func (server *Server) MakeRouter() *iris.Application {
 	if router == nil {
 		server.logger.Error("Failed to initialize router")
 	}
+
+	// Serve your swagger.json from /swagger/doc.json
+	router.Get("/swagger/doc.json", func(ctx iris.Context) {
+		ctx.ServeFile("./docs/swagger.json")
+	})
+
 	router.Use(recoveryMiddleware)
+	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
 	router.Get("/health", server.handleHealth)
 	router.Get("/config/{configId}", server.handleConfigGET)
 	router.Put("/config/{configId}", server.handleConfigPUT)
+	router.Get("/config/list", server.handleConfigListGET)
 	router.Delete("/config/{configId}", server.handleConfigDELETE)
 
-	// Optionally keep UseRouter if needed, with safety checks
+	vectorRouter := router.Party("/vector")
+	{
+		swaggerUI := swagger.Handler(swaggerFiles.Handler,
+			swagger.URL("/vector/swagger/doc.json"),
+			swagger.DeepLinking(true),
+			swagger.Prefix("/vector/swagger"),
+		)
+
+		vectorRouter.Get("/swagger/doc.json", func(ctx iris.Context) {
+			ctx.ServeFile("./docs/swagger.json")
+		})
+		vectorRouter.Get("/swagger", swaggerUI)
+		vectorRouter.Get("/swagger/{any:path}", swaggerUI)
+		collections := vectorRouter.Party("/collections")
+		{
+			collections.Get("", server.handleListCollections)
+			collections.Put("/{collection}", server.handleCreateCollection)
+			collections.Get("/{collection}", server.handleGetCollection)
+			collections.Patch("/{collection}", server.handleUpdateCollection)
+			collections.Delete("/{collection}", server.handleDeleteCollection)
+			points := collections.Party("/{collection}/points")
+			{
+				points.Put("", server.handleUpsertPoints)
+				points.Get("/{id}", server.handleGetPoint)
+				points.Post("/search", server.handleQueryPoints)
+				points.Post("/delete", server.handleDeletePoints)
+			}
+		}
+	}
+
 	router.UseRouter(func(ctx iris.Context) {
 		req := ctx.Request()
 		if req == nil || req.URL == nil {
@@ -87,7 +136,6 @@ func (server *Server) MakeRouter() *iris.Application {
 		ctx.Next()
 	})
 
-	// Build the router to ensure it's ready for net/http
 	if err := router.Build(); err != nil {
 		server.logger.Error("Failed to build Iris router: %v", err)
 	}
@@ -105,92 +153,15 @@ func recoveryMiddleware(ctx iris.Context) {
 	ctx.Next()
 }
 
-func (server *Server) handleConfigGET(ctx iris.Context) {
-	configId := ctx.Params().Get("configId")
-	doc, err := configGET(server.db, configId)
-	if doc == nil && err == nil {
-		msg := fmt.Sprintf("no configId found with configId: %s", configId)
-		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	if err != nil {
-		msg := fmt.Sprintf("config query failed: %s", err.Error())
-		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	server.logger.Info("%#v", doc)
-	_ = jsonResponseFrom(doc, http.StatusOK).write(ctx)
-}
-
-func (server *Server) handleConfigDELETE(ctx iris.Context) {
-	configId := ctx.Params().Get("configId")
-	doc, err := configDELETE(server.db, configId)
-	if doc == false && err == nil {
-		msg := fmt.Sprintf("no configId found with configId: %s", configId)
-		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	if err != nil {
-		msg := fmt.Sprintf("config query failed: %s", err.Error())
-		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-
-	okmsg := map[string]any{"code": 200, "message": fmt.Sprintf("DELETED: %s", configId)}
-	server.logger.Info("%#v", okmsg)
-	_ = jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
-}
-
-func (server *Server) handleConfigPUT(ctx iris.Context) {
-	configId := ctx.Params().Get("configId")
-	data := []config.ConfigItem{}
-	body, err := ctx.GetBody()
-	if err != nil {
-		msg := fmt.Sprintf("GetBody() failed: %s", err.Error())
-		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	if !json.Valid(body) {
-		msg := "Invalid JSON format"
-		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	errResponse := unmarshal(body, &data)
-	if errResponse != nil {
-		msg := fmt.Sprintf("body data unmarshal failed: %s", errResponse.err)
-		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-	err = configPUT(server.db, configId, data)
-	if err != nil {
-		msg := fmt.Sprintf("configPut failed: %s", err.Error())
-		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-
-	okmsg := map[string]any{"code": 200, "message": fmt.Sprintf("ACCEPTED: %s", configId)}
-	server.logger.Info("%#v", okmsg)
-	_ = jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
-}
-
+// handleHealth godoc
+// @Summary Health check endpoint
+// @Description Checks the database connection and returns the server status
+// @Tags Health
+// @Produce json
+// @Success 200 {string} string "Healthy"
+// @Failure 500 {object} ErrorResponse "Database unavailable"
+// @Router /health [get]
 func (server *Server) handleHealth(ctx iris.Context) {
-	server.logger.Info("Entering handleHealth")
 	err := server.db.Ping()
 	if err != nil {
 		server.logger.Error("Database ping failed: %v", err)
@@ -224,7 +195,10 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 	if len(body) == 0 {
 		return newErrorResponse("empty request body", http.StatusBadRequest, nil)
 	}
-	err := json.Unmarshal(body, x)
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(x)
 	if err != nil {
 		structType := reflect.TypeOf(x)
 		if structType.Kind() == reflect.Ptr {
@@ -243,6 +217,7 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 		)
 		return response
 	}
+
 	return nil
 }
 

@@ -9,11 +9,10 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.22.6'
+        go-version: '1.24.2'
 
     - name: Start PostgreSQL
       run: |
@@ -33,7 +32,6 @@ jobs:
           fi
           sleep 1
         done
-
     # Create database and setup schema
     - name: Setup Database
       run: |
@@ -49,8 +47,35 @@ jobs:
       env:
         PGPASSWORD: your_strong_password
 
+
+
+    - name: Start Qdrant
+      run: |
+        docker rm -f gecko-qdrant-test > /dev/null 2>&1 || true
+
+        docker run -d \
+          --name gecko-qdrant-test \
+          -p 6334:6334 \
+          -e QDRANT__SERVICE__API_KEY=your_qdrant_api_key \
+          qdrant/qdrant:latest > /dev/null
+
+        # Wait for Qdrant to be ready
+        for i in {1..30}; do
+          if curl --silent --fail http://localhost:6334/readyz > /dev/null; then
+            break
+          fi
+          sleep 1
+        done
+
+
     - name: Start Application
       run: |
         make
-        ./bin/gecko -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" -port 8080 &
+        ./bin/gecko -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" -port 8080 -qdrant-api-key "your_qdrant_api_key" -qdrant-host localhost -qdrant-port 6334 &
+        for i in {1..30}; do
+          if curl --silent --fail http://localhost:8080/health > /dev/null; then
+            break
+          fi
+          sleep 1
+        done
         go test -v ./...
