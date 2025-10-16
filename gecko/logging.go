@@ -26,29 +26,22 @@ type Log struct {
 }
 
 func (cache *LogCache) write(logger arborist.Logger) {
-	for _, log := range cache.logs {
-		logger.Print(log.msg)
+	if l, ok := logger.(*LogHandler); ok {
+		for _, log := range cache.logs {
+			switch log.lvl {
+			case LogLevelDebug:
+				l.Debug("%s", log.msg)
+			case LogLevelInfo:
+				l.Info("%s", log.msg)
+			case LogLevelWarning:
+				l.Warning("%s", log.msg)
+			case LogLevelError:
+				l.Error("%s", log.msg)
+			default:
+				l.Print("%s", log.msg)
+			}
+		}
 	}
-}
-
-func (handler *LogHandler) Print(format string, a ...any) {
-	handler.logger.Print(sprintf(format, a...))
-}
-
-func (handler *LogHandler) Debug(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelDebug, format, a...))
-}
-
-func (handler *LogHandler) Info(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelInfo, format, a...))
-}
-
-func (handler *LogHandler) Warning(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelWarning, format, a...))
-}
-
-func (handler *LogHandler) Error(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelError, format, a...))
 }
 
 func (cache *LogCache) Debug(format string, a ...any) {
@@ -81,6 +74,26 @@ func (cache *LogCache) Error(format string, a ...any) {
 		msg: logMsg(LogLevelError, format, a...),
 	}
 	cache.logs = append(cache.logs, log)
+}
+
+func (handler *LogHandler) Print(format string, a ...any) {
+	handler.logger.Print(sprintf(format, a...))
+}
+
+func (handler *LogHandler) Debug(format string, a ...any) {
+	handler.logger.Print(logMsg(LogLevelDebug, format, a...))
+}
+
+func (handler *LogHandler) Info(format string, a ...any) {
+	handler.logger.Print(logMsg(LogLevelInfo, format, a...))
+}
+
+func (handler *LogHandler) Warning(format string, a ...any) {
+	handler.logger.Print(logMsg(LogLevelWarning, format, a...))
+}
+
+func (handler *LogHandler) Error(format string, a ...any) {
+	handler.logger.Print(logMsg(LogLevelError, format, a...))
 }
 
 func logMsg(lvl arborist.LogLevel, format string, a ...any) string {

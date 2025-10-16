@@ -37,7 +37,14 @@ func main() {
 	var qdrantPortFlag = flag.Int("qdrant-port", 0, "Qdrant port (overrides QDRANT_PORT env var)")
 	var qdrantAPIKeyFlag = flag.String("qdrant-api-key", "", "Qdrant API Key (overrides QDRANT_API_KEY env var)")
 
+	var gripGraphName = flag.String("grip-graph-name", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
+
 	flag.Parse()
+
+	gripGraph := *gripGraphName
+	if gripGraph == "" {
+		gripGraph = os.Getenv("GRIP_GRAPH")
+	}
 
 	qdrantHost := *qdrantHostFlag
 	if qdrantHost == "" {

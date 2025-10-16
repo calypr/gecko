@@ -15,10 +15,8 @@ import (
 // @Summary Retrieve directory information for a project
 // @Description Retrieve directory details for the given project ID and Directory path
 // @Tags Directory
-// @Accept json
 // @Produce json
 // @Param project_id path string true "Project ID (format: program-project)"
-// @Param body body DirectoryRequest true "Directory path"
 // @Success 200 {object} map[string]interface{} "Directory information"
 // @Failure 400 {object} ErrorResponse "Invalid request body or Directory path"
 // @Failure 500 {object} ErrorResponse "Server error"
@@ -31,7 +29,7 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		ctx.StopExecution()
 		return
 	}
-	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Within("auth_resource_path", projs)).As("f0").Render(map[string]any{"project": "$f0.auth_resource_path"})
+	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Within("auth_resource_path", projs...)).As("f0").Render(map[string]any{"project": "$f0.auth_resource_path"})
 	res, err := server.gripqlClient.Traversal(
 		ctx,
 		&gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements},
@@ -51,11 +49,7 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		}
 		out = append(out, renda)
 	}
-	jsonResponseFrom(out, 200)
-}
-
-type DirectoryRequest struct {
-	Directory string `json:"Dir"` // POSIX path of the directory
+	jsonResponseFrom(out, 200).write(ctx)
 }
 
 type DirectoryResponse struct {
@@ -69,35 +63,43 @@ type DirectoryResponse struct {
 // @Summary Retrieve directory information for a project
 // @Description Retrieve directory details for the given project ID and Directory path
 // @Tags Directory
-// @Accept json
 // @Produce json
 // @Param project_id path string true "Project ID (format: program-project)"
-// @Param body body DirectoryRequest true "Directory path"
+// @Param directory_path path string true "Directory Path (format: post path string)"
 // @Success 200 {object} map[string]interface{} "Directory information"
 // @Failure 400 {object} ErrorResponse "Invalid request body or Directory path"
+// @Failure 403 {object} ErrorResponse "User is not allowed on any resource path"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /dir/{project_id} [get]
+// @Router /dir/{project_id}?directory={directory_path} [get]
 func (server *Server) handleDirGet(ctx iris.Context) {
 	projectId := ctx.Params().Get("project_id")
-	var req DirectoryRequest
-	if err := ctx.ReadJSON(&req); err != nil {
-		errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: %v", err), http.StatusBadRequest, nil)
+	dirPath := ctx.URLParam("directory")
+
+	if dirPath == "" || !isValidPosixPath(&dirPath) {
+		errResponse := newErrorResponse(fmt.Sprintf("Invalid or missing Directory path: '%s'", dirPath), http.StatusBadRequest, nil)
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 
-	if req.Directory == "" || !isValidPosixPath(&req.Directory) {
-		errResponse := newErrorResponse(fmt.Sprintf("Invalid or missing Directory path"), http.StatusBadRequest, nil)
+	project_split := strings.Split(projectId, "-")
+	if len(project_split) != 2 {
+		errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Request().URL)), http.StatusNotFound, nil)
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
+		ctx.StopExecution()
 		return
 	}
+	projectId = "/programs/" + project_split[0] + "/projects/" + project_split[1]
 
-	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Eq("auth_resource_path", projectId)).
-		OutE("rootDir_Directory").OutNull().HasLabel("Directory", "DocumentReference")
+	// Shouldn't have to filter on base query because rootDir_Directory edge only ever connects to the root directory
+	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Eq("auth_resource_path", projectId)).OutE("rootDir_Directory").OutNull().OutNull()
+	if dirPath != "/" {
+		for splStr := range strings.SplitSeq(dirPath[1:], "/") {
+			q = q.Has(gripql.Eq("name", splStr)).OutNull()
+		}
+	}
 
-	q = buildQueryFromPath(&req.Directory, q)
 	res, err := server.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements})
 	if err != nil {
 		errResponse := newErrorResponse("internal server error", http.StatusInternalServerError, &err)
@@ -111,28 +113,21 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 		out = append(out, r.GetVertex())
 	}
 
-	//ctx.JSON()
-}
-
-func buildQueryFromPath(p *string, query *gripql.Query) *gripql.Query {
-	for splStr := range strings.SplitSeq(*p, "/") {
-		query = query.OutNull().HasLabel("Directory", "DocumentReference").Has(gripql.Eq("name", splStr))
-	}
-	return query
+	jsonResponseFrom(out, 200).write(ctx)
 }
 
 func isValidPosixPath(p *string) bool {
 	if strings.ContainsRune(*p, '\000') {
 		return false
 	}
-	if path.IsAbs(*p) {
+	if !path.IsAbs(*p) {
 		return false
 	}
 	cleaned := path.Clean(*p)
 	if *p == "" || cleaned == "." {
 		return false
 	}
-	if strings.HasPrefix(cleaned, "..") {
+	if cleaned == ".." || strings.HasPrefix(cleaned, "/..") {
 		return false
 	}
 	if strings.Contains(*p, "\\") {

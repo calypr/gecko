@@ -61,12 +61,16 @@ func (server *Server) WithQdrantClient(client *qdrant.Client) *Server {
 	return server
 }
 
-func (server *Server) WithGripqlClient(client *gripql.Client) *Server {
+func (server *Server) WithGripqlClient(client *gripql.Client, gripGraphName string) *Server {
 	server.gripqlClient = client
+	server.gripGraphName = gripGraphName
 	return server
 }
 
 func (server *Server) Init() (*Server, error) {
+	if server.gripGraphName == "" {
+		return nil, errors.New("grip graph name not configured")
+	}
 	if server.db == nil {
 		return nil, errors.New("gecko server initialized without database")
 	}
@@ -100,8 +104,8 @@ func (server *Server) MakeRouter() *iris.Application {
 	router.Get("/health", server.handleHealth)
 
 	var mware middleware.JWTHandler = &middleware.ProdJWTHandler{}
-	router.Get("/dir", server.logRequestMiddleware, server.handleListProjects)
-	router.Get("/dir/{project_id:string}", server.logRequestMiddleware, server.ProjLevelAuthMware(mware), server.handleDirGet)
+	router.Get("/dir", server.handleListProjects)
+	router.Get("/dir/{project_id:string}", server.ProjLevelAuthMware(mware), server.handleDirGet)
 
 	router.Get("/config/{configId}", server.handleConfigGET)
 	router.Put("/config/{configId}", server.handleConfigPUT)

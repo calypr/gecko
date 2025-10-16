@@ -64,7 +64,7 @@ func (server *Server) ProjLevelAuthMware(jwtHandler middleware.JWTHandler) iris.
 			}
 
 			convErr = ParseAccess(resourceList, project_id, "read")
-			if err != nil {
+			if convErr != nil {
 				convErr.log.write(server.logger)
 				_ = convErr.write(ctx)
 				ctx.StopExecution()
