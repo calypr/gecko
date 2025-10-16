@@ -115,7 +115,7 @@ func main() {
 		WithJWTApp(jwtApp).
 		WithDB(db).
 		WithQdrantClient(qdrantClient). // This client is now correctly configured
-		WithGripqlClient(&gripqlClient).
+		WithGripqlClient(&gripqlClient, gripGraph).
 		Init()
 	if err != nil {
 		log.Fatalf("Failed to initialize gecko server: %v", err)
