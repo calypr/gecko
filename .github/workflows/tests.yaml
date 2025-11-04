@@ -25,22 +25,16 @@ jobs:
           -e POSTGRES_USER=postgres \
           postgres:10.4 > /dev/null
 
-        echo "Waiting for PostgreSQL to be ready on port 8081..."
+        # Wait for PostgreSQL to be ready
         for i in {1..30}; do
           if docker exec gecko-postgres-test pg_isready -U postgres -h localhost; then
             break
           fi
           sleep 1
         done
-        if [ $i -eq 30 ]; then
-          echo "PostgreSQL did not become ready in time."
-          exit 1
-        fi
-        echo "PostgreSQL is ready."
 
     - name: Setup Database
       run: |
-        echo "Creating database 'testdb' and complex schema..."
         docker exec gecko-postgres-test psql -U postgres -c "CREATE DATABASE testdb;"
 
         docker exec gecko-postgres-test psql -U postgres -d testdb -c "
@@ -90,42 +84,29 @@ jobs:
           -e QDRANT__SERVICE__API_KEY=your_qdrant_api_key \
           qdrant/qdrant:latest > /dev/null
 
-        echo "Waiting for Qdrant to be ready on port 6334..."
+        # Wait for Qdrant to be ready
         for i in {1..30}; do
           if curl --silent --fail http://localhost:6334/readyz > /dev/null; then
             break
           fi
           sleep 1
         done
-        if [ $i -eq 30 ]; then
-          echo "Qdrant did not become ready in time."
-          exit 1
-        fi
-        echo "Qdrant is ready."
 
 
     - name: Run Tests
       run: |
         make
-
         ./bin/gecko \
           -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
           -port 8080 \
           -qdrant-api-key "your_qdrant_api_key" \
           -qdrant-host localhost \
           -qdrant-port 6334 &
-
-        echo "Waiting for application to be ready on port 8080..."
+        # Wait for application to be ready
         for i in {1..30}; do
           if curl --silent --fail http://localhost:8080/health > /dev/null; then
             break
           fi
           sleep 1
         done
-        if [ $i -eq 30 ]; then
-          echo "Application did not become ready in time."
-          exit 1
-        fi
-        echo "Application is ready."
-
         go test -v ./...
