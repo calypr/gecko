@@ -95,7 +95,7 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 	// Shouldn't have to filter on base query because rootDir_Directory edge only ever connects to the root directory
 	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Eq("auth_resource_path", projectId)).OutE("rootDir_Directory").OutNull().OutNull()
 	if dirPath != "/" {
-		for splStr := range strings.SplitSeq(dirPath[1:], "/") {
+		for splStr := range strings.SplitSeq(dirPath[1:len(dirPath)-1], "/") {
 			q = q.Has(gripql.Eq("name", splStr)).OutNull()
 		}
 	}

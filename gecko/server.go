@@ -68,21 +68,28 @@ func (server *Server) WithGripqlClient(client *gripql.Client, gripGraphName stri
 }
 
 func (server *Server) Init() (*Server, error) {
-	if server.gripGraphName == "" {
-		return nil, errors.New("grip graph name not configured")
-	}
-	if server.db == nil {
-		return nil, errors.New("gecko server initialized without database")
-	}
+
+	// --- ESSENTIAL/CORE CHECKS (Must be present for the service to run) ---
+
 	if server.jwtApp == nil {
 		return nil, errors.New("gecko server initialized without JWT app")
 	}
 	if server.logger == nil {
 		return nil, errors.New("gecko server initialized without logger")
 	}
-	if server.qdrantClient == nil {
-		return nil, errors.New("gecko server initialized without Qdrant client")
+
+	// Inform the user about the configured state
+	if server.db == nil {
+		server.logger.Warning("Database endpoints will be disabled.")
 	}
+	if server.qdrantClient == nil {
+		server.logger.Warning("Qdrant endpoints will be disabled.")
+	}
+	// Note: The Grip client check is complex because its existence relies on gripGraphName.
+	if server.gripqlClient == nil || server.gripGraphName == "" {
+		server.logger.Warning("Grip endpoints will be disabled.")
+	}
+
 	server.logger.Info("Gecko server initialized successfully.")
 	return server, nil
 }
@@ -107,10 +114,10 @@ func (server *Server) MakeRouter() *iris.Application {
 	router.Get("/dir", server.handleListProjects)
 	router.Get("/dir/{project_id:string}", server.ProjLevelAuthMware(mware), server.handleDirGet)
 
-	router.Get("/config/{configId}", server.handleConfigGET)
-	router.Put("/config/{configId}", server.handleConfigPUT)
 	router.Get("/config/list", server.handleConfigListGET)
-	router.Delete("/config/{configId}", server.handleConfigDELETE)
+	router.Get("/config/{configType}/{configId}", server.handleConfigGET)
+	router.Put("/config/{configType}/{configId}", server.handleConfigPUT)
+	router.Delete("/config/{configType}/{configId}", server.handleConfigDELETE)
 
 	vectorRouter := router.Party("/vector")
 	{

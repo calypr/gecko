@@ -9,6 +9,7 @@ require (
 	github.com/iris-contrib/swagger v0.0.0-20230820002204-56b041d3471a
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/kataras/iris/v12 v12.2.11
+	github.com/lib/pq v1.10.9
 	github.com/qdrant/go-client v1.15.0
 	github.com/stretchr/testify v1.10.0
 	github.com/swaggo/swag v1.16.6
@@ -59,7 +60,6 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.8 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/lib/pq v1.10.9 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/mailgun/raymond/v2 v2.0.48 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect

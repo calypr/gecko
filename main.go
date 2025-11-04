@@ -38,7 +38,8 @@ func main() {
 	var qdrantAPIKeyFlag = flag.String("qdrant-api-key", "", "Qdrant API Key (overrides QDRANT_API_KEY env var)")
 
 	var gripGraphName = flag.String("grip-graph-name", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
-
+	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
+	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
 	flag.Parse()
 
 	gripGraph := *gripGraphName
@@ -46,12 +47,19 @@ func main() {
 		gripGraph = os.Getenv("GRIP_GRAPH")
 	}
 
+	gripPortVar := *gripPort
+	if gripPortVar == "" {
+		gripPortVar = os.Getenv("GRIP_PORT")
+	}
+
+	gripHostvar := *gripHost
+	if gripHostvar == "" {
+		gripHostvar = os.Getenv("GRIP_HOST")
+	}
+
 	qdrantHost := *qdrantHostFlag
 	if qdrantHost == "" {
 		qdrantHost = os.Getenv("QDRANT_HOST")
-	}
-	if qdrantHost == "" {
-		qdrantHost = "localhost" // Final default
 	}
 
 	qdrantPort := *qdrantPortFlag
@@ -63,9 +71,6 @@ func main() {
 				qdrantPort = parsedPort
 			}
 		}
-	}
-	if qdrantPort == 0 {
-		qdrantPort = 6334 // Final default
 	}
 
 	qdrantAPIKey := *qdrantAPIKeyFlag
@@ -80,44 +85,83 @@ func main() {
 	if finalJwkEndpoint == "" {
 		logger.Println("WARNING: no $JWKS_ENDPOINT or --jwks specified; endpoints requiring JWT validation will error")
 	}
-
-	db, err := sqlx.Open("postgres", *dbUrl)
-	if err != nil {
-		logger.Fatalf("Failed to connect to database: %v", err)
-	}
-	if err = db.Ping(); err != nil {
-		logger.Fatalf("DB ping failed: %v", err)
-	}
-	defer db.Close()
-
 	jwtApp := authutils.NewJWTApplication(finalJwkEndpoint)
 
-	logger.Printf("Connecting to Qdrant at %s:%d", qdrantHost, qdrantPort)
-	qdrantConfig := &qdrant.Config{
-		Host:   qdrantHost,
-		Port:   qdrantPort,
-		APIKey: qdrantAPIKey,
-	}
-
-	qdrantClient, err := qdrant.NewClient(qdrantConfig)
-	if err != nil {
-		logger.Fatalf("Failed to initialize Qdrant client: %v", err)
-	}
-
-	gripqlClient, err := gripql.Connect(rpc.ConfigWithDefaults("grip-service:8202"), false)
-	if err != nil {
-		log.Fatalf("Failed to initialize gecko server: %v", err)
-	}
-
-	// 4. Initialize the server. It will now use the correctly configured client.
-	geckoServer, err := gecko.NewServer().
+	serverBuilder := gecko.NewServer().
 		WithLogger(logger).
-		WithJWTApp(jwtApp).
-		WithDB(db).
-		WithQdrantClient(qdrantClient). // This client is now correctly configured
-		WithGripqlClient(&gripqlClient, gripGraph).
-		Init()
+		WithJWTApp(jwtApp)
+
+	if *dbUrl != "" {
+		db, err := sqlx.Open("postgres", *dbUrl)
+		if err != nil {
+			logger.Printf("WARNING: Failed to open database connection with URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
+		} else {
+			if err = db.Ping(); err != nil {
+				logger.Printf("WARNING: DB ping failed for URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
+				db.Close()
+			} else {
+				logger.Println("Successfully connected to PostgreSQL database.")
+				defer db.Close()
+				serverBuilder = serverBuilder.WithDB(db)
+			}
+		}
+	} else {
+		logger.Println("INFO: No --db URL specified. Database endpoints will not be available.")
+	}
+
+	if qdrantHost != "" && qdrantPort != 0 {
+		if qdrantHost == "localhost" && *qdrantHostFlag == "" && os.Getenv("QDRANT_HOST") == "" {
+			// Skip connection attempt if only default values would be used and no flag/env was set
+			// This logic is slightly complex due to your existing defaults;
+			// A simpler approach is to only check if the host was explicitly set.
+			// Let's rely on the user to provide *at least* the host flag if they want Qdrant.
+		} else {
+			// Re-apply final defaults only if we decide to connect
+			if qdrantHost == "" {
+				qdrantHost = "localhost" // Final default
+			}
+			if qdrantPort == 0 {
+				qdrantPort = 6334
+			}
+
+			logger.Printf("Attempting to connect to Qdrant at %s:%d", qdrantHost, qdrantPort)
+			qdrantConfig := &qdrant.Config{
+				Host:   qdrantHost,
+				Port:   qdrantPort,
+				APIKey: qdrantAPIKey,
+			}
+
+			qdrantClient, err := qdrant.NewClient(qdrantConfig)
+			if err != nil {
+				logger.Printf("WARNING: Failed to initialize Qdrant client at %s:%d: %v. Qdrant endpoints will not be available.", qdrantHost, qdrantPort, err)
+			} else {
+				logger.Println("Successfully connected to Qdrant.")
+				serverBuilder = serverBuilder.WithQdrantClient(qdrantClient)
+			}
+		}
+	} else {
+		logger.Println("INFO: Qdrant configuration (--qdrant-host or QDRANT_HOST) not fully specified. Qdrant endpoints will not be available.")
+	}
+
+	if gripHostvar != "" && gripPortVar != "" {
+		logger.Printf("Attempting to connect to Grip at %s:%s using graph %s", gripHostvar, gripPortVar, gripGraph)
+		gripqlClient, err := gripql.Connect(rpc.ConfigWithDefaults(gripHostvar+":"+gripPortVar), false)
+		if err != nil {
+			logger.Printf("WARNING: Failed to initialize Grip client: %v. Grip endpoints will not be available.", err)
+		} else {
+			if gripGraph == "" {
+				logger.Println("WARNING: Connected to Grip but no --grip-graph-name or GRIP_GRAPH specified. Grip endpoints may fail.")
+			}
+			logger.Println("Successfully connected to Grip.")
+			serverBuilder = serverBuilder.WithGripqlClient(&gripqlClient, gripGraph)
+		}
+	} else {
+		logger.Println("INFO: Grip configuration (--grip-host and --grip-port or environment variables) not fully specified. Grip endpoints will not be available.")
+	}
+
+	geckoServer, err := serverBuilder.Init()
 	if err != nil {
+		// Log fatal only if the core server initialization fails, independent of the clients
 		log.Fatalf("Failed to initialize gecko server: %v", err)
 	}
 

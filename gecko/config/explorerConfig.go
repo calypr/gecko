@@ -1,5 +1,12 @@
 package config
 
+import "encoding/json"
+
+type Reports struct {
+	Title       string      `json:"Title"`
+	TableConfig TableConfig `json:"tableConfig"`
+}
+
 type FieldConfig struct {
 	Field     string `json:"field,omitempty"`
 	DataField string `json:"dataField,omitempty"`
@@ -22,12 +29,54 @@ type TableConfig struct {
 	Enabled       bool                          `json:"enabled"`
 	Fields        []string                      `json:"fields"`
 	Columns       map[string]TableColumnsConfig `json:"columns,omitempty"`
-	DetailsConfig TableDetailsConfig            `json:"detailsConfig,omitempty"`
+	DetailsConfig TableDetailsConfig            `json:"detailsConfig"`
 }
 
+type SummaryTableColumnType string
+
+// Constants define the allowed values for SummaryTableColumnType.
+const (
+	// SummaryTableColumnTypeString represents a string column type.
+	SummaryTableColumnTypeString SummaryTableColumnType = "string"
+	// SummaryTableColumnTypeNumber represents a number column type.
+	SummaryTableColumnTypeNumber SummaryTableColumnType = "number"
+	// SummaryTableColumnTypeDate represents a date column type.
+	SummaryTableColumnTypeDate SummaryTableColumnType = "date"
+	// SummaryTableColumnTypeArray represents an array column type.
+	SummaryTableColumnTypeArray SummaryTableColumnType = "array"
+	// SummaryTableColumnTypeLink represents a link column type.
+	SummaryTableColumnTypeLink SummaryTableColumnType = "link"
+	// SummaryTableColumnTypeBoolean represents a boolean column type.
+	SummaryTableColumnTypeBoolean SummaryTableColumnType = "boolean"
+	// SummaryTableColumnTypeParagraphs represents a paragraphs column type.
+	SummaryTableColumnTypeParagraphs SummaryTableColumnType = "paragraphs"
+)
+
 type TableColumnsConfig struct {
-	Field string `json:"field"`
-	Title string `json:"title"`
+	Field              string                 `json:"field"`
+	Title              string                 `json:"title"`
+	AccessorPath       string                 `json:"accessorPath,omitempty"`
+	Type               SummaryTableColumnType `json:"type,omitempty"`
+	CellRenderFunction string                 `json:"cellRenderFunction,omitempty"`
+	Params             map[string]any         `json:"params,omitempty"`
+	Width              int                    `json:"width,omitempty"`
+	Sortable           bool                   `json:"sortable,omitempty"`
+	Visable            bool                   `json:"visable,omitempty"`
+}
+
+// MarshalJSON omits "type" field when it's zero value
+func (t TableColumnsConfig) MarshalJSON() ([]byte, error) {
+	type Alias TableColumnsConfig
+	aux := struct {
+		*Alias
+		Type *SummaryTableColumnType `json:"type,omitempty"` // pointer → omits if nil
+	}{
+		Alias: (*Alias)(&t),
+	}
+	if t.Type != "" {
+		aux.Type = &t.Type
+	}
+	return json.Marshal(aux)
 }
 
 type TableDetailsConfig struct {
@@ -46,7 +95,7 @@ type GuppyConfig struct {
 	FieldMapping              []GuppyFieldMapping `json:"fieldMapping,omitempty"`
 	AccessibleFieldCheckList  []string            `json:"accessibleFieldCheckList,omitempty"`
 	AccessibleValidationField string              `json:"accessibleValidationField,omitempty"`
-	ManifestMapping           ManifestMapping     `json:"manifestMapping,omitempty"`
+	ManifestMapping           ManifestMapping     `json:"manifestMapping"`
 }
 
 type GuppyFieldMapping struct {
@@ -74,7 +123,7 @@ type ButtonConfig struct {
 	LeftIcon   string           `json:"leftIcon,omitempty"`
 	RightIcon  string           `json:"rightIcon,omitempty"`
 	FileName   string           `json:"fileName,omitempty"`
-	ActionArgs ButtonActionArgs `json:"actionArgs,omitempty"`
+	ActionArgs ButtonActionArgs `json:"actionArgs"`
 }
 
 type ButtonActionArgs struct {
@@ -99,7 +148,7 @@ type ConfigItem struct {
 }
 
 type Config struct {
-	SharedFilters  SharedFiltersConfig `json:"sharedFilters,omitempty"`
+	SharedFilters  SharedFiltersConfig `json:"sharedFilters"`
 	ExplorerConfig []ConfigItem        `json:"explorerConfig"`
 }
 
