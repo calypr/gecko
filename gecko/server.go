@@ -69,86 +69,90 @@ func (server *Server) WithGripqlClient(client *gripql.Client, gripGraphName stri
 
 func (server *Server) Init() (*Server, error) {
 
-	// --- ESSENTIAL/CORE CHECKS (Must be present for the service to run) ---
-
 	if server.jwtApp == nil {
 		return nil, errors.New("gecko server initialized without JWT app")
 	}
 	if server.logger == nil {
 		return nil, errors.New("gecko server initialized without logger")
 	}
-
-	// Inform the user about the configured state
 	if server.db == nil {
 		server.logger.Warning("Database endpoints will be disabled.")
 	}
 	if server.qdrantClient == nil {
 		server.logger.Warning("Qdrant endpoints will be disabled.")
 	}
-	// Note: The Grip client check is complex because its existence relies on gripGraphName.
 	if server.gripqlClient == nil || server.gripGraphName == "" {
 		server.logger.Warning("Grip endpoints will be disabled.")
 	}
-
 	server.logger.Info("Gecko server initialized successfully.")
 	return server, nil
 }
 
 func (server *Server) MakeRouter() *iris.Application {
 	router := iris.New()
-	if router == nil {
-		server.logger.Error("Failed to initialize router")
-	}
-
-	// Serve your swagger.json from /swagger/doc.json
 	router.Get("/swagger/doc.json", func(ctx iris.Context) {
 		ctx.ServeFile("./docs/swagger.json")
 	})
-
 	router.Use(recoveryMiddleware)
 	router.Use(server.logRequestMiddleware)
 	router.OnErrorCode(iris.StatusNotFound, handleNotFound)
 	router.Get("/health", server.handleHealth)
 
-	var mware middleware.JWTHandler = &middleware.ProdJWTHandler{}
-	router.Get("/dir", server.handleListProjects)
-	router.Get("/dir/{project_id:string}", server.ProjLevelAuthMware(mware), server.handleDirGet)
+	if server.db != nil {
+		router.Get("/dir", server.handleListProjects)
+		router.Get("/dir/{project_id:string}", server.ProjLevelAuthMware(&middleware.ProdJWTHandler{}), server.handleDirGet)
 
-	router.Get("/config/list", server.handleConfigListGET)
-	router.Get("/config/{configType}/{configId}", server.handleConfigGET)
-	router.Put("/config/{configType}/{configId}", server.handleConfigPUT)
-	router.Delete("/config/{configType}/{configId}", server.handleConfigDELETE)
-
-	vectorRouter := router.Party("/vector")
-	{
-		swaggerUI := swagger.Handler(swaggerFiles.Handler,
-			swagger.URL("/vector/swagger/doc.json"),
-			swagger.DeepLinking(true),
-			swagger.Prefix("/vector/swagger"),
-		)
-
-		vectorRouter.Get("/swagger/doc.json", func(ctx iris.Context) {
-			ctx.ServeFile("./docs/swagger.json")
-		})
-		vectorRouter.Get("/swagger", swaggerUI)
-		vectorRouter.Get("/swagger/{any:path}", swaggerUI)
-		collections := vectorRouter.Party("/collections")
-		{
-			collections.Get("", server.handleListCollections)
-			collections.Put("/{collection}", server.handleCreateCollection)
-			collections.Get("/{collection}", server.handleGetCollection)
-			collections.Patch("/{collection}", server.handleUpdateCollection)
-			collections.Delete("/{collection}", server.handleDeleteCollection)
-			points := collections.Party("/{collection}/points")
-			{
-				points.Put("", server.handleUpsertPoints)
-				points.Get("/{id}", server.handleGetPoint)
-				points.Post("/search", server.handleQueryPoints)
-				points.Post("/delete", server.handleDeletePoints)
-			}
-		}
+		router.Get("/config/list", server.handleConfigListGET)
+		router.Get("/config/{configType}/{configId}", server.handleConfigGET)
+		router.Put("/config/{configType}/{configId}", server.handleConfigPUT)
+		router.Delete("/config/{configType}/{configId}", server.handleConfigDELETE)
+	} else {
+		server.logger.Warning("Skipping DB endpoints — no database configured")
 	}
 
+	if server.qdrantClient != nil {
+		vectorRouter := router.Party("/vector")
+		{
+			swaggerUI := swagger.Handler(swaggerFiles.Handler,
+				swagger.URL("/vector/swagger/doc.json"),
+				swagger.DeepLinking(true),
+				swagger.Prefix("/vector/swagger"),
+			)
+
+			vectorRouter.Get("/swagger/doc.json", func(ctx iris.Context) {
+				ctx.ServeFile("./docs/swagger.json")
+			})
+			vectorRouter.Get("/swagger", swaggerUI)
+			vectorRouter.Get("/swagger/{any:path}", swaggerUI)
+
+			collections := vectorRouter.Party("/collections")
+			{
+				collections.Get("", server.handleListCollections)
+				collections.Put("/{collection}", server.handleCreateCollection)
+				collections.Get("/{collection}", server.handleGetCollection)
+				collections.Patch("/{collection}", server.handleUpdateCollection)
+				collections.Delete("/{collection}", server.handleDeleteCollection)
+
+				points := collections.Party("/{collection}/points")
+				{
+					points.Put("", server.handleUpsertPoints)
+					points.Get("/{id}", server.handleGetPoint)
+					points.Post("/search", server.handleQueryPoints)
+					points.Post("/delete", server.handleDeletePoints)
+				}
+			}
+		}
+	} else {
+		server.logger.Warning("Skipping Qdrant endpoints — no vector store configured")
+	}
+
+	if server.gripqlClient != nil && server.gripGraphName != "" {
+		// register your Grip routes here
+	} else {
+		server.logger.Warning("Skipping Grip endpoints — no graph configured")
+	}
+
+	// Final trim/slash middleware and build
 	router.UseRouter(func(ctx iris.Context) {
 		req := ctx.Request()
 		if req == nil || req.URL == nil {
@@ -164,6 +168,7 @@ func (server *Server) MakeRouter() *iris.Application {
 	if err := router.Build(); err != nil {
 		server.logger.Error("Failed to build Iris router: %v", err)
 	}
+
 	return router
 }
 

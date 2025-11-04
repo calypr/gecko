@@ -37,7 +37,7 @@ func main() {
 	var qdrantPortFlag = flag.Int("qdrant-port", 0, "Qdrant port (overrides QDRANT_PORT env var)")
 	var qdrantAPIKeyFlag = flag.String("qdrant-api-key", "", "Qdrant API Key (overrides QDRANT_API_KEY env var)")
 
-	var gripGraphName = flag.String("grip-graph-name", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
+	var gripGraphName = flag.String("grip-graph-zname", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
 	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
 	flag.Parse()
@@ -91,22 +91,17 @@ func main() {
 		WithLogger(logger).
 		WithJWTApp(jwtApp)
 
-	if *dbUrl != "" {
-		db, err := sqlx.Open("postgres", *dbUrl)
-		if err != nil {
-			logger.Printf("WARNING: Failed to open database connection with URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
-		} else {
-			if err = db.Ping(); err != nil {
-				logger.Printf("WARNING: DB ping failed for URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
-				db.Close()
-			} else {
-				logger.Println("Successfully connected to PostgreSQL database.")
-				defer db.Close()
-				serverBuilder = serverBuilder.WithDB(db)
-			}
-		}
+	db, err := sqlx.Open("postgres", *dbUrl)
+	if err != nil {
+		logger.Printf("WARNING: Failed to open database connection with URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
 	} else {
-		logger.Println("INFO: No --db URL specified. Database endpoints will not be available.")
+		if err = db.Ping(); err != nil {
+			logger.Printf("WARNING: DB ping failed for URL %s: %v. Database endpoints will not be available.", *dbUrl, err)
+			db.Close()
+		} else {
+			logger.Println("Successfully connected to PostgreSQL database.")
+			serverBuilder = serverBuilder.WithDB(db)
+		}
 	}
 
 	if qdrantHost != "" && qdrantPort != 0 {
