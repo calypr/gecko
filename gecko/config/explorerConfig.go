@@ -59,7 +59,7 @@ type TableColumnsConfig struct {
 	Type               SummaryTableColumnType `json:"type,omitempty"`
 	CellRenderFunction string                 `json:"cellRenderFunction,omitempty"`
 	Params             map[string]any         `json:"params,omitempty"`
-	Width              int                    `json:"width,omitempty"`
+	Width              string                 `json:"width,omitempty"`
 	Sortable           bool                   `json:"sortable,omitempty"`
 	Visable            bool                   `json:"visable,omitempty"`
 }
