@@ -61,8 +61,6 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 	switch configType {
 	case "explorer":
 		cfg = &config.Config{}
-	case "footer":
-		cfg = &config.FooterProps{}
 	case "nav":
 		cfg = &config.NavPageLayoutProps{}
 	case "file_summary":
@@ -164,8 +162,6 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	switch configType {
 	case "explorer":
 		cfg = &config.Config{}
-	case "footer":
-		cfg = &config.FooterProps{}
 	case "nav":
 		cfg = &config.NavPageLayoutProps{}
 	case "file_summary":
