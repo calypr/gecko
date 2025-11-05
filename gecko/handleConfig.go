@@ -58,7 +58,6 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 
 	var cfg config.Configurable // Use the interface type
 
-	// 1. Instantiate the correct type based on configType
 	switch configType {
 	case "explorer":
 		cfg = &config.Config{}
@@ -66,9 +65,9 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 		cfg = &config.FooterProps{}
 	case "nav":
 		cfg = &config.NavPageLayoutProps{}
-	case "fileSummary":
+	case "file_summary":
 		cfg = &config.FilesummaryConfig{}
-	case "appsPage":
+	case "apps_page":
 		cfg = &config.AppsConfig{}
 	default:
 		msg := fmt.Sprintf("Unknown config type: %s", configType)
@@ -162,7 +161,6 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 
 	var cfg config.Configurable // Use the interface type
 
-	// 1. Instantiate the correct type based on configType
 	switch configType {
 	case "explorer":
 		cfg = &config.Config{}
@@ -170,9 +168,9 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 		cfg = &config.FooterProps{}
 	case "nav":
 		cfg = &config.NavPageLayoutProps{}
-	case "fileSummary":
+	case "file_summary":
 		cfg = &config.FilesummaryConfig{}
-	case "appsPage":
+	case "apps_page":
 		cfg = &config.AppsConfig{}
 	default:
 		msg := fmt.Sprintf("Unknown config type: %s", configType)

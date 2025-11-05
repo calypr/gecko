@@ -36,7 +36,7 @@ END;
 
 DO \$$
 DECLARE
-    config_tables TEXT[] := ARRAY['explorer', 'footer', 'nav', 'fileSummary', 'appsPage'];
+    config_tables TEXT[] := ARRAY['explorer', 'footer', 'nav', 'file_summary', 'apps_page'];
     table_name TEXT;
 BEGIN
     FOREACH table_name IN ARRAY config_tables
