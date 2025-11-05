@@ -100,6 +100,8 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 		}
 	}
 
+	server.logger.Info("Executing query: %s", q.String())
+
 	res, err := server.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements})
 	if err != nil {
 		errResponse := newErrorResponse("internal server error", http.StatusInternalServerError, &err)
