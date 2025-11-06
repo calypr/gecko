@@ -108,9 +108,9 @@ func (server *Server) MakeRouter() *iris.Application {
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
 	if server.db != nil {
 		router.Get("/config/list", server.handleConfigListGET)
-		router.Get("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-		router.Put("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-		router.Delete("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+		router.Get("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+		router.Put("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 	} else {
 		server.logger.Warning("Skipping DB endpoints — no database configured")
 	}
