@@ -67,8 +67,6 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *ErrorResponse) {
 }
 
 func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
-	explorerAuthHandler := server.GeneralAuthMware(jwtHandler, "*", "*")
-	baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
 	return func(ctx iris.Context) {
 		method := ctx.Method()
 		if ctx.Params().Get("configType") == "explorer" {
@@ -84,15 +82,17 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 				ctx.StopExecution()
 				return
 			}
-			explorerAuthHandler = server.GeneralAuthMware(jwtHandler, permMethod, "*")
+			ConfigIDToProjectIDMware(ctx)
+			explorerAuthHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
 			explorerAuthHandler(ctx)
 		} else {
 			if method == "GET" {
 				ctx.Next()
 				return
 			} else if method == "PUT" || method == "DELETE" {
-				baseAuthHandler = server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
+				baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
 				baseAuthHandler(ctx)
+				return
 			} else {
 				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: unsupported http method %s on %s", method, ctx.Request().URL), http.StatusNotFound, nil)
 				errResponse.log.write(server.logger)
@@ -103,6 +103,12 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 		}
 
 	}
+}
+
+func ConfigIDToProjectIDMware(ctx iris.Context) {
+	configID := ctx.Params().Get("configId")
+	ctx.Params().Set("projectId", configID)
+	ctx.Next()
 }
 
 func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method, service string) iris.Handler {
@@ -157,6 +163,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 			ctx.StopExecution()
 			return
 		}
+		ctx.Next()
 	}
 }
 
