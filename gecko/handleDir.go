@@ -16,13 +16,13 @@ import (
 // @Description Retrieve directory details for the given project ID and Directory path
 // @Tags Directory
 // @Produce json
-// @Param project_id path string true "Project ID (format: program-project)"
+// @Param projectId path string true "Project ID (format: program-project)"
 // @Success 200 {object} map[string]interface{} "Directory information"
 // @Failure 400 {object} ErrorResponse "Invalid request body or Directory path"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /dir/{project_id} [get]
+// @Router /dir/{projectId} [get]
 func (server *Server) handleListProjects(ctx iris.Context) {
-	projs, errResponse := server.GetProjectsFromToken(ctx, &middleware.ProdJWTHandler{})
+	projs, errResponse := server.GetProjectsFromToken(ctx, &middleware.ProdJWTHandler{}, "read", "*")
 	if errResponse != nil {
 		errResponse.log.write(server.logger)
 		_ = errResponse.write(ctx)
@@ -64,15 +64,15 @@ type DirectoryResponse struct {
 // @Description Retrieve directory details for the given project ID and Directory path
 // @Tags Directory
 // @Produce json
-// @Param project_id path string true "Project ID (format: program-project)"
+// @Param projectId path string true "Project ID (format: program-project)"
 // @Param directory_path path string true "Directory Path (format: post path string)"
 // @Success 200 {object} map[string]interface{} "Directory information"
 // @Failure 400 {object} ErrorResponse "Invalid request body or Directory path"
 // @Failure 403 {object} ErrorResponse "User is not allowed on any resource path"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /dir/{project_id}?directory={directory_path} [get]
+// @Router /dir/{projectId}?directory={directory_path} [get]
 func (server *Server) handleDirGet(ctx iris.Context) {
-	projectId := ctx.Params().Get("project_id")
+	projectId := ctx.Params().Get("projectId")
 	dirPath := ctx.URLParam("directory")
 
 	if dirPath == "" || !isValidPosixPath(&dirPath) {

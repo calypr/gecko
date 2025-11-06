@@ -3,8 +3,8 @@ module github.com/calypr/gecko
 go 1.24.2
 
 require (
-	github.com/bmeg/grip v0.0.0-20251015152131-81c3f20ad301
-	github.com/bmeg/grip-graphql v0.0.0-20250924224746-dc7f74b4040f
+	github.com/bmeg/grip v0.0.0-20251106174949-7f0784126fbb
+	github.com/bmeg/grip-graphql v0.0.0-20251106183540-8b2f286248b3
 	github.com/google/uuid v1.6.0
 	github.com/iris-contrib/swagger v0.0.0-20230820002204-56b041d3471a
 	github.com/jmoiron/sqlx v1.4.0
@@ -56,7 +56,7 @@ require (
 	github.com/kataras/pio v0.0.13 // indirect
 	github.com/kataras/sitemap v0.0.6 // indirect
 	github.com/kataras/tunnel v0.0.4 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.8 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
