@@ -66,57 +66,101 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *ErrorResponse) {
 	return stringSlice, nil
 }
 
-// handleAuthCheck performs the common authorization logic against a given resource path.
-// It returns true if authorized, and false if an error occurred (it handles writing the error response).
-func (server *Server) handleAuthCheck(ctx iris.Context, resourcePath, method, service string, jwtHandler middleware.JWTHandler) bool {
-	authorizationHeader := ctx.GetHeader("Authorization")
-	if authorizationHeader == "" {
-		errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		ctx.StopExecution()
-		return false
-	}
+func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
+	explorerAuthHandler := server.GeneralAuthMware(jwtHandler, "*", "*")
+	baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
+	return func(ctx iris.Context) {
+		method := ctx.Method()
+		if ctx.Params().Get("configType") == "explorer" {
+			var permMethod string
+			if method == "GET" {
+				permMethod = "read"
+			} else if method == "PUT" || method == "DELETE" {
+				permMethod = "create"
+			} else {
+				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect http method %s on %s", method, ctx.Request().URL), http.StatusNotFound, nil)
+				errResponse.log.write(server.logger)
+				_ = errResponse.write(ctx)
+				ctx.StopExecution()
+				return
+			}
+			explorerAuthHandler = server.GeneralAuthMware(jwtHandler, permMethod, "*")
+			explorerAuthHandler(ctx)
+		} else {
+			if method == "GET" {
+				ctx.Next()
+				return
+			} else if method == "PUT" || method == "DELETE" {
+				baseAuthHandler = server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
+				baseAuthHandler(ctx)
+			} else {
+				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: unsupported http method %s on %s", method, ctx.Request().URL), http.StatusNotFound, nil)
+				errResponse.log.write(server.logger)
+				_ = errResponse.write(ctx)
+				ctx.StopExecution()
+				return
+			}
+		}
 
-	Token := authorizationHeader // As in your original code
-	anyList, err := jwtHandler.GetAllowedResources(Token, method, service)
-	if err != nil {
-		val, ok := err.(*middleware.ServerError)
-		if !ok {
-			errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+	}
+}
+
+func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method, service string) iris.Handler {
+	return func(ctx iris.Context) {
+		authorizationHeader := ctx.GetHeader("Authorization")
+		if authorizationHeader == "" {
+			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
 			errResponse.log.write(server.logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
-			return false
+			return
 		}
-		errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
-		errResponse.log.write(server.logger)
-		_ = errResponse.write(ctx)
-		ctx.StopExecution()
-		return false
-	}
 
-	resourceList, convErr := convertAnyToStringSlice(anyList)
-	if convErr != nil {
-		convErr.log.write(server.logger)
-		_ = convErr.write(ctx)
-		ctx.StopExecution()
-		return false
-	}
+		project_split := strings.Split(ctx.Params().Get("projectId"), "-")
+		if len(project_split) != 2 {
+			errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect path %s", ctx.Request().URL), http.StatusNotFound, nil)
+			errResponse.log.write(server.logger)
+			_ = errResponse.write(ctx)
+			ctx.StopExecution()
+			return
+		}
 
-	convErr = ParseAccess(resourceList, resourcePath, method)
-	if convErr != nil {
-		convErr.log.write(server.logger)
-		_ = convErr.write(ctx)
-		ctx.StopExecution()
-		return false
-	}
+		anyList, err := jwtHandler.GetAllowedResources(authorizationHeader, method, service)
+		if err != nil {
+			val, ok := err.(*middleware.ServerError)
+			if !ok {
+				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				errResponse.log.write(server.logger)
+				_ = errResponse.write(ctx)
+				ctx.StopExecution()
+				return
+			}
+			errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
+			errResponse.log.write(server.logger)
+			_ = errResponse.write(ctx)
+			ctx.StopExecution()
+			return
+		}
 
-	// If we got here, auth is successful
-	return true
+		resourceList, convErr := convertAnyToStringSlice(anyList)
+		if convErr != nil {
+			convErr.log.write(server.logger)
+			_ = convErr.write(ctx)
+			ctx.StopExecution()
+			return
+		}
+
+		convErr = ParseAccess(resourceList, "/programs/"+project_split[0]+"/projects/"+project_split[1], method)
+		if convErr != nil {
+			convErr.log.write(server.logger)
+			_ = convErr.write(ctx)
+			ctx.StopExecution()
+			return
+		}
+	}
 }
 
-func (server *Server) ProjLevelAuthMware(jwtHandler middleware.JWTHandler, method string, service string) iris.Handler {
+func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler, method, service, resourcePath string) iris.Handler {
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
@@ -127,88 +171,32 @@ func (server *Server) ProjLevelAuthMware(jwtHandler middleware.JWTHandler, metho
 			return
 		}
 		Token := authorizationHeader
-		dirProjectId := ctx.Params().Get("dirProjectId")
-		projectIDParam := ctx.Params().Get("projectId")
-		configType := ctx.Params().Get("configType")
-		if dirProjectId != "" || (configType == "explorer" && projectIDParam != "") {
-			effectiveProjectID := projectIDParam
-			if dirProjectId != "" {
-				effectiveProjectID = dirProjectId
-			}
-			project_split := strings.Split(effectiveProjectID, "-")
-			if len(project_split) != 2 {
-				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect path %s", ctx.Request().URL), http.StatusNotFound, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-			resourcePath := "/programs/" + project_split[0] + "/projects/" + project_split[1]
-			anyList, err := jwtHandler.GetAllowedResources(Token, method, service)
-			if err != nil {
-				val, ok := err.(*middleware.ServerError)
-				if !ok {
-					errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
-					errResponse.log.write(server.logger)
-					_ = errResponse.write(ctx)
-					ctx.StopExecution()
-					return
-				}
-				errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-			resourceList, convErr := convertAnyToStringSlice(anyList)
-			if convErr != nil {
-				convErr.log.write(server.logger)
-				_ = convErr.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-			convErr = ParseAccess(resourceList, resourcePath, method)
-			if convErr != nil {
-				convErr.log.write(server.logger)
-				_ = convErr.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-		} else if configType != "" && configType != "explorer" && projectIDParam != "" {
-			// If it's a default frontend config fetch, you need to have * perms on "/programs" path which should only exist for admins
-			prodHandler, ok := jwtHandler.(*middleware.ProdJWTHandler)
+		prodHandler, ok := jwtHandler.(*middleware.ProdJWTHandler)
+		if !ok {
+			errResponse := newErrorResponse("Internal server error: Invalid JWT handler configuration for this route", http.StatusInternalServerError, nil)
+			errResponse.log.write(server.logger)
+			_ = errResponse.write(ctx)
+			ctx.StopExecution()
+			return
+		}
+		allowed, err := prodHandler.CheckResourceServiceAccess(Token, method, service, resourcePath)
+		if err != nil {
+			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				errResponse := newErrorResponse("Internal server error: Invalid JWT handler configuration for this route", http.StatusInternalServerError, nil)
+				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
 				errResponse.log.write(server.logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
 				return
 			}
-			allowed, err := prodHandler.CheckResourceServiceAccess(Token, "*", "*", "/programs")
-			if err != nil {
-				val, ok := err.(*middleware.ServerError)
-				if !ok {
-					errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
-					errResponse.log.write(server.logger)
-					_ = errResponse.write(ctx)
-					ctx.StopExecution()
-					return
-				}
-				errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-			if !allowed {
-				errResponse := newErrorResponse(fmt.Sprintf("User does not have required %s permission on resource %s", method, "/programs"), http.StatusForbidden, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
-				return
-			}
-		} else {
-			errResponse := newErrorResponse("Could not determine resource path for authorization", http.StatusBadRequest, nil)
+			errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
+			errResponse.log.write(server.logger)
+			_ = errResponse.write(ctx)
+			ctx.StopExecution()
+			return
+		}
+		if !allowed {
+			errResponse := newErrorResponse(fmt.Sprintf("User does not have required %s permission on resource %s", method, "/programs"), http.StatusForbidden, nil)
 			errResponse.log.write(server.logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()

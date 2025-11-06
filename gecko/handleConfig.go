@@ -56,6 +56,10 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 	configType := ctx.Params().Get("configType")
 	configId := ctx.Params().Get("configId")
 
+	if configType == "" {
+		configType = "explorer"
+	}
+
 	var cfg config.Configurable // Use the interface type
 
 	switch configType {

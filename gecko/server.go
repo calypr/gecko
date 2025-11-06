@@ -100,7 +100,7 @@ func (server *Server) MakeRouter() *iris.Application {
 
 	if server.gripqlClient != nil {
 		router.Get("/dir", server.handleListProjects)
-		router.Get("/dir/{dirProjectId:string}", server.ProjLevelAuthMware(&middleware.ProdJWTHandler{}, "read", "*"), server.handleDirGet)
+		router.Get("/dir/{projectId}", server.GeneralAuthMware(&middleware.ProdJWTHandler{}, "read", "*"), server.handleDirGet)
 	} else {
 		server.logger.Warning("Skipping gripql Directory endpoints — no database configured")
 	}
@@ -108,9 +108,9 @@ func (server *Server) MakeRouter() *iris.Application {
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
 	if server.db != nil {
 		router.Get("/config/list", server.handleConfigListGET)
-		router.Get("/config/{configType}/{projectId}", server.ProjLevelAuthMware(&middleware.ProdJWTHandler{}, "read", "*"), server.handleConfigGET)
-		router.Put("/config/{configType}/{projectId}", server.ProjLevelAuthMware(&middleware.ProdJWTHandler{}, "create", "*"), server.handleConfigPUT)
-		router.Delete("/config/{configType}/{projectId}", server.ProjLevelAuthMware(&middleware.ProdJWTHandler{}, "create", "*"), server.handleConfigDELETE)
+		router.Get("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+		router.Put("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+		router.Delete("/config/{configType}/{projectId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 	} else {
 		server.logger.Warning("Skipping DB endpoints — no database configured")
 	}
