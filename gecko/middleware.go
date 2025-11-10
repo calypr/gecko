@@ -19,7 +19,7 @@ func (server *Server) logRequestMiddleware(ctx iris.Context) {
 	path := ctx.Request().URL.Path
 	status := ctx.ResponseWriter().StatusCode()
 
-	server.logger.Info("%s %s - Status: %d - Latency: %s", method, path, status, latency)
+	server.Logger.Info("%s %s - Status: %d - Latency: %s", method, path, status, latency)
 }
 
 func (server *Server) GetProjectsFromToken(ctx iris.Context, jwtHandler middleware.JWTHandler, method string, service string) ([]any, *ErrorResponse) {
@@ -69,46 +69,66 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *ErrorResponse) {
 func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
 	return func(ctx iris.Context) {
 		method := ctx.Method()
-		if ctx.Params().Get("configType") == "explorer" {
+		configType := ctx.Params().Get("configType")
+
+		if configType == "explorer" {
 			var permMethod string
-			if method == "GET" {
+			switch method {
+			case "GET":
 				permMethod = "read"
-			} else if method == "PUT" || method == "DELETE" {
+			case "PUT", "DELETE":
 				permMethod = "create"
-			} else {
-				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect http method %s on %s", method, ctx.Request().URL), http.StatusNotFound, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
+			default:
+				errResp := newErrorResponse(
+					fmt.Sprintf("Unsupported HTTP method %s on %s", method, ctx.Request().URL),
+					http.StatusMethodNotAllowed, nil,
+				)
+				errResp.log.write(server.Logger)
+				_ = errResp.write(ctx)
 				return
 			}
-			ConfigIDToProjectIDMware(ctx)
+
+			configID := ctx.Params().Get("configId")
+			ctx.Params().Set("projectId", configID)
+
 			explorerAuthHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
 			explorerAuthHandler(ctx)
+			if ctx.IsStopped() {
+				return
+			}
+			ctx.Next()
+
 		} else {
+			// Non-explorer path
 			if method == "GET" {
 				ctx.Next()
 				return
-			} else if method == "PUT" || method == "DELETE" {
+			}
+
+			if method == "PUT" || method == "DELETE" {
 				baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
 				baseAuthHandler(ctx)
-				return
-			} else {
-				errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: unsupported http method %s on %s", method, ctx.Request().URL), http.StatusNotFound, nil)
-				errResponse.log.write(server.logger)
-				_ = errResponse.write(ctx)
-				ctx.StopExecution()
+
+				if ctx.IsStopped() {
+					return
+				}
+				ctx.Next()
 				return
 			}
-		}
 
+			errResp := newErrorResponse(
+				fmt.Sprintf("Unsupported HTTP method %s on %s", method, ctx.Request().URL),
+				http.StatusMethodNotAllowed, nil,
+			)
+			errResp.log.write(server.Logger)
+			_ = errResp.write(ctx)
+		}
 	}
 }
 
 func ConfigIDToProjectIDMware(ctx iris.Context) {
 	configID := ctx.Params().Get("configId")
 	ctx.Params().Set("projectId", configID)
-	ctx.Next()
 }
 
 func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method, service string) iris.Handler {
@@ -116,7 +136,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
 			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
@@ -125,7 +145,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 		project_split := strings.Split(ctx.Params().Get("projectId"), "-")
 		if len(project_split) != 2 {
 			errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect path %s", ctx.Request().URL), http.StatusNotFound, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
@@ -136,13 +156,13 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
 				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
-				errResponse.log.write(server.logger)
+				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
 				return
 			}
 			errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
@@ -150,7 +170,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 
 		resourceList, convErr := convertAnyToStringSlice(anyList)
 		if convErr != nil {
-			convErr.log.write(server.logger)
+			convErr.log.write(server.Logger)
 			_ = convErr.write(ctx)
 			ctx.StopExecution()
 			return
@@ -158,7 +178,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 
 		convErr = ParseAccess(resourceList, "/programs/"+project_split[0]+"/projects/"+project_split[1], method)
 		if convErr != nil {
-			convErr.log.write(server.logger)
+			convErr.log.write(server.Logger)
 			_ = convErr.write(ctx)
 			ctx.StopExecution()
 			return
@@ -172,7 +192,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
 			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
@@ -181,7 +201,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 		prodHandler, ok := jwtHandler.(*middleware.ProdJWTHandler)
 		if !ok {
 			errResponse := newErrorResponse("Internal server error: Invalid JWT handler configuration for this route", http.StatusInternalServerError, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
@@ -191,20 +211,20 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
 				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
-				errResponse.log.write(server.logger)
+				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
 				return
 			}
 			errResponse := newErrorResponse(val.Message, val.StatusCode, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
 		}
 		if !allowed {
 			errResponse := newErrorResponse(fmt.Sprintf("User does not have required %s permission on resource %s", method, "/programs"), http.StatusForbidden, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return

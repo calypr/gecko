@@ -22,14 +22,14 @@ import (
 )
 
 type LogHandler struct {
-	logger *log.Logger
+	Logger *log.Logger
 }
 
 type Server struct {
 	iris          *iris.Application
 	db            *sqlx.DB
 	jwtApp        arborist.JWTDecoder
-	logger        *LogHandler
+	Logger        *LogHandler
 	stmts         *arborist.CachedStmts
 	qdrantClient  *qdrant.Client
 	gripqlClient  *gripql.Client
@@ -41,7 +41,7 @@ func NewServer() *Server {
 }
 
 func (server *Server) WithLogger(logger *log.Logger) *Server {
-	server.logger = &LogHandler{logger: logger}
+	server.Logger = &LogHandler{Logger: logger}
 	return server
 }
 
@@ -72,19 +72,19 @@ func (server *Server) Init() (*Server, error) {
 	if server.jwtApp == nil {
 		return nil, errors.New("gecko server initialized without JWT app")
 	}
-	if server.logger == nil {
+	if server.Logger == nil {
 		return nil, errors.New("gecko server initialized without logger")
 	}
 	if server.db == nil {
-		server.logger.Warning("Database endpoints will be disabled.")
+		server.Logger.Warning("Database endpoints will be disabled.")
 	}
 	if server.qdrantClient == nil {
-		server.logger.Warning("Qdrant endpoints will be disabled.")
+		server.Logger.Warning("Qdrant endpoints will be disabled.")
 	}
 	if server.gripqlClient == nil || server.gripGraphName == "" {
-		server.logger.Warning("Grip endpoints will be disabled.")
+		server.Logger.Warning("Grip endpoints will be disabled.")
 	}
-	server.logger.Info("Gecko server initialized successfully.")
+	server.Logger.Info("Gecko server initialized successfully.")
 	return server, nil
 }
 
@@ -102,7 +102,7 @@ func (server *Server) MakeRouter() *iris.Application {
 		router.Get("/dir", server.handleListProjects)
 		router.Get("/dir/{projectId}", server.GeneralAuthMware(&middleware.ProdJWTHandler{}, "read", "*"), server.handleDirGet)
 	} else {
-		server.logger.Warning("Skipping gripql Directory endpoints — no database configured")
+		server.Logger.Warning("Skipping gripql Directory endpoints — no database configured")
 	}
 
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
@@ -112,7 +112,7 @@ func (server *Server) MakeRouter() *iris.Application {
 		router.Put("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 	} else {
-		server.logger.Warning("Skipping DB endpoints — no database configured")
+		server.Logger.Warning("Skipping DB endpoints — no database configured")
 	}
 
 	if server.qdrantClient != nil {
@@ -148,20 +148,20 @@ func (server *Server) MakeRouter() *iris.Application {
 			}
 		}
 	} else {
-		server.logger.Warning("Skipping Qdrant endpoints — no vector store configured")
+		server.Logger.Warning("Skipping Qdrant endpoints — no vector store configured")
 	}
 
 	if server.gripqlClient != nil && server.gripGraphName != "" {
 		// register your Grip routes here
 	} else {
-		server.logger.Warning("Skipping Grip endpoints — no graph configured")
+		server.Logger.Warning("Skipping Grip endpoints — no graph configured")
 	}
 
 	// Final trim/slash middleware and build
 	router.UseRouter(func(ctx iris.Context) {
 		req := ctx.Request()
 		if req == nil || req.URL == nil {
-			server.logger.Warning("Request or URL is nil")
+			server.Logger.Warning("Request or URL is nil")
 			ctx.StatusCode(http.StatusInternalServerError)
 			ctx.WriteString("Internal Server Error")
 			return
@@ -171,7 +171,7 @@ func (server *Server) MakeRouter() *iris.Application {
 	})
 
 	if err := router.Build(); err != nil {
-		server.logger.Error("Failed to build Iris router: %v", err)
+		server.Logger.Error("Failed to build Iris router: %v", err)
 	}
 
 	return router
@@ -199,12 +199,12 @@ func recoveryMiddleware(ctx iris.Context) {
 func (server *Server) handleHealth(ctx iris.Context) {
 	err := server.db.Ping()
 	if err != nil {
-		server.logger.Error("Database ping failed: %v", err)
+		server.Logger.Error("Database ping failed: %v", err)
 		response := newErrorResponse("database unavailable", 500, nil)
 		_ = response.write(ctx)
 		return
 	}
-	server.logger.Info("Health check passed")
+	server.Logger.Info("Health check passed")
 	_ = jsonResponseFrom("Healthy", http.StatusOK).write(ctx)
 }
 

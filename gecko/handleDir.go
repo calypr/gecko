@@ -24,7 +24,7 @@ import (
 func (server *Server) handleListProjects(ctx iris.Context) {
 	projs, errResponse := server.GetProjectsFromToken(ctx, &middleware.ProdJWTHandler{}, "read", "*")
 	if errResponse != nil {
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		ctx.StopExecution()
 		return
@@ -36,7 +36,7 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 	)
 	if err != nil {
 		errResponse = newErrorResponse("internal server error", http.StatusInternalServerError, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		ctx.StopExecution()
 		return
@@ -77,7 +77,7 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 
 	if dirPath == "" || !isValidPosixPath(&dirPath) {
 		errResponse := newErrorResponse(fmt.Sprintf("Invalid or missing Directory path: '%s'", dirPath), http.StatusBadRequest, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -85,7 +85,7 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 	project_split := strings.Split(projectId, "-")
 	if len(project_split) != 2 {
 		errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Request().URL)), http.StatusNotFound, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		ctx.StopExecution()
 		return
@@ -100,12 +100,12 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 		}
 	}
 
-	server.logger.Info("Executing query: %s", q.String())
+	server.Logger.Info("Executing query: %s", q.String())
 
 	res, err := server.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements})
 	if err != nil {
 		errResponse := newErrorResponse("internal server error", http.StatusInternalServerError, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		ctx.StopExecution()
 		return

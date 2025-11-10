@@ -28,13 +28,13 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 	configList, err := configListByType(server.db, configType)
 	if configList == nil && err == nil {
 		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", configType), 404, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	if err != nil {
 		errResponse := newErrorResponse(fmt.Sprintf("Database error: %s", err), 500, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -74,7 +74,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 	default:
 		msg := fmt.Sprintf("Unknown config type: %s", configType)
 		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -86,7 +86,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 	if cfg.IsZero() && err == nil || errors.Is(err, sql.ErrNoRows) {
 		msg := fmt.Sprintf("no config found with configId: %s of type: %s", configId, configType)
 		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -94,7 +94,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("config query failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -123,14 +123,14 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 	if deleted == false && err == nil {
 		msg := fmt.Sprintf("no configId found with configId: %s in type: %s", configId, configType)
 		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	if err != nil {
 		msg := fmt.Sprintf("config query failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -175,7 +175,7 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	default:
 		msg := fmt.Sprintf("Unknown config type: %s", configType)
 		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -184,14 +184,14 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("GetBody() failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	if !json.Valid(body) {
 		msg := "Invalid JSON format"
 		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -200,7 +200,7 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	if errResponse != nil {
 		msg := fmt.Sprintf("body data unmarshal failed: %s", errResponse.err)
 		errResponse := newErrorResponse(msg, 400, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -209,11 +209,16 @@ func (server *Server) handleConfigPUT(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("configPut failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 
-	okmsg := map[string]any{"code": 200, "message": fmt.Sprintf("ACCEPTED: %s for type: %s", configId, configType)}
-	jsonResponseFrom(okmsg, http.StatusOK).write(ctx)
+	jsonResponseFrom(
+		map[string]any{
+			"code":    200,
+			"message": fmt.Sprintf("ACCEPTED: %s for type: %s", configId, configType),
+		},
+		http.StatusOK,
+	).write(ctx)
 }

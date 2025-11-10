@@ -11,7 +11,7 @@ require (
 	github.com/kataras/iris/v12 v12.2.11
 	github.com/lib/pq v1.10.9
 	github.com/qdrant/go-client v1.15.0
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/swag v1.16.6
 	github.com/uc-cdis/arborist v0.0.0-20241016192742-6190d06f1061
 	github.com/uc-cdis/go-authutils v0.1.2
@@ -71,6 +71,7 @@ require (
 	github.com/schollz/closestmatch v2.1.0+incompatible // indirect
 	github.com/sergi/go-diff v1.1.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tdewolff/minify/v2 v2.20.19 // indirect
 	github.com/tdewolff/parse/v2 v2.7.12 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

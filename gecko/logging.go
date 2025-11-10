@@ -77,23 +77,23 @@ func (cache *LogCache) Error(format string, a ...any) {
 }
 
 func (handler *LogHandler) Print(format string, a ...any) {
-	handler.logger.Print(sprintf(format, a...))
+	handler.Logger.Print(sprintf(format, a...))
 }
 
 func (handler *LogHandler) Debug(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelDebug, format, a...))
+	handler.Logger.Print(logMsg(LogLevelDebug, format, a...))
 }
 
 func (handler *LogHandler) Info(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelInfo, format, a...))
+	handler.Logger.Print(logMsg(LogLevelInfo, format, a...))
 }
 
 func (handler *LogHandler) Warning(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelWarning, format, a...))
+	handler.Logger.Print(logMsg(LogLevelWarning, format, a...))
 }
 
 func (handler *LogHandler) Error(format string, a ...any) {
-	handler.logger.Print(logMsg(LogLevelError, format, a...))
+	handler.Logger.Print(logMsg(LogLevelError, format, a...))
 }
 
 func logMsg(lvl arborist.LogLevel, format string, a ...any) string {
