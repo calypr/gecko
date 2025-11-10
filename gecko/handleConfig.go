@@ -21,13 +21,11 @@ import (
 // @Success 200 {array} string "List of config IDs"
 // @Failure 404 {object} ErrorResponse "No configs found for this type"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /config/{configType}/list [get]
+// @Router /config/list [get]
 func (server *Server) handleConfigListGET(ctx iris.Context) {
-	configType := ctx.Params().Get("configType")
-
-	configList, err := configListByType(server.db, configType)
+	configList, err := configListByType(server.db, "explorer")
 	if configList == nil && err == nil {
-		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", configType), 404, nil)
+		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", "explorer"), 404, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return

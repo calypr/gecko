@@ -70,7 +70,6 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 	return func(ctx iris.Context) {
 		method := ctx.Method()
 		configType := ctx.Params().Get("configType")
-
 		if configType == "explorer" {
 			var permMethod string
 			switch method {

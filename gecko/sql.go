@@ -29,8 +29,6 @@ func configListByType(db *sqlx.DB, configType string) ([]string, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []string{}, nil
 		}
-		// A potential error here is if the table doesn't exist, which we treat as "no configs found"
-		// or pass through the error if it's unexpected.
 		return nil, fmt.Errorf("error fetching config names from table %s: %w", configType, err)
 	}
 	return names, nil
