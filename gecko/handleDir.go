@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/bmeg/grip-graphql/middleware"
@@ -29,6 +30,7 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		ctx.StopExecution()
 		return
 	}
+	server.Logger.Info("projects: %s", projs)
 	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Within("auth_resource_path", projs...)).As("f0").Render(map[string]any{"project": "$f0.auth_resource_path"})
 	res, err := server.gripqlClient.Traversal(
 		ctx,
@@ -47,7 +49,9 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		if !ok {
 			continue
 		}
-		out = append(out, renda)
+		if !slices.Contains(out, renda) {
+			out = append(out, renda)
+		}
 	}
 	jsonResponseFrom(out, 200).write(ctx)
 }
@@ -65,12 +69,12 @@ type DirectoryResponse struct {
 // @Tags Directory
 // @Produce json
 // @Param projectId path string true "Project ID (format: program-project)"
-// @Param directory_path path string true "Directory Path (format: post path string)"
+// @Param directory_path query string true "Directory Path (e.g., /data/my-dir)"
 // @Success 200 {object} map[string]interface{} "Directory information"
 // @Failure 400 {object} ErrorResponse "Invalid request body or Directory path"
 // @Failure 403 {object} ErrorResponse "User is not allowed on any resource path"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /dir/{projectId}?directory={directory_path} [get]
+// @Router /dir/{projectId} [get]
 func (server *Server) handleDirGet(ctx iris.Context) {
 	projectId := ctx.Params().Get("projectId")
 	dirPath := ctx.URLParam("directory")

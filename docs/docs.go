@@ -17,7 +17,7 @@ const docTemplate = `{
     "paths": {
         "/config/list": {
             "get": {
-                "description": "Retrieve a list of all available configurations",
+                "description": "Retrieve a list of all available configuration IDs for the given type (table).",
                 "consumes": [
                     "application/json"
                 ],
@@ -27,19 +27,28 @@ const docTemplate = `{
                 "tags": [
                     "Config"
                 ],
-                "summary": "List all configurations",
+                "summary": "List all configuration IDs for a specific type",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Configuration Type (table name)",
+                        "name": "configType",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "OK",
+                        "description": "List of config IDs",
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/config.Config"
+                                "type": "string"
                             }
                         }
                     },
                     "404": {
-                        "description": "No configs found",
+                        "description": "No configs found for this type",
                         "schema": {
                             "$ref": "#/definitions/gecko.ErrorResponse"
                         }
@@ -53,9 +62,9 @@ const docTemplate = `{
                 }
             }
         },
-        "/config/{configId}": {
+        "/config/{configType}/{configId}": {
             "get": {
-                "description": "Retrieve configuration by ID",
+                "description": "Retrieve configuration by configType and configId",
                 "produces": [
                     "application/json"
                 ],
@@ -64,6 +73,13 @@ const docTemplate = `{
                 ],
                 "summary": "Get a specific configuration",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Configuration Type (table name)",
+                        "name": "configType",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Configuration ID",
@@ -94,7 +110,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Replaces or updates the configuration items for a given config ID",
+                "description": "Replaces or updates the configuration items for a given config ID in a specific type (table)",
                 "consumes": [
                     "application/json"
                 ],
@@ -106,6 +122,13 @@ const docTemplate = `{
                 ],
                 "summary": "Update configuration",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Configuration Type (table name)",
+                        "name": "configType",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Configuration ID",
@@ -136,12 +159,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/gecko.ErrorResponse"
                         }
                     },
-                    "404": {
-                        "description": "Config not found",
-                        "schema": {
-                            "$ref": "#/definitions/gecko.ErrorResponse"
-                        }
-                    },
                     "500": {
                         "description": "Internal server error",
                         "schema": {
@@ -151,7 +168,7 @@ const docTemplate = `{
                 }
             },
             "delete": {
-                "description": "Delete configuration by ID",
+                "description": "Delete configuration by configType and configId",
                 "produces": [
                     "application/json"
                 ],
@@ -160,6 +177,13 @@ const docTemplate = `{
                 ],
                 "summary": "Delete a configuration",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Configuration Type (table name)",
+                        "name": "configType",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Configuration ID",
@@ -178,6 +202,61 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Config not found",
+                        "schema": {
+                            "$ref": "#/definitions/gecko.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Server error",
+                        "schema": {
+                            "$ref": "#/definitions/gecko.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/dir/{projectId}": {
+            "get": {
+                "description": "Retrieve directory details for the given project ID and Directory path",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Directory"
+                ],
+                "summary": "Retrieve directory information for a project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Project ID (format: program-project)",
+                        "name": "projectId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Directory Path (e.g., /data/my-dir)",
+                        "name": "directory_path",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Directory information",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body or Directory path",
+                        "schema": {
+                            "$ref": "#/definitions/gecko.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "User is not allowed on any resource path",
                         "schema": {
                             "$ref": "#/definitions/gecko.ErrorResponse"
                         }
@@ -825,7 +904,7 @@ const docTemplate = `{
                 },
                 "payload": {
                     "type": "object",
-                    "additionalProperties": true
+                    "additionalProperties": {}
                 },
                 "score": {
                     "type": "number"
@@ -833,7 +912,7 @@ const docTemplate = `{
                 "vectors": {
                     "description": "can’t type vector length",
                     "type": "object",
-                    "additionalProperties": true
+                    "additionalProperties": {}
                 }
             }
         },
@@ -1133,13 +1212,56 @@ const docTemplate = `{
                 }
             }
         },
+        "config.SummaryTableColumnType": {
+            "type": "string",
+            "enum": [
+                "string",
+                "number",
+                "date",
+                "array",
+                "link",
+                "boolean",
+                "paragraphs"
+            ],
+            "x-enum-varnames": [
+                "SummaryTableColumnTypeString",
+                "SummaryTableColumnTypeNumber",
+                "SummaryTableColumnTypeDate",
+                "SummaryTableColumnTypeArray",
+                "SummaryTableColumnTypeLink",
+                "SummaryTableColumnTypeBoolean",
+                "SummaryTableColumnTypeParagraphs"
+            ]
+        },
         "config.TableColumnsConfig": {
             "type": "object",
             "properties": {
+                "accessorPath": {
+                    "type": "string"
+                },
+                "cellRenderFunction": {
+                    "type": "string"
+                },
                 "field": {
                     "type": "string"
                 },
+                "params": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "sortable": {
+                    "type": "boolean"
+                },
                 "title": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/config.SummaryTableColumnType"
+                },
+                "visable": {
+                    "type": "boolean"
+                },
+                "width": {
                     "type": "string"
                 }
             }

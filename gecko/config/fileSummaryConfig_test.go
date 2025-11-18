@@ -7,13 +7,6 @@ import (
 	"testing"
 )
 
-// NOTE: This constant needs to be defined in your actual code or test file
-// If your SummaryTableColumnType is an alias for string:
-
-// ---------------------------------------------------------------------
-// Test Data
-// ---------------------------------------------------------------------
-
 const filesummaryJSON = `{
   "config": {
     "document_reference_title": {
