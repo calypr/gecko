@@ -32,21 +32,46 @@ jobs:
           fi
           sleep 1
         done
-    # Create database and setup schema
+
     - name: Setup Database
       run: |
-        # Create the test database
         docker exec gecko-postgres-test psql -U postgres -c "CREATE DATABASE testdb;"
 
-        # Create the table
         docker exec gecko-postgres-test psql -U postgres -d testdb -c "
-          CREATE TABLE IF NOT EXISTS documents (
-            name VARCHAR(255) PRIMARY KEY,
-            content JSONB
-          );"
+          DO \$\$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'config_schema') THEN
+                  CREATE SCHEMA config_schema;
+              END IF;
+          END \$\$;
+
+          CREATE OR REPLACE FUNCTION create_config_table(schema_name TEXT, table_name TEXT)
+          RETURNS void AS \$\$
+          BEGIN
+              EXECUTE format('
+                  CREATE TABLE IF NOT EXISTS %I.%I (
+                      name VARCHAR(255) PRIMARY KEY,
+                      content JSONB
+                  );
+              ', schema_name, table_name);
+          END;
+          \$\$ LANGUAGE plpgsql;
+
+          DO \$\$
+          DECLARE
+              config_tables TEXT[] := ARRAY['explorer', 'nav', 'file_summary', 'apps_page'];
+              table_name TEXT;
+          BEGIN
+              FOREACH table_name IN ARRAY config_tables
+              LOOP
+                  PERFORM create_config_table('config_schema', table_name);
+              END LOOP;
+          END \$\$;
+
+          DROP FUNCTION create_config_table(TEXT, TEXT);
+        "
       env:
         PGPASSWORD: your_strong_password
-
 
 
     - name: Start Qdrant
@@ -68,10 +93,16 @@ jobs:
         done
 
 
-    - name: Start Application
+    - name: Run Tests
       run: |
         make
-        ./bin/gecko -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" -port 8080 -qdrant-api-key "your_qdrant_api_key" -qdrant-host localhost -qdrant-port 6334 &
+        ./bin/gecko \
+          -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
+          -port 8080 \
+          -qdrant-api-key "your_qdrant_api_key" \
+          -qdrant-host localhost \
+          -qdrant-port 6334 &
+        # Wait for application to be ready
         for i in {1..30}; do
           if curl --silent --fail http://localhost:8080/health > /dev/null; then
             break

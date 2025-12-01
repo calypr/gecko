@@ -23,7 +23,7 @@ func (server *Server) handleListCollections(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to list collections: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -55,7 +55,7 @@ func (server *Server) handleCreateCollection(ctx iris.Context) {
 	if err := ctx.ReadJSON(&reqBody); err != nil {
 		msg := fmt.Sprintf("invalid request body: JSON parsing failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -66,7 +66,7 @@ func (server *Server) handleCreateCollection(ctx iris.Context) {
 		if !ok {
 			msg := fmt.Sprintf("invalid distance: %s", params.Distance)
 			errResponse := newErrorResponse(msg, http.StatusBadRequest, nil)
-			errResponse.log.write(server.logger)
+			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			return
 		}
@@ -91,7 +91,7 @@ func (server *Server) handleCreateCollection(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to create collection: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -118,13 +118,13 @@ func (server *Server) handleGetCollection(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to get collection info: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 
 	jsonResponse := jsonResponseFrom(resp, http.StatusOK)
-	server.logger.Info("%#v", jsonResponse)
+	server.Logger.Info("%#v", jsonResponse)
 	jsonResponse.write(ctx)
 }
 
@@ -147,7 +147,7 @@ func (server *Server) handleUpdateCollection(ctx iris.Context) {
 	if err := ctx.ReadJSON(&req); err != nil {
 		msg := fmt.Sprintf("invalid request body: JSON parsing failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -156,7 +156,7 @@ func (server *Server) handleUpdateCollection(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to update collection: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -180,7 +180,7 @@ func (server *Server) handleDeleteCollection(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to delete collection: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -206,7 +206,7 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 	if idStr == "" || collection == "" {
 		err := fmt.Errorf("collection or id not provide")
 		errResponse := newErrorResponse("collection or id is not provided", http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -214,7 +214,7 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 	_, err := uuid.Parse(idStr)
 	if err != nil {
 		errResponse := newErrorResponse("invalid UUID", http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -229,13 +229,13 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to get point: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	if len(resp) == 0 {
 		errResponse := newErrorResponse("point not found", http.StatusNotFound, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -261,14 +261,14 @@ func (server *Server) handleQueryPoints(ctx iris.Context) {
 	if err := ctx.ReadJSON(&req); err != nil {
 		msg := fmt.Sprintf("invalid request body: JSON parsing failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	qdrantReq, err := adapter.ToQdrantQuery(req, collection)
 	if err != nil {
 		errResponse := newErrorResponse(fmt.Sprintf("invalid query parameter: %s", err.Error()), http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -276,7 +276,7 @@ func (server *Server) handleQueryPoints(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to query points: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -303,14 +303,14 @@ func (server *Server) handleUpsertPoints(ctx iris.Context) {
 	if err := ctx.ReadJSON(&reqBody); err != nil {
 		msg := fmt.Sprintf("invalid request body: JSON parsing failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, http.StatusBadRequest, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
 	upsertReq, err := adapter.ToQdrantUpsert(reqBody, collection)
 	if err != nil {
 		errResponse := newErrorResponse(err.Error(), http.StatusBadRequest, nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -318,7 +318,7 @@ func (server *Server) handleUpsertPoints(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to upsert points: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -343,7 +343,7 @@ func (server *Server) handleDeletePoints(ctx iris.Context) {
 	if err := ctx.ReadJSON(&req); err != nil {
 		msg := fmt.Sprintf("invalid request body: JSON parsing failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, http.StatusBadRequest, &err)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -352,7 +352,7 @@ func (server *Server) handleDeletePoints(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to delete points: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
@@ -362,7 +362,7 @@ func (server *Server) handleDeletePoints(ctx iris.Context) {
 	if err != nil {
 		msg := fmt.Sprintf("failed to delete points: %s", err.Error())
 		errResponse := newErrorResponse(msg, adapter.MapQdrantErrorToHTTPStatus(err), nil)
-		errResponse.log.write(server.logger)
+		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}

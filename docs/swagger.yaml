@@ -102,12 +102,12 @@ definitions:
       id:
         type: string
       payload:
-        additionalProperties: true
+        additionalProperties: {}
         type: object
       score:
         type: number
       vectors:
-        additionalProperties: true
+        additionalProperties: {}
         description: can’t type vector length
         type: object
     type: object
@@ -303,11 +303,44 @@ definitions:
           type: array
         type: object
     type: object
+  config.SummaryTableColumnType:
+    enum:
+    - string
+    - number
+    - date
+    - array
+    - link
+    - boolean
+    - paragraphs
+    type: string
+    x-enum-varnames:
+    - SummaryTableColumnTypeString
+    - SummaryTableColumnTypeNumber
+    - SummaryTableColumnTypeDate
+    - SummaryTableColumnTypeArray
+    - SummaryTableColumnTypeLink
+    - SummaryTableColumnTypeBoolean
+    - SummaryTableColumnTypeParagraphs
   config.TableColumnsConfig:
     properties:
+      accessorPath:
+        type: string
+      cellRenderFunction:
+        type: string
       field:
         type: string
+      params:
+        additionalProperties: {}
+        type: object
+      sortable:
+        type: boolean
       title:
+        type: string
+      type:
+        $ref: '#/definitions/config.SummaryTableColumnType'
+      visable:
+        type: boolean
+      width:
         type: string
     type: object
   config.TableConfig:
@@ -659,10 +692,15 @@ info:
   title: Gecko API
   version: 1.0.0
 paths:
-  /config/{configId}:
+  /config/{configType}/{configId}:
     delete:
-      description: Delete configuration by ID
+      description: Delete configuration by configType and configId
       parameters:
+      - description: Configuration Type (table name)
+        in: path
+        name: configType
+        required: true
+        type: string
       - description: Configuration ID
         in: path
         name: configId
@@ -688,8 +726,13 @@ paths:
       tags:
       - Config
     get:
-      description: Retrieve configuration by ID
+      description: Retrieve configuration by configType and configId
       parameters:
+      - description: Configuration Type (table name)
+        in: path
+        name: configType
+        required: true
+        type: string
       - description: Configuration ID
         in: path
         name: configId
@@ -717,8 +760,13 @@ paths:
       consumes:
       - application/json
       description: Replaces or updates the configuration items for a given config
-        ID
+        ID in a specific type (table)
       parameters:
+      - description: Configuration Type (table name)
+        in: path
+        name: configType
+        required: true
+        type: string
       - description: Configuration ID
         in: path
         name: configId
@@ -741,10 +789,6 @@ paths:
           description: Invalid request body
           schema:
             $ref: '#/definitions/gecko.ErrorResponse'
-        "404":
-          description: Config not found
-          schema:
-            $ref: '#/definitions/gecko.ErrorResponse'
         "500":
           description: Internal server error
           schema:
@@ -756,27 +800,72 @@ paths:
     get:
       consumes:
       - application/json
-      description: Retrieve a list of all available configurations
+      description: Retrieve a list of all available configuration IDs for the given
+        type (table).
+      parameters:
+      - description: Configuration Type (table name)
+        in: path
+        name: configType
+        required: true
+        type: string
       produces:
       - application/json
       responses:
         "200":
-          description: OK
+          description: List of config IDs
           schema:
             items:
-              $ref: '#/definitions/config.Config'
+              type: string
             type: array
         "404":
-          description: No configs found
+          description: No configs found for this type
           schema:
             $ref: '#/definitions/gecko.ErrorResponse'
         "500":
           description: Server error
           schema:
             $ref: '#/definitions/gecko.ErrorResponse'
-      summary: List all configurations
+      summary: List all configuration IDs for a specific type
       tags:
       - Config
+  /dir/{projectId}:
+    get:
+      description: Retrieve directory details for the given project ID and Directory
+        path
+      parameters:
+      - description: 'Project ID (format: program-project)'
+        in: path
+        name: projectId
+        required: true
+        type: string
+      - description: Directory Path (e.g., /data/my-dir)
+        in: query
+        name: directory_path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Directory information
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Invalid request body or Directory path
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "403":
+          description: User is not allowed on any resource path
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/gecko.ErrorResponse'
+      summary: Retrieve directory information for a project
+      tags:
+      - Directory
   /health:
     get:
       description: Checks the database connection and returns the server status
