@@ -1,6 +1,7 @@
 package gecko
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bmeg/grip-graphql/middleware"
+	"github.com/calypr/gecko/gecko/config"
 	"github.com/kataras/iris/v12"
 )
 
@@ -30,7 +32,7 @@ func (server *Server) GetProjectsFromToken(ctx iris.Context, jwtHandler middlewa
 			fmt.Println("ERR: ", err)
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				return nil, newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				return nil, newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 
 			}
 			return nil, newErrorResponse(val.Message, val.StatusCode, nil)
@@ -125,11 +127,6 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 	}
 }
 
-func ConfigIDToProjectIDMware(ctx iris.Context) {
-	configID := ctx.Params().Get("configId")
-	ctx.Params().Set("projectId", configID)
-}
-
 func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method, service string) iris.Handler {
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
@@ -154,7 +151,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 		if err != nil {
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				errResponse := newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
@@ -209,7 +206,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 		if err != nil {
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				errResponse := newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
@@ -228,6 +225,69 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 			ctx.StopExecution()
 			return
 		}
+		ctx.Next()
+	}
+}
+
+func (server *Server) AppCardAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
+	return func(ctx iris.Context) {
+		method := ctx.Method()
+
+		var permMethod string
+		switch method {
+		case "GET":
+			permMethod = "read"
+		case "POST", "DELETE":
+			permMethod = "create"
+		default:
+			errResp := newErrorResponse(
+				fmt.Sprintf("Unsupported HTTP method %s", method),
+				http.StatusMethodNotAllowed, nil,
+			)
+			errResp.log.write(server.Logger)
+			_ = errResp.write(ctx)
+			return
+		}
+
+		var projectId string
+
+		if method == "GET" || method == "DELETE" {
+			projectId = ctx.Params().Get("projectId")
+		} else { // POST
+			body, err := ctx.GetBody()
+			if err != nil {
+				errResponse := newErrorResponse("Failed to read request body", 500, nil)
+				errResponse.log.write(server.Logger)
+				_ = errResponse.write(ctx)
+				return
+			}
+			var card config.AppCard
+			if err := json.Unmarshal(body, &card); err != nil {
+				errResponse := newErrorResponse("Invalid JSON in body", 400, nil)
+				errResponse.log.write(server.Logger)
+				_ = errResponse.write(ctx)
+				return
+			}
+			projectId = card.Perms
+		}
+
+		if projectId == "" {
+			errResponse := newErrorResponse("Missing or empty projectId (from perms)", 400, nil)
+			errResponse.log.write(server.Logger)
+			_ = errResponse.write(ctx)
+			return
+		}
+
+		// Set projectId for GeneralAuthMware to check permissions
+		ctx.Params().Set("projectId", projectId)
+
+		authHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
+		authHandler(ctx)
+
+		if ctx.IsStopped() {
+			return
+		}
+
 		ctx.Next()
 	}
 }

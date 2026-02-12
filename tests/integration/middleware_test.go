@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/http"
@@ -216,4 +217,175 @@ func TestBaseConfigsAuthMiddleware_InvalidJWTHandler(t *testing.T) {
 	mware(ctx)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.Contains(t, rec.Body.String(), "Invalid JWT handler configuration")
+}
+
+// TestAppCardAuthMiddleware_NoAuthorization
+func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
+	mockJWT := &MockJWTHandler{}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "HTAN_INT-BForePC") // would be set by path in real route
+
+	mware(ctx)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
+}
+
+// TestAppCardAuthMiddleware_GET_Success
+func TestAppCardAuthMiddleware_GET_Success(t *testing.T) {
+	mockJWT := &MockJWTHandler{
+		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+	}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req.Header.Set("Authorization", "Bearer dummy")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+
+	mware(ctx)
+
+	assert.False(t, ctx.IsStopped(), "Middleware should allow request to continue")
+	assert.Equal(t, http.StatusOK, rec.Code) // Middleware let it through, handler (default) returns 200
+}
+
+// TestAppCardAuthMiddleware_GET_Denied
+func TestAppCardAuthMiddleware_GET_Denied(t *testing.T) {
+	mockJWT := &MockJWTHandler{
+		AllowedResources: []string{"/programs/other/projects/wrong"},
+	}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req.Header.Set("Authorization", "Bearer dummy")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+
+	mware(ctx)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "User is not allowed to read on resource path")
+}
+
+// TestAppCardAuthMiddleware_POST_MissingPermsInBody
+func TestAppCardAuthMiddleware_POST_MissingPermsInBody(t *testing.T) {
+	mockJWT := &MockJWTHandler{}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	body := `{"title": "Test", "description": "desc", "icon": "/icon.svg", "href": "/link"}` // missing perms
+	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer dummy")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+
+	mware(ctx)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Missing or empty projectId (from perms)")
+}
+
+// TestAppCardAuthMiddleware_POST_Success
+func TestAppCardAuthMiddleware_POST_Success(t *testing.T) {
+	mockJWT := &MockJWTHandler{
+		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+	}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	body := `{
+		"title": "Explore BForePC",
+		"description": "Explore data",
+		"icon": "/icons/binoculars.svg",
+		"href": "/Explorer/HTAN_INT-BForePC",
+		"perms": "HTAN_INT-BForePC"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer dummy")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+
+	mware(ctx)
+
+	assert.False(t, ctx.IsStopped())
+	assert.Equal(t, http.StatusOK, rec.Code) // Middleware let it through, handler (default) returns 200
+}
+
+// TestAppCardAuthMiddleware_POST_Denied
+func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
+	mockJWT := &MockJWTHandler{
+		AllowedResources: []string{"/programs/other/projects/wrong"},
+	}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	body := `{
+		"title": "Explore BForePC",
+		"perms": "HTAN_INT-BForePC"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer dummy")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+
+	mware(ctx)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Contains(t, rec.Body.String(), "User is not allowed to create on resource path")
+}
+
+// TestAppCardAuthMiddleware_DELETE_Success
+func TestAppCardAuthMiddleware_DELETE_Success(t *testing.T) {
+	mockJWT := &MockJWTHandler{
+		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+	}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodDelete, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req.Header.Set("Authorization", "Bearer dummy")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+
+	mware(ctx)
+
+	assert.False(t, ctx.IsStopped())
+}
+
+// TestAppCardAuthMiddleware_UnsupportedMethod
+func TestAppCardAuthMiddleware_UnsupportedMethod(t *testing.T) {
+	mockJWT := &MockJWTHandler{}
+	srv := setupServer()
+	mware := srv.AppCardAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodPatch, "/config/apps_page/appcard/something", nil)
+	req.Header.Set("Authorization", "Bearer dummy")
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+
+	mware(ctx)
+
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Unsupported HTTP method")
 }

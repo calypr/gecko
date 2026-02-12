@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"path"
-	"slices"
 	"strings"
 
 	"github.com/bmeg/grip-graphql/middleware"
@@ -31,7 +30,15 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		return
 	}
 	server.Logger.Info("projects: %s", projs)
-	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Within("auth_resource_path", projs...)).As("f0").Render(map[string]any{"project": "$f0.auth_resource_path"})
+	q := gripql.V().
+		HasLabel("ResearchStudy").
+		Has(gripql.Within("auth_resource_path", projs...)).
+		As("project").
+		OutE("rootDir_Directory"). // Only keep projects that have a root directory
+		Select("project").         // Go back to project
+		Distinct("auth_resource_path").
+		Render(map[string]any{"project": "$project.auth_resource_path"})
+
 	res, err := server.gripqlClient.Traversal(
 		ctx,
 		&gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements},
@@ -49,9 +56,7 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 		if !ok {
 			continue
 		}
-		if !slices.Contains(out, renda) {
-			out = append(out, renda)
-		}
+		out = append(out, renda)
 	}
 	jsonResponseFrom(out, 200).write(ctx)
 }
@@ -97,11 +102,20 @@ func (server *Server) handleDirGet(ctx iris.Context) {
 	projectId = "/programs/" + project_split[0] + "/projects/" + project_split[1]
 
 	// Shouldn't have to filter on base query because rootDir_Directory edge only ever connects to the root directory
+	// Start traversal from the project
 	q := gripql.V().HasLabel("ResearchStudy").Has(gripql.Eq("auth_resource_path", projectId)).OutE("rootDir_Directory").OutNull().OutNull()
 	if dirPath != "/" {
 		for splStr := range strings.SplitSeq(strings.Trim(dirPath, "/"), "/") {
-			q = q.Has(gripql.Eq("name", splStr)).OutNull()
+			// Traverse to child directory
+			// IMPORTANT: Filter by auth_resource_path at EACH step to ensure we stay within the project's ownership.
+			// This prevents bleeding into directories with the same name but different project ownership.
+			q = q.Has(gripql.Eq("name", splStr)).
+				Has(gripql.Eq("auth_resource_path", projectId)).
+				OutNull()
 		}
+	} else {
+		// Even for root, ensure the returned node belongs to the project (extra safety)
+		q = q.Has(gripql.Eq("auth_resource_path", projectId))
 	}
 
 	server.Logger.Info("Executing query: %s", q.String())
