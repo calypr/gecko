@@ -3,6 +3,7 @@ module github.com/calypr/gecko
 go 1.24.2
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/bmeg/grip v0.0.0-20251106174949-7f0784126fbb
 	github.com/bmeg/grip-graphql v0.0.0-20251106183540-8b2f286248b3
 	github.com/google/uuid v1.6.0
@@ -64,14 +65,12 @@ require (
 	github.com/mailgun/raymond/v2 v2.0.48 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
-	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/schollz/closestmatch v2.1.0+incompatible // indirect
 	github.com/sergi/go-diff v1.1.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/tdewolff/minify/v2 v2.20.19 // indirect
 	github.com/tdewolff/parse/v2 v2.7.12 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
