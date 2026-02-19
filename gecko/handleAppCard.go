@@ -23,7 +23,7 @@ import (
 // @Router /config/apps_page/appcard/{projectId} [get]
 func (server *Server) handleAppCardGET(ctx iris.Context) {
 	configType := "apps_page"
-	configId := "default" // Adjust if you use dynamic configId
+	configId := "1" // Matches the ID used in helm chart bootstrap
 
 	projectId := ctx.Params().Get("projectId")
 	if projectId == "" {
@@ -80,7 +80,7 @@ func (server *Server) handleAppCardGET(ctx iris.Context) {
 // @Router /config/apps_page/appcard [post]
 func (server *Server) handleAppCardPOST(ctx iris.Context) {
 	configType := "apps_page"
-	configId := "default" // Hardcoded assumption; adjust if multiple configs exist
+	configId := "1" // Matches the ID used in helm chart bootstrap
 
 	var currentCfg config.AppsConfig
 	err := configGETGeneric(server.db, configId, configType, &currentCfg)
@@ -150,7 +150,7 @@ func (server *Server) handleAppCardPOST(ctx iris.Context) {
 // @Router /config/apps_page/appcard/{projectId} [delete]
 func (server *Server) handleAppCardDELETE(ctx iris.Context) {
 	configType := "apps_page"
-	configId := "default" // Hardcoded assumption; adjust if multiple configs exist
+	configId := "1" // Matches the ID used in helm chart bootstrap
 	projectId := ctx.Params().Get("projectId")
 
 	var currentCfg config.AppsConfig

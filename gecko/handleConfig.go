@@ -61,19 +61,20 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 		configType = ctx.URLParamDefault("type", "explorer")
 	}
 
+	server.Logger.Info("Listing configs for type: %s", configType)
+
 	configList, err := configListByType(server.db, configType)
-	if (configList == nil || len(configList) == 0) && err == nil {
-		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", configType), 404, nil)
-		errResponse.log.write(server.Logger)
-		_ = errResponse.write(ctx)
-		return
-	}
 	if err != nil {
 		errResponse := newErrorResponse(fmt.Sprintf("Database error: %s", err), 500, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
+
+	if configList == nil {
+		configList = []string{}
+	}
+
 	jsonResponseFrom(configList, http.StatusOK).write(ctx)
 }
 
@@ -96,6 +97,7 @@ func (server *Server) handleConfigTypesGET(ctx iris.Context) {
 // @Router /config/{configType}/{configId} [get]
 func (server *Server) handleConfigGET(ctx iris.Context) {
 	configType, configId := server.resolveConfigParams(ctx)
+	server.Logger.Info("Fetching config: type=%s, id=%s", configType, configId)
 
 	var cfg config.Configurable // Use the interface type
 
@@ -118,17 +120,14 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 
 	// Pass configType to the generic GET function
 	err := configGETGeneric(server.db, configId, configType, cfg)
-	// returning 404 on an empty config might be a bit controversial,
-	// but I think it will stock alot of edge cases
-	if cfg.IsZero() && err == nil || errors.Is(err, sql.ErrNoRows) {
-		msg := fmt.Sprintf("no config found with configId: %s of type: %s", configId, configType)
-		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.Logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			msg := fmt.Sprintf("no config found with configId: %s of type: %s", configId, configType)
+			errResponse := newErrorResponse(msg, 404, nil)
+			errResponse.log.write(server.Logger)
+			_ = errResponse.write(ctx)
+			return
+		}
 		msg := fmt.Sprintf("config query failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
 		errResponse.log.write(server.Logger)
