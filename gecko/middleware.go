@@ -71,7 +71,8 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *ErrorResponse) {
 func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
 	return func(ctx iris.Context) {
 		method := ctx.Method()
-		configType := ctx.Params().Get("configType")
+		configType, configID := server.resolveConfigParams(ctx)
+
 		if configType == "explorer" {
 			var permMethod string
 			switch method {
@@ -89,7 +90,6 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 				return
 			}
 
-			configID := ctx.Params().Get("configId")
 			ctx.Params().Set("projectId", configID)
 
 			explorerAuthHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
@@ -100,13 +100,14 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 			ctx.Next()
 
 		} else {
-			// Non-explorer path
+			// Non-explorer path (nav, apps_page, etc.)
 			if method == "GET" {
 				ctx.Next()
 				return
 			}
 
 			if method == "PUT" || method == "DELETE" {
+				// Base config edit requires broader permission
 				baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
 				baseAuthHandler(ctx)
 

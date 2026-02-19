@@ -11,6 +11,38 @@ import (
 	"github.com/kataras/iris/v12"
 )
 
+func isKnownType(t string) bool {
+	switch t {
+	case "explorer", "nav", "file_summary", "apps_page":
+		return true
+	}
+	return false
+}
+
+func (server *Server) resolveConfigParams(ctx iris.Context) (string, string) {
+	configType := ctx.Params().Get("configType")
+	configId := ctx.Params().Get("configId")
+
+	// If we are on a shorthand route like /config/{configId}
+	if configType == "" && configId != "" {
+		if isKnownType(configId) {
+			// e.g. /config/apps_page -> type: apps_page, id: default
+			return configId, "default"
+		}
+		// e.g. /config/my-project -> type: explorer, id: my-project
+		return "explorer", configId
+	}
+
+	if configType == "" {
+		configType = "explorer"
+	}
+	if configId == "" {
+		configId = "default"
+	}
+
+	return configType, configId
+}
+
 // handleConfigListGET godoc
 // @Summary List all configuration IDs for a specific type
 // @Description Retrieve a list of all available configuration IDs for the given type (table).
@@ -63,12 +95,7 @@ func (server *Server) handleConfigTypesGET(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/{configType}/{configId} [get]
 func (server *Server) handleConfigGET(ctx iris.Context) {
-	configType := ctx.Params().Get("configType")
-	configId := ctx.Params().Get("configId")
-
-	if configType == "" {
-		configType = "explorer"
-	}
+	configType, configId := server.resolveConfigParams(ctx)
 
 	var cfg config.Configurable // Use the interface type
 
@@ -125,12 +152,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/{configType}/{configId} [delete]
 func (server *Server) handleConfigDELETE(ctx iris.Context) {
-	configType := ctx.Params().Get("configType")
-	configId := ctx.Params().Get("configId")
-
-	if configType == "" {
-		configType = "explorer"
-	}
+	configType, configId := server.resolveConfigParams(ctx)
 
 	// Pass configType to the generic DELETE function
 	deleted, err := configDELETEGeneric(server.db, configId, configType)
@@ -172,12 +194,7 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Internal server error"
 // @Router /config/{configType}/{configId} [put]
 func (server *Server) handleConfigPUT(ctx iris.Context) {
-	configId := ctx.Params().Get("configId")
-	configType := ctx.Params().Get("configType")
-
-	if configType == "" {
-		configType = "explorer"
-	}
+	configType, configId := server.resolveConfigParams(ctx)
 
 	var cfg config.Configurable // Use the interface type
 
