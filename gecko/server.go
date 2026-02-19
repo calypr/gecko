@@ -107,9 +107,14 @@ func (server *Server) MakeRouter() *iris.Application {
 
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
 	if server.db != nil {
+		router.Get("/config/types", server.handleConfigTypesGET)
 		router.Get("/config/list", server.handleConfigListGET)
+		router.Get("/config/{configType}/list", server.handleConfigListGET)
+		router.Get("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 		router.Get("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+		router.Put("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 		router.Put("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+		router.Delete("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 
 		router.Get("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)

@@ -17,15 +17,21 @@ import (
 // @Tags Config
 // @Accept json
 // @Produce json
-// @Param configType path string true "Configuration Type (table name)"
+// @Param configType path string false "Configuration Type (table name)"
 // @Success 200 {array} string "List of config IDs"
 // @Failure 404 {object} ErrorResponse "No configs found for this type"
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/list [get]
+// @Router /config/{configType}/list [get]
 func (server *Server) handleConfigListGET(ctx iris.Context) {
-	configList, err := configListByType(server.db, "explorer")
-	if configList == nil && err == nil {
-		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", "explorer"), 404, nil)
+	configType := ctx.Params().Get("configType")
+	if configType == "" {
+		configType = ctx.URLParamDefault("type", "explorer")
+	}
+
+	configList, err := configListByType(server.db, configType)
+	if (configList == nil || len(configList) == 0) && err == nil {
+		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", configType), 404, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
@@ -37,6 +43,12 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 		return
 	}
 	jsonResponseFrom(configList, http.StatusOK).write(ctx)
+}
+
+// handleConfigTypesGET returns a list of all supported configuration types.
+func (server *Server) handleConfigTypesGET(ctx iris.Context) {
+	types := []string{"explorer", "nav", "file_summary", "apps_page"}
+	jsonResponseFrom(types, http.StatusOK).write(ctx)
 }
 
 // handleConfigGET godoc
@@ -116,6 +128,10 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 	configType := ctx.Params().Get("configType")
 	configId := ctx.Params().Get("configId")
 
+	if configType == "" {
+		configType = "explorer"
+	}
+
 	// Pass configType to the generic DELETE function
 	deleted, err := configDELETEGeneric(server.db, configId, configType)
 	if deleted == false && err == nil {
@@ -158,6 +174,10 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 func (server *Server) handleConfigPUT(ctx iris.Context) {
 	configId := ctx.Params().Get("configId")
 	configType := ctx.Params().Get("configType")
+
+	if configType == "" {
+		configType = "explorer"
+	}
 
 	var cfg config.Configurable // Use the interface type
 
