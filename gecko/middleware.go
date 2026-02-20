@@ -142,9 +142,10 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 		projectId := ctx.Params().Get("projectId")
 		project_split := strings.Split(projectId, "-")
 		if len(project_split) != 2 {
-			// If it's not a program-project ID (like '1' or 'default'),
-			// it's a global config, so we skip the project-specific check.
-			ctx.Next()
+			errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Request().URL)), http.StatusNotFound, nil)
+			errResponse.log.write(server.Logger)
+			_ = errResponse.write(ctx)
+			ctx.StopExecution()
 			return
 		}
 

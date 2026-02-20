@@ -80,14 +80,21 @@ jobs:
 
         docker run -d \
           --name gecko-qdrant-test \
+          -p 6333:6333 \
           -p 6334:6334 \
           -e QDRANT__SERVICE__API_KEY=your_qdrant_api_key \
           qdrant/qdrant:latest > /dev/null
 
         # Wait for Qdrant to be ready
+        echo "Waiting for Qdrant to be ready..."
         for i in {1..30}; do
-          if curl --silent --fail http://localhost:6334/readyz > /dev/null; then
+          if curl --silent --fail http://localhost:6333/readyz > /dev/null; then
+            echo "Qdrant is ready!"
             break
+          fi
+          if [ $i -eq 30 ]; then
+            echo "Timeout waiting for Qdrant"
+            exit 1
           fi
           sleep 1
         done
@@ -102,10 +109,19 @@ jobs:
           -qdrant-api-key "your_qdrant_api_key" \
           -qdrant-host localhost \
           -qdrant-port 6334 &
+        
         # Wait for application to be ready
+        echo "Waiting for application to be ready..."
         for i in {1..30}; do
           if curl --silent --fail http://localhost:8080/health > /dev/null; then
+            echo "Application is ready!"
             break
+          fi
+          if [ $i -eq 30 ]; then
+            echo "Timeout waiting for application"
+            # Show logs to help debug
+            kill $(jobs -p) || true
+            exit 1
           fi
           sleep 1
         done

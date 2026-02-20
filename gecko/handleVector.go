@@ -239,7 +239,7 @@ func (server *Server) handleGetPoint(ctx iris.Context) {
 		_ = errResponse.write(ctx)
 		return
 	}
-	jsonResponseFrom(resp, http.StatusOK).write(ctx)
+	jsonResponseFrom(adapter.ConvertQdrantRetrievedPointsResponse(resp), http.StatusOK).write(ctx)
 }
 
 // handleQueryPoints godoc

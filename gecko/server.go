@@ -205,12 +205,16 @@ func recoveryMiddleware(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Database unavailable"
 // @Router /health [get]
 func (server *Server) handleHealth(ctx iris.Context) {
-	err := server.db.Ping()
-	if err != nil {
-		server.Logger.Error("Database ping failed: %v", err)
-		response := newErrorResponse("database unavailable", 500, nil)
-		_ = response.write(ctx)
-		return
+	if server.db != nil {
+		err := server.db.Ping()
+		if err != nil {
+			server.Logger.Error("Database ping failed: %v", err)
+			response := newErrorResponse("database unavailable", 500, nil)
+			_ = response.write(ctx)
+			return
+		}
+	} else {
+		server.Logger.Warning("Health check: Database connection not configured.")
 	}
 	server.Logger.Info("Health check passed")
 	_ = jsonResponseFrom("Healthy", http.StatusOK).write(ctx)
