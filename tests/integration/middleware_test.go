@@ -61,7 +61,7 @@ func TestGeneralAuthMware_NoAuthorization(t *testing.T) {
 	ctx.Params().Set("projectId", "ohsu-test")
 
 	mware(ctx)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
 }
 
@@ -199,7 +199,7 @@ func TestBaseConfigsAuthMiddleware_NoAuthorization(t *testing.T) {
 	ctx := app.ContextPool.Acquire(rec, req)
 
 	mware(ctx)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
 }
 
@@ -233,7 +233,7 @@ func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
 
 	mware(ctx)
 
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
 }
 

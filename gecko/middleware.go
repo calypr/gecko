@@ -132,7 +132,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
-			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
+			errResponse := newErrorResponse("Authorization token not provided", http.StatusUnauthorized, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
@@ -189,7 +189,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
-			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
+			errResponse := newErrorResponse("Authorization token not provided", http.StatusUnauthorized, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
