@@ -112,33 +112,43 @@ func (server *Server) MakeRouter() *iris.Application {
 		{
 			configGroup.Get("/types", server.handleConfigTypesGET)
 			configGroup.Get("/list", server.handleConfigListGET)
-			configGroup.Get("/{configType}/list", server.handleConfigListGET)
 
-			// Explorer Configs
-			configGroup.Get("/explorer", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-			configGroup.Get("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-			configGroup.Put("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-			configGroup.Delete("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			// Explorer Config Party
+			explorer := configGroup.Party("/explorer", func(ctx iris.Context) { ctx.Params().Set("configType", "explorer"); ctx.Next() })
+			{
+				explorer.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				explorer.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				explorer.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			}
 
-			// Apps Page Configs
-			configGroup.Get("/apps_page", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-			configGroup.Get("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-			configGroup.Put("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-			configGroup.Delete("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			// Apps Page Config Party
+			appsPage := configGroup.Party("/apps_page", func(ctx iris.Context) { ctx.Params().Set("configType", "apps_page"); ctx.Next() })
+			{
+				appsPage.Get("/", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				appsPage.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				appsPage.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 
-			// Other Shared Types
-			configGroup.Get("/nav/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-			configGroup.Get("/file_summary/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				// AppCard Special Operation Endpoints (Nested under apps_page/appcard)
+				appcard := appsPage.Party("/appcard")
+				{
+					appcard.Get("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
+					appcard.Post("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
+					appcard.Delete("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
+				}
+			}
+
+			// Nav Config Party
+			nav := configGroup.Party("/nav", func(ctx iris.Context) { ctx.Params().Set("configType", "nav"); ctx.Next() })
+			{
+				nav.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			}
+
+			// File Summary Config Party
+			fs := configGroup.Party("/file_summary", func(ctx iris.Context) { ctx.Params().Set("configType", "file_summary"); ctx.Next() })
+			{
+				fs.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			}
 		}
-
-		// AppCard Special Operation Endpoints (Nested under apps_page)
-		router.Get("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
-		router.Post("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
-		router.Delete("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
-
-		router.Get("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
-		router.Post("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
-		router.Delete("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
 	} else {
 		server.Logger.Warning("Skipping DB endpoints — no database configured")
 	}

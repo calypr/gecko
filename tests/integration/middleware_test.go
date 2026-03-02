@@ -188,6 +188,38 @@ func TestConfigAuthMiddleware_MethodNotAllowed(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "Unsupported HTTP method")
 }
 
+func TestConfigAuthMiddleware_AppsPage_PublicGET(t *testing.T) {
+	mockJWT := &MockJWTHandler{}
+	srv := setupServer()
+	cfgMware := srv.ConfigAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/default", nil)
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("configType", "apps_page")
+	ctx.Params().Set("configId", "default")
+
+	cfgMware(ctx)
+	assert.False(t, ctx.IsStopped(), "GET for apps_page should be public")
+}
+
+func TestConfigAuthMiddleware_Nav_PublicGET(t *testing.T) {
+	mockJWT := &MockJWTHandler{}
+	srv := setupServer()
+	cfgMware := srv.ConfigAuthMiddleware(mockJWT)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/nav/default", nil)
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("configType", "nav")
+	ctx.Params().Set("configId", "default")
+
+	cfgMware(ctx)
+	assert.False(t, ctx.IsStopped(), "GET for nav should be public")
+}
+
 func TestBaseConfigsAuthMiddleware_NoAuthorization(t *testing.T) {
 	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
