@@ -127,6 +127,7 @@ func (server *Server) MakeRouter() *iris.Application {
 				appsPage.Get("/", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				appsPage.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				appsPage.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				appsPage.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 
 				// AppCard Special Operation Endpoints (Nested under apps_page/appcard)
 				appcard := appsPage.Party("/appcard")
@@ -141,12 +142,16 @@ func (server *Server) MakeRouter() *iris.Application {
 			nav := configGroup.Party("/nav", func(ctx iris.Context) { ctx.Params().Set("configType", "nav"); ctx.Next() })
 			{
 				nav.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				nav.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				nav.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 			}
 
 			// File Summary Config Party
 			fs := configGroup.Party("/file_summary", func(ctx iris.Context) { ctx.Params().Set("configType", "file_summary"); ctx.Next() })
 			{
 				fs.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				fs.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				fs.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 			}
 		}
 	} else {

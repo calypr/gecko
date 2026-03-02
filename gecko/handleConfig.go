@@ -58,6 +58,14 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 		configType = ctx.URLParamDefault("type", "explorer")
 	}
 
+	if !isKnownType(configType) {
+		msg := fmt.Sprintf("Unknown config type: %s", configType)
+		errResponse := newErrorResponse(msg, http.StatusBadRequest, nil)
+		errResponse.log.write(server.Logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+
 	server.Logger.Info("Listing configs for type: %s", configType)
 
 	configList, err := configListByType(server.db, configType)
