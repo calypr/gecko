@@ -252,7 +252,7 @@ func (server *Server) AppCardAuthMiddleware(jwtHandler middleware.JWTHandler) ir
 		projectId := ctx.Params().Get("projectId")
 
 		if projectId == "" {
-			errResponse := newErrorResponse("Missing or empty projectId (from perms)", 400, nil)
+			errResponse := newErrorResponse("Missing or empty projectId", 400, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			return

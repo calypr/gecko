@@ -107,15 +107,34 @@ func (server *Server) MakeRouter() *iris.Application {
 
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
 	if server.db != nil {
-		router.Get("/config/types", server.handleConfigTypesGET)
-		router.Get("/config/list", server.handleConfigListGET)
-		router.Get("/config/{configType}/list", server.handleConfigListGET)
-		router.Get("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-		router.Get("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-		router.Put("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-		router.Put("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-		router.Delete("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
-		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+		// Configuration Endpoints - Explicit Type Mapping to avoid route collisions
+		configGroup := router.Party("/config")
+		{
+			configGroup.Get("/types", server.handleConfigTypesGET)
+			configGroup.Get("/list", server.handleConfigListGET)
+			configGroup.Get("/{configType}/list", server.handleConfigListGET)
+
+			// Explorer Configs
+			configGroup.Get("/explorer", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			configGroup.Get("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			configGroup.Put("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+			configGroup.Delete("/explorer/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+
+			// Apps Page Configs
+			configGroup.Get("/apps_page", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			configGroup.Get("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			configGroup.Put("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+			configGroup.Delete("/apps_page/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+
+			// Other Shared Types
+			configGroup.Get("/nav/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+			configGroup.Get("/file_summary/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+		}
+
+		// AppCard Special Operation Endpoints (Nested under apps_page)
+		router.Get("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
+		router.Post("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
+		router.Delete("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
 
 		router.Get("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
 		router.Post("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)

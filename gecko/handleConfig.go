@@ -23,21 +23,18 @@ func (server *Server) resolveConfigParams(ctx iris.Context) (string, string) {
 	configType := ctx.Params().Get("configType")
 	configId := ctx.Params().Get("configId")
 
-	// If we are on a shorthand route like /config/{configId}
-	if configType == "" && configId != "" {
-		if isKnownType(configId) {
-			// e.g. /config/apps_page -> type: apps_page, id: default
-			return configId, "default"
-		}
-		// e.g. /config/my-project -> type: explorer, id: my-project
-		return "explorer", configId
-	}
-
+	// Fallback to 'explorer' if type is completely missing (path /config/{configId})
 	if configType == "" {
 		configType = "explorer"
 	}
+
+	// Fallback to '1' for apps_page for backwards compatibility, otherwise 'default'
 	if configId == "" {
-		configId = "default"
+		if configType == "apps_page" {
+			configId = "1"
+		} else {
+			configId = "default"
+		}
 	}
 
 	return configType, configId

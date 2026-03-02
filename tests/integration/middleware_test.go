@@ -225,11 +225,11 @@ func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
 	srv := setupServer()
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "HTAN_INT-BForePC") // would be set by path in real route
+	ctx.Params().Set("projectId", "TEST-PROJECT") // would be set by path in real route
 
 	mware(ctx)
 
@@ -240,17 +240,17 @@ func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
 // TestAppCardAuthMiddleware_GET_Success
 func TestAppCardAuthMiddleware_GET_Success(t *testing.T) {
 	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
 	}
 	srv := setupServer()
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+	ctx.Params().Set("projectId", "TEST-PROJECT")
 
 	mware(ctx)
 
@@ -266,12 +266,12 @@ func TestAppCardAuthMiddleware_GET_Denied(t *testing.T) {
 	srv := setupServer()
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+	ctx.Params().Set("projectId", "TEST-PROJECT")
 
 	mware(ctx)
 
@@ -296,23 +296,23 @@ func TestAppCardAuthMiddleware_POST_MissingPermsInBody(t *testing.T) {
 	mware(ctx)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Missing or empty projectId (from perms)")
+	assert.Contains(t, rec.Body.String(), "Missing or empty projectId")
 }
 
 // TestAppCardAuthMiddleware_POST_Success
 func TestAppCardAuthMiddleware_POST_Success(t *testing.T) {
 	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
 	}
 	srv := setupServer()
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
 	body := `{
-		"title": "Explore BForePC",
+		"title": "Explore TEST",
 		"description": "Explore data",
 		"icon": "/icons/binoculars.svg",
-		"href": "/Explorer/HTAN_INT-BForePC",
-		"perms": "HTAN_INT-BForePC"
+		"href": "/Explorer/TEST-PROJECT",
+		"perms": "TEST-PROJECT"
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer dummy")
@@ -320,6 +320,7 @@ func TestAppCardAuthMiddleware_POST_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "TEST-PROJECT")
 
 	mware(ctx)
 
@@ -336,8 +337,8 @@ func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
 	body := `{
-		"title": "Explore BForePC",
-		"perms": "HTAN_INT-BForePC"
+		"title": "Explore TEST",
+		"perms": "TEST-PROJECT"
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer dummy")
@@ -345,6 +346,7 @@ func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "TEST-PROJECT")
 
 	mware(ctx)
 
@@ -355,17 +357,17 @@ func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
 // TestAppCardAuthMiddleware_DELETE_Success
 func TestAppCardAuthMiddleware_DELETE_Success(t *testing.T) {
 	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/HTAN_INT/projects/BForePC"},
+		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
 	}
 	srv := setupServer()
 	mware := srv.AppCardAuthMiddleware(mockJWT)
 
-	req := httptest.NewRequest(http.MethodDelete, "/config/apps_page/appcard/HTAN_INT-BForePC", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/config/apps_page/appcard/TEST-PROJECT", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "HTAN_INT-BForePC")
+	ctx.Params().Set("projectId", "TEST-PROJECT")
 
 	mware(ctx)
 
