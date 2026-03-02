@@ -42,10 +42,11 @@ func TestHandleAppCardPOST_Update(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := `{"perms": "PROG-PROJ", "title": "New Title"}`
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard/PROG-PROJ", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	app := iris.New()
 	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "PROG-PROJ")
 
 	srv.handleAppCardPOST(ctx)
 
@@ -92,6 +93,64 @@ func TestHandleAppCardDELETE_Success(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "deleted")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
+
+func TestHandleAppCardPOST_Integration(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	srv := &Server{
+		db:     sqlxDB,
+		Logger: &LogHandler{Logger: log.New(os.Stdout, "", 0)},
+	}
+
+	// Mock for initial config read
+	rows := sqlmock.NewRows([]string{"name", "content"}).
+		AddRow("1", []byte(`{"appCards": []}`))
+
+	mock.ExpectQuery("^SELECT name, content FROM config_schema.apps_page WHERE name=.+").
+		WithArgs("1").
+		WillReturnRows(rows)
+
+	// Mock for final config save
+	mock.ExpectExec("INSERT INTO config_schema.apps_page").
+		WithArgs("1", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	app := iris.New()
+
+	// Using the actual middleware pattern (simple projectId from Param)
+	app.Post("/config/apps_page/appcard/{projectId}", func(ctx iris.Context) {
+		projectId := ctx.Params().Get("projectId")
+		if projectId == "" {
+			ctx.StatusCode(400)
+			return
+		}
+		ctx.Next()
+	}, srv.handleAppCardPOST)
+
+	if err := app.Build(); err != nil {
+		t.Fatalf("Failed to build iris app: %v", err)
+	}
+
+	body := `{"perms": "PROG-PROJ", "title": "New Title"}`
+	// New URL format: /config/apps_page/appcard/{projectId}
+	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard/PROG-PROJ", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "added or updated")
+	assert.Contains(t, rec.Body.String(), "perms PROG-PROJ")
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled expectations: %s", err)

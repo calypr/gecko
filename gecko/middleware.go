@@ -1,7 +1,6 @@
 package gecko
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -9,7 +8,6 @@ import (
 	"time"
 
 	"github.com/bmeg/grip-graphql/middleware"
-	"github.com/calypr/gecko/gecko/config"
 	"github.com/kataras/iris/v12"
 )
 
@@ -251,27 +249,7 @@ func (server *Server) AppCardAuthMiddleware(jwtHandler middleware.JWTHandler) ir
 			return
 		}
 
-		var projectId string
-
-		if method == "GET" || method == "DELETE" {
-			projectId = ctx.Params().Get("projectId")
-		} else { // POST
-			body, err := ctx.GetBody()
-			if err != nil {
-				errResponse := newErrorResponse("Failed to read request body", 500, nil)
-				errResponse.log.write(server.Logger)
-				_ = errResponse.write(ctx)
-				return
-			}
-			var card config.AppCard
-			if err := json.Unmarshal(body, &card); err != nil {
-				errResponse := newErrorResponse("Invalid JSON in body", 400, nil)
-				errResponse.log.write(server.Logger)
-				_ = errResponse.write(ctx)
-				return
-			}
-			projectId = card.Perms
-		}
+		projectId := ctx.Params().Get("projectId")
 
 		if projectId == "" {
 			errResponse := newErrorResponse("Missing or empty projectId (from perms)", 400, nil)

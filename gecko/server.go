@@ -117,7 +117,7 @@ func (server *Server) MakeRouter() *iris.Application {
 		router.Delete("/config/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 
-		router.Post("/config/apps_page/appcard", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
+		router.Post("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
 		router.Delete("/config/apps_page/appcard/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
 	} else {
 		server.Logger.Warning("Skipping DB endpoints — no database configured")

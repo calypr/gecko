@@ -2,7 +2,6 @@ package gecko
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -72,12 +71,13 @@ func (server *Server) handleAppCardGET(ctx iris.Context) {
 // @Tags Config
 // @Accept json
 // @Produce json
+// @Param projectId path string true "Project ID (AppCard perms value, e.g., HTAN_INT-BForePC)"
 // @Param body body config.AppCard true "AppCard details"
 // @Success 200 {object} map[string]interface{} "AppCard added or updated"
-// @Failure 400 {object} ErrorResponse "Invalid request body"
+// @Failure 400 {object} ErrorResponse "Invalid request body or ID mismatch"
 // @Failure 404 {object} ErrorResponse "Config not found (if required)"
 // @Failure 500 {object} ErrorResponse "Server error"
-// @Router /config/apps_page/appcard [post]
+// @Router /config/apps_page/appcard/{projectId} [post]
 func (server *Server) handleAppCardPOST(ctx iris.Context) {
 	configType := "apps_page"
 	configId := "1" // Matches the ID used in helm chart bootstrap
@@ -95,11 +95,18 @@ func (server *Server) handleAppCardPOST(ctx iris.Context) {
 		return
 	}
 
-	// Body already read in middleware; GetBody() returns cached version
-	body, _ := ctx.GetBody()
+	projectId := ctx.Params().Get("projectId")
 	var newCard config.AppCard
-	if err := json.Unmarshal(body, &newCard); err != nil {
+	if err := ctx.ReadJSON(&newCard); err != nil {
 		msg := "Invalid JSON format"
+		errResponse := newErrorResponse(msg, 400, &err)
+		errResponse.log.write(server.Logger)
+		_ = errResponse.write(ctx)
+		return
+	}
+
+	if newCard.Perms != projectId {
+		msg := fmt.Sprintf("Project ID in path (%s) does not match perms in body (%s)", projectId, newCard.Perms)
 		errResponse := newErrorResponse(msg, 400, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
