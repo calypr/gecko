@@ -145,6 +145,7 @@ type ConfigItem struct {
 	Dropdowns        map[string]any   `json:"dropdowns,omitempty"`
 	Buttons          []ButtonConfig   `json:"buttons,omitempty"`
 	LoginForDownload bool             `json:"loginForDownload,omitempty"`
+	PreFilters       map[string]any   `json:"preFilters,omitempty"`
 }
 
 type Config struct {

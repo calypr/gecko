@@ -156,3 +156,40 @@ func TestHandleAppCardPOST_Integration(t *testing.T) {
 		t.Errorf("unfulfilled expectations: %s", err)
 	}
 }
+
+func TestHandleAppCardGET_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("error opening mock db: %s", err)
+	}
+	defer db.Close()
+	sqlxDB := sqlx.NewDb(db, "sqlmock")
+
+	srv := &Server{
+		db:     sqlxDB,
+		Logger: &LogHandler{Logger: log.New(os.Stdout, "", 0)},
+	}
+
+	rows := sqlmock.NewRows([]string{"name", "content"}).
+		AddRow("1", []byte(`{"appCards": [{"perms": "PROG-PROJ", "title": "Title"}]}`))
+
+	mock.ExpectQuery("^SELECT name, content FROM config_schema.apps_page WHERE name=.+").
+		WithArgs("1").
+		WillReturnRows(rows)
+
+	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/PROG-PROJ", nil)
+	rec := httptest.NewRecorder()
+	app := iris.New()
+	ctx := app.ContextPool.Acquire(rec, req)
+	ctx.Params().Set("projectId", "PROG-PROJ")
+
+	srv.handleAppCardGET(ctx)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "PROG-PROJ")
+	assert.Contains(t, rec.Body.String(), "Title")
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %s", err)
+	}
+}
