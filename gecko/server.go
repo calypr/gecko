@@ -116,6 +116,7 @@ func (server *Server) MakeRouter() *iris.Application {
 			// Explorer Config Party
 			explorer := configGroup.Party("/explorer", func(ctx iris.Context) { ctx.Params().Set("configType", "explorer"); ctx.Next() })
 			{
+				explorer.Get("/list", server.handleConfigListGET)
 				explorer.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				explorer.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 				explorer.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
@@ -124,6 +125,7 @@ func (server *Server) MakeRouter() *iris.Application {
 			// Apps Page Config Party
 			appsPage := configGroup.Party("/apps_page", func(ctx iris.Context) { ctx.Params().Set("configType", "apps_page"); ctx.Next() })
 			{
+				appsPage.Get("/list", server.handleConfigListGET)
 				appsPage.Get("/", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				appsPage.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				appsPage.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
@@ -141,6 +143,7 @@ func (server *Server) MakeRouter() *iris.Application {
 			// Nav Config Party
 			nav := configGroup.Party("/nav", func(ctx iris.Context) { ctx.Params().Set("configType", "nav"); ctx.Next() })
 			{
+				nav.Get("/list", server.handleConfigListGET)
 				nav.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				nav.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 				nav.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
@@ -149,6 +152,7 @@ func (server *Server) MakeRouter() *iris.Application {
 			// File Summary Config Party
 			fs := configGroup.Party("/file_summary", func(ctx iris.Context) { ctx.Params().Set("configType", "file_summary"); ctx.Next() })
 			{
+				fs.Get("/list", server.handleConfigListGET)
 				fs.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
 				fs.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
 				fs.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
