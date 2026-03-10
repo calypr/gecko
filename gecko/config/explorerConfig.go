@@ -151,6 +151,7 @@ type ConfigItem struct {
 type Config struct {
 	SharedFilters  SharedFiltersConfig `json:"sharedFilters"`
 	ExplorerConfig []ConfigItem        `json:"explorerConfig"`
+	FileActions    map[string][]string `json:"fileActions,omitempty"`
 }
 
 type SharedFiltersConfig struct {
