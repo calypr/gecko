@@ -54,13 +54,6 @@ func (server *Server) handleListProjects(ctx iris.Context) {
 	jsonResponseFrom(out, 200).write(ctx)
 }
 
-type DirectoryResponse struct {
-	Directories []map[string]any `json:"Directories"`
-	Documents   []map[string]any `json:"Documents"`
-	Message     string           `json:"Message"`
-	Code        string           `json:"Code"`
-}
-
 // handleDirGet godoc
 // @Summary Retrieve directory information for a project
 // @Description Retrieve directory details for the given project ID and Directory path
