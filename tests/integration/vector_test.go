@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/calypr/gecko/gecko/adapter"
 	"github.com/google/uuid"
@@ -26,7 +27,8 @@ func generateRandomFloats(n int) []float32 {
 	return randomFloats
 }
 
-const testCollectionName = "test_collection_gecko"
+var testCollectionName = fmt.Sprintf("test_collection_%x", time.Now().UnixNano())
+
 const vectorEndpoint = "http://localhost:8080/vector/collections"
 const queryEndpoint = "http://localhost:8080/vector/collections/%s/points/search"
 const VECTOR_NAME = "test_vector"
@@ -178,7 +180,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		assert.Equal(
 			t,
 			"c3fb3d5c-e423-46ba-a47a-9ff97b94fc50",
-			respData[0]["id"].(map[string]any)["PointIdOptions"].(map[string]any)["Uuid"],
+			respData[0]["id"],
 			"Expected point ID to be c3fb3d5c-e423-46ba-a47a-9ff97b94fc50",
 		)
 	})
@@ -314,28 +316,30 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_ByVector_Success", func(t *testing.T) {
-		// First, get a point to extract its vector
-		pointID := ids[0] // From bulk upsert
-		getUrl := fmt.Sprintf("%s/%s", pointsEndpoint, pointID)
-		getResp, err := http.DefaultClient.Do(makeRequest(http.MethodGet, getUrl, nil))
-		assert.NoError(t, err)
-		defer getResp.Body.Close()
-
-		var pointData []map[string]any
-		buf := new(bytes.Buffer)
-		_, _ = buf.ReadFrom(getResp.Body)
-		_ = json.Unmarshal(buf.Bytes(), &pointData)
-		//t.Log("POINT DATA: ", pointData[0]["vectors"].(map[string]any)["VectorsOptions"].(map[string]any)["Vectors"].(map[string]any)["vectors"].(map[string]any)[VECTOR_NAME].(map[string]any))
-		vectorMap := pointData[0]["vectors"].(map[string]any)["VectorsOptions"].(map[string]any)["Vectors"].(map[string]any)["vectors"].(map[string]any)[VECTOR_NAME].(map[string]any)
-		vector := vectorMap["data"].([]any)
-		queryVector := make([]float32, len(vector))
-		for i, v := range vector {
-			queryVector[i] = float32(v.(float64))
+		// Upsert a fresh point specifically for this test to ensure it exists and has a vector
+		pointID := uuid.NewString()
+		testVec := generateRandomFloats(128)
+		upsertPayload := map[string]any{
+			"points": []map[string]any{
+				{
+					"id":          pointID,
+					"vector_name": VECTOR_NAME,
+					"vector":      testVec,
+				},
+			},
 		}
+		marshalledJSON, err := json.Marshal(upsertPayload)
+		assert.NoError(t, err)
 
+		upsertResp, err := http.DefaultClient.Do(makeRequest(http.MethodPut, pointsEndpoint, marshalledJSON))
+		assert.NoError(t, err)
+		upsertResp.Body.Close()
+		assert.Equal(t, http.StatusOK, upsertResp.StatusCode)
+
+		// Now query using the vector we just generated
 		url := fmt.Sprintf(queryEndpoint, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
-			Query:      queryVector,
+			Query:      testVec,
 			Limit:      10,
 			VectorName: VECTOR_NAME,
 			WithVector: ptr(true),
@@ -350,7 +354,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK for successful vector query")
 
 		var actualResponse []map[string]any
-		buf = new(bytes.Buffer)
+		buf := new(bytes.Buffer)
 		_, err = buf.ReadFrom(resp.Body)
 		assert.NoError(t, err)
 		err = json.Unmarshal(buf.Bytes(), &actualResponse)

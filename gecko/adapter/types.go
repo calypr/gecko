@@ -21,10 +21,6 @@ type Point struct {
 	Payload    map[string]any `json:"payload,omitempty"`
 }
 
-type UpsertResponse struct {
-	Result bool `json:"result"`
-}
-
 // Collection Structs
 type VectorParams struct {
 	Size     uint64 `json:"size"`

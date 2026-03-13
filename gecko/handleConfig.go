@@ -11,32 +11,82 @@ import (
 	"github.com/kataras/iris/v12"
 )
 
+func isKnownType(t string) bool {
+	switch t {
+	case "explorer", "nav", "file_summary", "apps_page":
+		return true
+	}
+	return false
+}
+
+func (server *Server) resolveConfigParams(ctx iris.Context) (string, string) {
+	configType := ctx.Params().Get("configType")
+	configId := ctx.Params().Get("configId")
+
+	// Fallback to 'explorer' if type is completely missing (path /config/{configId})
+	if configType == "" {
+		configType = "explorer"
+	}
+
+	// Fallback to '1' for apps_page for backwards compatibility, otherwise 'default'
+	if configId == "" {
+		if configType == "apps_page" {
+			configId = "1"
+		} else {
+			configId = "default"
+		}
+	}
+
+	return configType, configId
+}
+
 // handleConfigListGET godoc
 // @Summary List all configuration IDs for a specific type
 // @Description Retrieve a list of all available configuration IDs for the given type (table).
 // @Tags Config
 // @Accept json
 // @Produce json
-// @Param configType path string true "Configuration Type (table name)"
+// @Param configType path string false "Configuration Type (table name)"
 // @Success 200 {array} string "List of config IDs"
 // @Failure 404 {object} ErrorResponse "No configs found for this type"
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/list [get]
+// @Router /config/{configType}/list [get]
 func (server *Server) handleConfigListGET(ctx iris.Context) {
-	configList, err := configListByType(server.db, "explorer")
-	if configList == nil && err == nil {
-		errResponse := newErrorResponse(fmt.Sprintf("No configs found for type: %s", "explorer"), 404, nil)
+	configType := ctx.Params().Get("configType")
+	if configType == "" {
+		configType = ctx.URLParamDefault("type", "explorer")
+	}
+
+	if !isKnownType(configType) {
+		msg := fmt.Sprintf("Unknown config type: %s", configType)
+		errResponse := newErrorResponse(msg, http.StatusBadRequest, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
+
+	server.Logger.Info("Listing configs for type: %s", configType)
+
+	configList, err := configListByType(server.db, configType)
 	if err != nil {
 		errResponse := newErrorResponse(fmt.Sprintf("Database error: %s", err), 500, nil)
 		errResponse.log.write(server.Logger)
 		_ = errResponse.write(ctx)
 		return
 	}
+
+	if configList == nil {
+		configList = []string{}
+	}
+
 	jsonResponseFrom(configList, http.StatusOK).write(ctx)
+}
+
+// handleConfigTypesGET returns a list of all supported configuration types.
+func (server *Server) handleConfigTypesGET(ctx iris.Context) {
+	types := []string{"explorer", "nav", "file_summary", "apps_page"}
+	jsonResponseFrom(types, http.StatusOK).write(ctx)
 }
 
 // handleConfigGET godoc
@@ -51,12 +101,8 @@ func (server *Server) handleConfigListGET(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/{configType}/{configId} [get]
 func (server *Server) handleConfigGET(ctx iris.Context) {
-	configType := ctx.Params().Get("configType")
-	configId := ctx.Params().Get("configId")
-
-	if configType == "" {
-		configType = "explorer"
-	}
+	configType, configId := server.resolveConfigParams(ctx)
+	server.Logger.Info("Fetching config: type=%s, id=%s", configType, configId)
 
 	var cfg config.Configurable // Use the interface type
 
@@ -79,17 +125,14 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 
 	// Pass configType to the generic GET function
 	err := configGETGeneric(server.db, configId, configType, cfg)
-	// returning 404 on an empty config might be a bit controversial,
-	// but I think it will stock alot of edge cases
-	if cfg.IsZero() && err == nil || errors.Is(err, sql.ErrNoRows) {
-		msg := fmt.Sprintf("no config found with configId: %s of type: %s", configId, configType)
-		errResponse := newErrorResponse(msg, 404, nil)
-		errResponse.log.write(server.Logger)
-		_ = errResponse.write(ctx)
-		return
-	}
-
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			msg := fmt.Sprintf("no config found with configId: %s of type: %s", configId, configType)
+			errResponse := newErrorResponse(msg, 404, nil)
+			errResponse.log.write(server.Logger)
+			_ = errResponse.write(ctx)
+			return
+		}
 		msg := fmt.Sprintf("config query failed: %s", err.Error())
 		errResponse := newErrorResponse(msg, 500, nil)
 		errResponse.log.write(server.Logger)
@@ -113,8 +156,7 @@ func (server *Server) handleConfigGET(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /config/{configType}/{configId} [delete]
 func (server *Server) handleConfigDELETE(ctx iris.Context) {
-	configType := ctx.Params().Get("configType")
-	configId := ctx.Params().Get("configId")
+	configType, configId := server.resolveConfigParams(ctx)
 
 	// Pass configType to the generic DELETE function
 	deleted, err := configDELETEGeneric(server.db, configId, configType)
@@ -156,8 +198,7 @@ func (server *Server) handleConfigDELETE(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Internal server error"
 // @Router /config/{configType}/{configId} [put]
 func (server *Server) handleConfigPUT(ctx iris.Context) {
-	configId := ctx.Params().Get("configId")
-	configType := ctx.Params().Get("configType")
+	configType, configId := server.resolveConfigParams(ctx)
 
 	var cfg config.Configurable // Use the interface type
 

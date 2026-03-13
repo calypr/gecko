@@ -30,7 +30,7 @@ func (server *Server) GetProjectsFromToken(ctx iris.Context, jwtHandler middlewa
 			fmt.Println("ERR: ", err)
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				return nil, newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				return nil, newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 
 			}
 			return nil, newErrorResponse(val.Message, val.StatusCode, nil)
@@ -69,7 +69,8 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *ErrorResponse) {
 func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
 	return func(ctx iris.Context) {
 		method := ctx.Method()
-		configType := ctx.Params().Get("configType")
+		configType, configID := server.resolveConfigParams(ctx)
+
 		if configType == "explorer" {
 			var permMethod string
 			switch method {
@@ -87,7 +88,6 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 				return
 			}
 
-			configID := ctx.Params().Get("configId")
 			ctx.Params().Set("projectId", configID)
 
 			explorerAuthHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
@@ -98,13 +98,14 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 			ctx.Next()
 
 		} else {
-			// Non-explorer path
+			// Non-explorer path (nav, apps_page, etc.)
 			if method == "GET" {
 				ctx.Next()
 				return
 			}
 
 			if method == "PUT" || method == "DELETE" {
+				// Base config edit requires broader permission
 				baseAuthHandler := server.BaseConfigsAuthMiddleware(jwtHandler, "*", "*", "/programs")
 				baseAuthHandler(ctx)
 
@@ -125,25 +126,21 @@ func (server *Server) ConfigAuthMiddleware(jwtHandler middleware.JWTHandler) iri
 	}
 }
 
-func ConfigIDToProjectIDMware(ctx iris.Context) {
-	configID := ctx.Params().Get("configId")
-	ctx.Params().Set("projectId", configID)
-}
-
 func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method, service string) iris.Handler {
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
-			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
+			errResponse := newErrorResponse("Authorization token not provided", http.StatusUnauthorized, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
 			return
 		}
 
-		project_split := strings.Split(ctx.Params().Get("projectId"), "-")
+		projectId := ctx.Params().Get("projectId")
+		project_split := strings.Split(projectId, "-")
 		if len(project_split) != 2 {
-			errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: incorrect path %s", ctx.Request().URL), http.StatusNotFound, nil)
+			errResponse := newErrorResponse(fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Request().URL)), http.StatusNotFound, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
@@ -154,7 +151,7 @@ func (server *Server) GeneralAuthMware(jwtHandler middleware.JWTHandler, method,
 		if err != nil {
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				errResponse := newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
@@ -190,7 +187,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 	return func(ctx iris.Context) {
 		authorizationHeader := ctx.GetHeader("Authorization")
 		if authorizationHeader == "" {
-			errResponse := newErrorResponse("Authorization token not provided", http.StatusBadRequest, nil)
+			errResponse := newErrorResponse("Authorization token not provided", http.StatusUnauthorized, nil)
 			errResponse.log.write(server.Logger)
 			_ = errResponse.write(ctx)
 			ctx.StopExecution()
@@ -209,7 +206,7 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 		if err != nil {
 			val, ok := err.(*middleware.ServerError)
 			if !ok {
-				errResponse := newErrorResponse(fmt.Sprintf("expecting error to be serverError type"), http.StatusNotFound, nil)
+				errResponse := newErrorResponse("expecting error to be serverError type", http.StatusNotFound, nil)
 				errResponse.log.write(server.Logger)
 				_ = errResponse.write(ctx)
 				ctx.StopExecution()
@@ -228,6 +225,49 @@ func (server *Server) BaseConfigsAuthMiddleware(jwtHandler middleware.JWTHandler
 			ctx.StopExecution()
 			return
 		}
+		ctx.Next()
+	}
+}
+
+func (server *Server) AppCardAuthMiddleware(jwtHandler middleware.JWTHandler) iris.Handler {
+	return func(ctx iris.Context) {
+		method := ctx.Method()
+
+		var permMethod string
+		switch method {
+		case "GET":
+			permMethod = "read"
+		case "POST", "DELETE":
+			permMethod = "create"
+		default:
+			errResp := newErrorResponse(
+				fmt.Sprintf("Unsupported HTTP method %s", method),
+				http.StatusMethodNotAllowed, nil,
+			)
+			errResp.log.write(server.Logger)
+			_ = errResp.write(ctx)
+			return
+		}
+
+		projectId := ctx.Params().Get("projectId")
+
+		if projectId == "" {
+			errResponse := newErrorResponse("Missing or empty projectId", 400, nil)
+			errResponse.log.write(server.Logger)
+			_ = errResponse.write(ctx)
+			return
+		}
+
+		// Set projectId for GeneralAuthMware to check permissions
+		ctx.Params().Set("projectId", projectId)
+
+		authHandler := server.GeneralAuthMware(jwtHandler, permMethod, "*")
+		authHandler(ctx)
+
+		if ctx.IsStopped() {
+			return
+		}
+
 		ctx.Next()
 	}
 }

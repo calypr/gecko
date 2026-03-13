@@ -77,8 +77,24 @@ var TestConfig string = `{
         }
       },
       "dropdowns": {},
-      "buttons": [],
-      "loginForDownload": false
+      "buttons": [
+        {
+          "enabled": true,
+          "type": "manifest",
+          "action": "download",
+          "title": "Download Manifest",
+          "leftIcon": "download",
+          "fileName": "manifest.json",
+          "actionArgs": {
+            "resourceIndexType": "file",
+            "resourceIdField": "file_id",
+            "referenceIdFieldInDataIndex": "file_id",
+            "referenceIdFieldInResourceIndex": "file_id"
+          }
+        }
+      ],
+      "loginForDownload": false,
+      "preFilters": {}
     }
   ]
-}`
+} `

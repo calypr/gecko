@@ -178,7 +178,7 @@ func ToQdrantFilter(filter *HeadFilter) *qdrant.Filter {
 		return nil
 	}
 
-	mustConditions := make([]*qdrant.Condition, len(filter.Must), len(filter.Must))
+	mustConditions := make([]*qdrant.Condition, len(filter.Must))
 
 	for i, cond := range filter.Must {
 		switch v := cond.Match.Value.(type) {

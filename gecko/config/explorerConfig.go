@@ -2,11 +2,6 @@ package config
 
 import "encoding/json"
 
-type Reports struct {
-	Title       string      `json:"Title"`
-	TableConfig TableConfig `json:"tableConfig"`
-}
-
 type FieldConfig struct {
 	Field     string `json:"field,omitempty"`
 	DataField string `json:"dataField,omitempty"`
@@ -145,11 +140,18 @@ type ConfigItem struct {
 	Dropdowns        map[string]any   `json:"dropdowns,omitempty"`
 	Buttons          []ButtonConfig   `json:"buttons,omitempty"`
 	LoginForDownload bool             `json:"loginForDownload,omitempty"`
+	PreFilters       map[string]any   `json:"preFilters,omitempty"`
 }
 
 type Config struct {
 	SharedFilters  SharedFiltersConfig `json:"sharedFilters"`
 	ExplorerConfig []ConfigItem        `json:"explorerConfig"`
+	FileActions    FileActionsConfig   `json:"fileActions,omitempty"`
+}
+
+type FileActionsConfig struct {
+	Extensions map[string][]string `json:"extensions,omitempty"`
+	Actions    map[string]string   `json:"actions,omitempty"`
 }
 
 type SharedFiltersConfig struct {

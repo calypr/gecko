@@ -107,10 +107,57 @@ func (server *Server) MakeRouter() *iris.Application {
 
 	// project id must be in the form [program-project] if not permissions checking will not work and you won't be able to view the project
 	if server.db != nil {
-		router.Get("/config/list", server.handleConfigListGET)
-		router.Get("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
-		router.Put("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
-		router.Delete("/config/{configType}/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+		// Configuration Endpoints - Explicit Type Mapping to avoid route collisions
+		configGroup := router.Party("/config")
+		{
+			configGroup.Get("/types", server.handleConfigTypesGET)
+			configGroup.Get("/list", server.handleConfigListGET)
+
+			// Explorer Config Party
+			explorer := configGroup.Party("/explorer", func(ctx iris.Context) { ctx.Params().Set("configType", "explorer"); ctx.Next() })
+			{
+				explorer.Get("/list", server.handleConfigListGET)
+				explorer.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				explorer.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				explorer.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			}
+
+			// Apps Page Config Party
+			appsPage := configGroup.Party("/apps_page", func(ctx iris.Context) { ctx.Params().Set("configType", "apps_page"); ctx.Next() })
+			{
+				appsPage.Get("/list", server.handleConfigListGET)
+				appsPage.Get("/", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				appsPage.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				appsPage.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				appsPage.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+
+				// AppCard Special Operation Endpoints (Nested under apps_page/appcard)
+				appcard := appsPage.Party("/appcard")
+				{
+					appcard.Get("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardGET)
+					appcard.Post("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardPOST)
+					appcard.Delete("/{projectId}", server.AppCardAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleAppCardDELETE)
+				}
+			}
+
+			// Nav Config Party
+			nav := configGroup.Party("/nav", func(ctx iris.Context) { ctx.Params().Set("configType", "nav"); ctx.Next() })
+			{
+				nav.Get("/list", server.handleConfigListGET)
+				nav.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				nav.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				nav.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			}
+
+			// File Summary Config Party
+			fs := configGroup.Party("/file_summary", func(ctx iris.Context) { ctx.Params().Set("configType", "file_summary"); ctx.Next() })
+			{
+				fs.Get("/list", server.handleConfigListGET)
+				fs.Get("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigGET)
+				fs.Put("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigPUT)
+				fs.Delete("/{configId}", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
+			}
+		}
 	} else {
 		server.Logger.Warning("Skipping DB endpoints — no database configured")
 	}
@@ -197,12 +244,16 @@ func recoveryMiddleware(ctx iris.Context) {
 // @Failure 500 {object} ErrorResponse "Database unavailable"
 // @Router /health [get]
 func (server *Server) handleHealth(ctx iris.Context) {
-	err := server.db.Ping()
-	if err != nil {
-		server.Logger.Error("Database ping failed: %v", err)
-		response := newErrorResponse("database unavailable", 500, nil)
-		_ = response.write(ctx)
-		return
+	if server.db != nil {
+		err := server.db.Ping()
+		if err != nil {
+			server.Logger.Error("Database ping failed: %v", err)
+			response := newErrorResponse("database unavailable", 500, nil)
+			_ = response.write(ctx)
+			return
+		}
+	} else {
+		server.Logger.Warning("Health check: Database connection not configured.")
 	}
 	server.Logger.Info("Health check passed")
 	_ = jsonResponseFrom("Healthy", http.StatusOK).write(ctx)
