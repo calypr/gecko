@@ -1,7 +1,11 @@
-_default: bin/gecko
-	@:  # if we have a command this silences "nothing to be done"
+.PHONY: _default clean swagger
 
-bin/gecko: main.go gecko/*.go # help: run the server
+_default: bin/gecko
+	@:
+
+# Simply depend on main.go, or leave the prerequisites blank. 
+# Go handles the rest.
+bin/gecko: main.go
 	go build -o bin/gecko .
 
 clean:
