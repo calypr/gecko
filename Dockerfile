@@ -18,5 +18,5 @@ COPY . .
 RUN GITCOMMIT=$(git rev-parse HEAD) \
     GITVERSION=$(git describe --always --tags) \
     && go build \
-    -ldflags="-X 'github.com/calypr/gecko/gecko/version.GitCommit=${GITCOMMIT}' -X 'github.com/calypr/gecko/gecko/version.GitVersion=${GITVERSION}'" \
+    -ldflags="-X 'github.com/calypr/gecko/internal/server/version.GitCommit=${GITCOMMIT}' -X 'github.com/calypr/gecko/internal/server/version.GitVersion=${GITVERSION}'" \
     -o bin/gecko

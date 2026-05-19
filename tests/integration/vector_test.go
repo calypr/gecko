@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calypr/gecko/gecko/adapter"
+	"github.com/calypr/gecko/internal/adapter"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
@@ -29,11 +29,10 @@ func generateRandomFloats(n int) []float32 {
 
 var testCollectionName = fmt.Sprintf("test_collection_%x", time.Now().UnixNano())
 
-const vectorEndpoint = "http://localhost:8080/vector/collections"
-const queryEndpoint = "http://localhost:8080/vector/collections/%s/points/search"
+const queryEndpoint = "%s/vector/collections/%s/points/search"
 const VECTOR_NAME = "test_vector"
 
-func cleanupCollection(t *testing.T, name string) {
+func cleanupCollection(t *testing.T, name string, vectorEndpoint string) {
 	t.Helper()
 	url := fmt.Sprintf("%s/%s", vectorEndpoint, name)
 	_, err := http.DefaultClient.Do(makeRequest(http.MethodDelete, url, nil))
@@ -43,7 +42,9 @@ func cleanupCollection(t *testing.T, name string) {
 }
 
 func TestQdrantCollectionWorkflow(t *testing.T) {
-	cleanupCollection(t, testCollectionName)
+	baseURL := requireIntegrationServer(t)
+	vectorEndpoint := baseURL + "/vector/collections"
+	cleanupCollection(t, testCollectionName, vectorEndpoint)
 	pointsEndpoint := fmt.Sprintf("%s/%s/points", vectorEndpoint, testCollectionName)
 	// Test CreateCollection (PUT /vector/collections/{collection})
 	t.Run("CreateCollection_OK", func(t *testing.T) {
@@ -186,7 +187,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_Success", func(t *testing.T) {
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			LookupID:   ptr("c3fb3d5c-e423-46ba-a47a-9ff97b94fc50"),
 			Limit:      100,
@@ -218,7 +219,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_MissingVector_BadRequest", func(t *testing.T) {
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			Query: []float32{},
 			Limit: 5,
@@ -274,7 +275,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_ByColorFilter_Success", func(t *testing.T) {
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			LookupID:    ptr(ids[0]), // Use first ID, which has color_0
 			Limit:       10,
@@ -337,7 +338,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 		assert.Equal(t, http.StatusOK, upsertResp.StatusCode)
 
 		// Now query using the vector we just generated
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			Query:      testVec,
 			Limit:      10,
@@ -364,7 +365,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_BySingleID_Success", func(t *testing.T) {
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			LookupID:   ptr(ids[0]),
 			Limit:      10,
@@ -391,7 +392,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 	})
 
 	t.Run("QueryPoints_ByMultipleIDs_Success", func(t *testing.T) {
-		url := fmt.Sprintf(queryEndpoint, testCollectionName)
+		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
 		requestBody := adapter.QueryPointsRequest{
 			Positives:  []string{ids[0], ids[1]},
 			Negatives:  []string{ids[9]},
