@@ -17,7 +17,28 @@ func (server *Server) logRequestMiddleware(ctx fiber.Ctx) error {
 	start := time.Now()
 	err := ctx.Next()
 	latency := time.Since(start)
-	server.Logger.Info("%s %s - Status: %d - Latency: %s", ctx.Method(), ctx.Path(), ctx.Response().StatusCode(), latency)
+
+	routePattern := "<unmatched>"
+	if route := ctx.Route(); route != nil {
+		if route.Path != "" {
+			routePattern = route.Path
+		}
+	}
+
+	server.Logger.Info(
+		"%s %s - Status: %d - Latency: %s - Host: %s - IP: %s - Path: %s - Query: %s - Route: %s - Params: %v - RequestID: %s",
+		ctx.Method(),
+		ctx.OriginalURL(),
+		ctx.Response().StatusCode(),
+		latency,
+		ctx.Hostname(),
+		ctx.IP(),
+		ctx.Path(),
+		string(ctx.Request().URI().QueryString()),
+		routePattern,
+		ctx.AllParams(),
+		ctx.Get("X-Request-Id"),
+	)
 	return err
 }
 
