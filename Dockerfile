@@ -1,4 +1,4 @@
-FROM golang:1.24.2-alpine AS build-deps
+FROM golang:1.26.2-alpine AS build-deps
 RUN apk add make git bash build-base libc-dev binutils-gold curl postgresql-client
 
 ENV CGO_ENABLED=0
