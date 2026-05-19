@@ -92,11 +92,20 @@ func configForType(configType string) (config.Configurable, *ErrorResponse) {
 		return &config.FilesummaryConfig{}, nil
 	case string(config.TypeAppsPage):
 		return &config.AppsConfig{}, nil
-	case string(config.TypeProject):
+	case string(config.TypeProject), string(config.TypeProjects):
 		return &config.ProjectConfig{}, nil
 	default:
 		return nil, newTypedErrorResponse(apierror.TypeInvalidConfigType, fmt.Sprintf("Unknown config type: %s", configType), http.StatusBadRequest, map[string]any{"config_type": configType}, nil)
 	}
+}
+
+func (server *Server) resolveProjectConfigParams(ctx fiber.Ctx) (string, string) {
+	orgTitle := ctx.Params("orgTitle")
+	projectTitle := ctx.Params("projectTitle")
+	if orgTitle != "" && projectTitle != "" {
+		return string(config.TypeProjects), orgTitle + "/" + projectTitle
+	}
+	return server.resolveConfigParams(ctx)
 }
 
 // handleConfigGET godoc
@@ -113,6 +122,15 @@ func configForType(configType string) (config.Configurable, *ErrorResponse) {
 // @Router /config/{configType}/{configId} [get]
 func (server *Server) handleConfigGET(ctx fiber.Ctx) error {
 	configType, configID := server.resolveConfigParams(ctx)
+	return server.handleConfigGETByID(ctx, configType, configID)
+}
+
+func (server *Server) handleProjectConfigGET(ctx fiber.Ctx) error {
+	configType, configID := server.resolveProjectConfigParams(ctx)
+	return server.handleConfigGETByID(ctx, configType, configID)
+}
+
+func (server *Server) handleConfigGETByID(ctx fiber.Ctx, configType string, configID string) error {
 	cfg, errResponse := configForType(configType)
 	if errResponse != nil {
 		errResponse.log.write(server.Logger)
