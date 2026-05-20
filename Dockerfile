@@ -38,5 +38,5 @@ COPY --from=builder /out/gecko /app/gecko
 COPY --from=builder /src/docs/swagger.json /app/docs/swagger.json
 
 USER gecko
-EXPOSE 80
+EXPOSE 8080
 ENTRYPOINT ["/app/gecko"]

@@ -30,7 +30,7 @@ import (
 // @description JWT token for authentication
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
-	var port = flag.Uint("port", 80, "port on which to expose the API")
+	var port = flag.Uint("port", 8080, "port on which to expose the API")
 	var jwkEndpoint = flag.String("jwks", "", "endpoint for JWKS")
 	var dbURL = flag.String("db", "", "URL to connect to database")
 	var qdrantHostFlag = flag.String("qdrant-host", "", "Qdrant host (overrides QDRANT_HOST env var)")
