@@ -42,7 +42,7 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 			installation_target_type TEXT NULL,
 			installation_target TEXT NULL,
 			mirror_path TEXT NOT NULL,
-			sync_state TEXT NOT NULL DEFAULT never_synced,
+			sync_state TEXT NOT NULL DEFAULT 'never_synced',
 			default_branch TEXT NULL,
 			last_refreshed_at TIMESTAMPTZ NULL,
 			last_error TEXT NULL
