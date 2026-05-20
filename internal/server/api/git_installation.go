@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/calypr/gecko/apierror"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
@@ -20,7 +21,7 @@ func (handler *Handler) handleGitProjectConnectPOST(ctx fiber.Ctx) error {
 	}
 	state := geckodb.GitProjectState{ProjectID: projectID, RepoHost: identity.Host, RepoOwner: identity.Owner, RepoName: identity.Repo, MirrorPath: handler.gitService.MirrorPathForIdentity(identity), SyncState: git.GitSyncNeverSynced}
 	if err := geckodb.UpsertGitProjectState(handler.db, state); err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to persist git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -29,11 +30,11 @@ func (handler *Handler) handleGitProjectConnectPOST(ctx fiber.Ctx) error {
 	)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
-			response := httputil.NewError(statusErr.Code, statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID}, nil)
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID}, nil)
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
 		}
-		response := httputil.NewError("integration_error", fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -48,7 +49,7 @@ func (handler *Handler) handleGitProjectConnectPOST(ctx fiber.Ctx) error {
 func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	organization := ctx.Params("orgTitle")
 	if organization == "" {
-		response := httputil.NewError("invalid_request", "organization is required", http.StatusBadRequest, nil, nil)
+		response := httputil.NewError(apierror.Type("invalid_request"), "organization is required", http.StatusBadRequest, nil, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -57,11 +58,11 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
-			response := httputil.NewError(statusErr.Code, statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization}, nil)
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization}, nil)
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
 		}
-		response := httputil.NewError("integration_error", fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -75,7 +76,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	}
 	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
 	if err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -84,7 +85,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	}
 	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
-		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, nil, nil)
+		response := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -93,18 +94,18 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	accessToken, err := handler.gitService.RequestInstallationToken(refreshCtx, authorizationHeader, identity)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
-			response := httputil.NewError(statusErr.Code, statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
 		}
-		response := httputil.NewError("integration_error", fmt.Sprintf("failed to exchange GitHub token with Fence: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to exchange GitHub token with Fence: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
 	state.SyncState = git.GitSyncUpdating
 	state.LastError = sql.NullString{}
 	if err := geckodb.UpsertGitProjectState(handler.db, *state); err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to persist updating git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist updating git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -113,12 +114,12 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 		state.SyncState = git.GitSyncError
 		state.LastError = sql.NullString{String: err.Error(), Valid: true}
 		_ = geckodb.UpsertGitProjectState(handler.db, *state)
-		response := httputil.NewError("integration_error", fmt.Sprintf("failed to update git checkout for %s/%s: %s", organization, project, err), http.StatusBadGateway, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to update git checkout for %s/%s: %s", organization, project, err), http.StatusBadGateway, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
 	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to persist updated git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist updated git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
