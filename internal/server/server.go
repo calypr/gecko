@@ -158,8 +158,11 @@ func (server *Server) MakeRouter() *fiber.App {
 		project.Delete("/:configId", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleConfigDELETE)
 
 		projects := configGroup.Group("/projects", withConfigType("projects"))
+		projects.Get("", server.handleConfigListGET)
 		projects.Get("/list", server.handleConfigListGET)
 		projects.Get("/:orgTitle/:projectTitle", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleProjectConfigGET)
+		projects.Put("/:orgTitle/:projectTitle", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleProjectConfigPUT)
+		projects.Delete("/:orgTitle/:projectTitle", server.ConfigAuthMiddleware(&middleware.ProdJWTHandler{}), server.handleProjectConfigDELETE)
 	} else {
 		server.Logger.Warning("Skipping DB endpoints — no database configured")
 	}

@@ -130,6 +130,16 @@ func (server *Server) handleProjectConfigGET(ctx fiber.Ctx) error {
 	return server.handleConfigGETByID(ctx, configType, configID)
 }
 
+func (server *Server) handleProjectConfigPUT(ctx fiber.Ctx) error {
+	configType, configID := server.resolveProjectConfigParams(ctx)
+	return server.handleConfigPUTByID(ctx, configType, configID)
+}
+
+func (server *Server) handleProjectConfigDELETE(ctx fiber.Ctx) error {
+	configType, configID := server.resolveProjectConfigParams(ctx)
+	return server.handleConfigDELETEByID(ctx, configType, configID)
+}
+
 func (server *Server) handleConfigGETByID(ctx fiber.Ctx, configType string, configID string) error {
 	cfg, errResponse := configForType(configType)
 	if errResponse != nil {
@@ -166,6 +176,10 @@ func (server *Server) handleConfigGETByID(ctx fiber.Ctx, configType string, conf
 // @Router /config/{configType}/{configId} [delete]
 func (server *Server) handleConfigDELETE(ctx fiber.Ctx) error {
 	configType, configID := server.resolveConfigParams(ctx)
+	return server.handleConfigDELETEByID(ctx, configType, configID)
+}
+
+func (server *Server) handleConfigDELETEByID(ctx fiber.Ctx, configType string, configID string) error {
 	deleted, err := configDELETEGeneric(server.db, configID, configType)
 	if !deleted && err == nil {
 		errResponse := newTypedErrorResponse(apierror.TypeConfigNotFound, fmt.Sprintf("no configId found with configId: %s in type: %s", configID, configType), http.StatusNotFound, map[string]any{"config_type": configType, "config_id": configID}, nil)
@@ -195,6 +209,10 @@ func (server *Server) handleConfigDELETE(ctx fiber.Ctx) error {
 // @Router /config/{configType}/{configId} [put]
 func (server *Server) handleConfigPUT(ctx fiber.Ctx) error {
 	configType, configID := server.resolveConfigParams(ctx)
+	return server.handleConfigPUTByID(ctx, configType, configID)
+}
+
+func (server *Server) handleConfigPUTByID(ctx fiber.Ctx, configType string, configID string) error {
 	cfg, errResponse := configForType(configType)
 	if errResponse != nil {
 		errResponse.log.write(server.Logger)

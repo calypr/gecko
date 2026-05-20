@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -86,6 +88,53 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 	projects.Get("/:orgTitle/:projectTitle", srv.ConfigAuthMiddleware(nil), srv.handleProjectConfigGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/HTAN_INT/BForePC", nil))
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestProjectConfigPUT_ByOrganizationAndProject(t *testing.T) {
+	srv, mock, cleanup := newProjectConfigTestServer(t)
+	defer cleanup()
+	originalValidator := config.ValidateProjectRepository
+	config.ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
+		return raw, nil
+	}
+	defer func() {
+		config.ValidateProjectRepository = originalValidator
+	}()
+
+	project := config.ProjectConfig{
+		Title:        "BForePC",
+		ContactEmail: "sanati@ohsu.edu",
+		SrcRepo:      "github.com/example/BForePC",
+		OrgTitle:     "HTAN_INT",
+		Description:  "BForePC collaboration",
+		ProjectTitle: "BForePC",
+		IconName:     "binoculars",
+	}
+
+	content, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("failed to marshal project fixture: %v", err)
+	}
+
+	mock.ExpectExec(`INSERT INTO config_schema\.projects`).
+		WithArgs("HTAN_INT/BForePC", content).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	app := fiber.New()
+	projects := app.Group("/config/projects", withConfigType(string(config.TypeProjects)))
+	projects.Put("/:orgTitle/:projectTitle", srv.handleProjectConfigPUT)
+
+	req := httptest.NewRequest(http.MethodPut, "/config/projects/HTAN_INT/BForePC", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "application/json")
+	resp := runProjectConfigRequest(t, app, req)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
