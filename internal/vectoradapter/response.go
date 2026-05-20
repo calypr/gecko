@@ -1,4 +1,4 @@
-package adapter
+package vectoradapter
 
 import "github.com/qdrant/go-client/qdrant"
 

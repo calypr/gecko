@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"bytes"
@@ -12,19 +12,21 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/calypr/gecko/config"
+	geckologging "github.com/calypr/gecko/internal/logging"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 )
 
-func newProjectConfigTestServer(t *testing.T) (*Server, sqlmock.Sqlmock, func()) {
+func newProjectConfigTestServer(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
-	srv := &Server{
+	srv := &Handler{
 		db:     sqlx.NewDb(db, "sqlmock"),
-		Logger: &LogHandler{Logger: log.New(os.Stdout, "", 0)},
+		logger: &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)},
 	}
 	return srv, mock, func() { _ = db.Close() }
 }
@@ -85,7 +87,7 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 
 	app := fiber.New()
 	projects := app.Group("/config/projects", withConfigType(string(config.TypeProjects)))
-	projects.Get("/:orgTitle/:projectTitle", srv.ConfigAuthMiddleware(nil), srv.handleProjectConfigGET)
+	projects.Get("/:orgTitle/:projectTitle", servermw.ConfigAuth(srv.logger, nil), srv.handleProjectConfigGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/HTAN_INT/BForePC", nil))
 	defer resp.Body.Close()

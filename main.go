@@ -3,17 +3,20 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/gofiber/fiber/v3"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/bmeg/grip/gripql"
 	"github.com/bmeg/grip/util/rpc"
-	server "github.com/calypr/gecko/internal/server"
+	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/go-authutils/authutils"
+
+	"github.com/calypr/gecko/internal/git"
+	server "github.com/calypr/gecko/internal/server"
 )
 
 // @title Gecko API
@@ -36,24 +39,14 @@ func main() {
 	var gripGraphName = flag.String("grip-graph-zname", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
 	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
+	var githubAPIBaseFlag = flag.String("github-api-base-url", "", "GitHub API base URL (overrides GITHUB_API_BASE_URL env var)")
+	var gitDataDirFlag = flag.String("git-data-dir", "", "Directory for local git mirrors (overrides GIT_DATA_DIR env var)")
 	flag.Parse()
 
-	gripGraph := *gripGraphName
-	if gripGraph == "" {
-		gripGraph = os.Getenv("GRIP_GRAPH")
-	}
-	gripPortVar := *gripPort
-	if gripPortVar == "" {
-		gripPortVar = os.Getenv("GRIP_PORT")
-	}
-	gripHostVar := *gripHost
-	if gripHostVar == "" {
-		gripHostVar = os.Getenv("GRIP_HOST")
-	}
-	qdrantHost := *qdrantHostFlag
-	if qdrantHost == "" {
-		qdrantHost = os.Getenv("QDRANT_HOST")
-	}
+	gripGraph := firstNonEmpty(*gripGraphName, os.Getenv("GRIP_GRAPH"))
+	gripPortVar := firstNonEmpty(*gripPort, os.Getenv("GRIP_PORT"))
+	gripHostVar := firstNonEmpty(*gripHost, os.Getenv("GRIP_HOST"))
+	qdrantHost := firstNonEmpty(*qdrantHostFlag, os.Getenv("QDRANT_HOST"))
 	qdrantPort := *qdrantPortFlag
 	if qdrantPort == 0 {
 		if portStr := os.Getenv("QDRANT_PORT"); portStr != "" {
@@ -62,14 +55,8 @@ func main() {
 			}
 		}
 	}
-	qdrantAPIKey := *qdrantAPIKeyFlag
-	if qdrantAPIKey == "" {
-		qdrantAPIKey = os.Getenv("QDRANT_API_KEY")
-	}
-	finalJWK := *jwkEndpoint
-	if finalJWK == "" {
-		finalJWK = os.Getenv("JWKS_ENDPOINT")
-	}
+	qdrantAPIKey := firstNonEmpty(*qdrantAPIKeyFlag, os.Getenv("QDRANT_API_KEY"))
+	finalJWK := firstNonEmpty(*jwkEndpoint, os.Getenv("JWKS_ENDPOINT"))
 	if finalJWK == "" {
 		logger.Println("WARNING: no $JWKS_ENDPOINT or --jwks specified; endpoints requiring JWT validation will error")
 	}
@@ -83,6 +70,11 @@ func main() {
 	} else {
 		logger.Println("Successfully connected to PostgreSQL database.")
 		serverBuilder = serverBuilder.WithDB(db)
+		gitService := git.NewGitService(git.GitServiceConfig{
+			GitHubAPIBase: firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL")),
+			DataDir:       firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR")),
+		})
+		serverBuilder = serverBuilder.WithGitService(gitService)
 	}
 
 	if qdrantHost != "" && qdrantPort != 0 {
@@ -119,4 +111,13 @@ func main() {
 	if err := app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

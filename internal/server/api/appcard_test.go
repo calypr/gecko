@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	geckologging "github.com/calypr/gecko/internal/logging"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
@@ -23,14 +24,14 @@ func runFiberTest(t *testing.T, app *fiber.App, req *http.Request) *http.Respons
 	return resp
 }
 
-func newTestServer(t *testing.T) (*Server, sqlmock.Sqlmock, func()) {
+func newTestServer(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("error opening mock db: %s", err)
 	}
 	sqlxDB := sqlx.NewDb(db, "sqlmock")
-	srv := &Server{db: sqlxDB, Logger: &LogHandler{Logger: log.New(os.Stdout, "", 0)}}
+	srv := &Handler{db: sqlxDB, logger: &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)}}
 	cleanup := func() { _ = db.Close() }
 	return srv, mock, cleanup
 }

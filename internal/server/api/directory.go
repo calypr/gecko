@@ -1,4 +1,4 @@
-package server
+package api
 
 import (
 	"fmt"
@@ -9,8 +9,15 @@ import (
 	"github.com/bmeg/grip-graphql/middleware"
 	"github.com/bmeg/grip/gripql"
 	"github.com/calypr/gecko/apierror"
+	"github.com/calypr/gecko/internal/authz"
+	"github.com/calypr/gecko/internal/httputil"
 	"github.com/gofiber/fiber/v3"
 )
+
+func (handler *Handler) registerDirectoryHandlers(app fiber.Router, authMiddleware fiber.Handler) {
+	app.Get("/dir", handler.handleListProjects)
+	app.Get("/dir/:projectId", authMiddleware, handler.handleDirGet)
+}
 
 // handleListProjects godoc
 // @Summary List authorized projects
@@ -21,18 +28,18 @@ import (
 // @Failure 401 {object} ErrorResponse "Unauthorized"
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /dir [get]
-func (server *Server) handleListProjects(ctx fiber.Ctx) error {
-	projs, errResponse := server.GetProjectsFromToken(ctx, &middleware.ProdJWTHandler{}, "read", "*")
+func (handler *Handler) handleListProjects(ctx fiber.Ctx) error {
+	projs, errResponse := authz.ProjectsFromToken(ctx, &middleware.ProdJWTHandler{}, "read", "*")
 	if errResponse != nil {
-		errResponse.log.write(server.Logger)
-		return errResponse.write(ctx)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 	q := buildListProjectsQuery(projs)
-	res, err := server.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements})
+	res, err := handler.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: handler.gripGraphName, Query: q.Statements})
 	if err != nil {
-		errResponse = newTypedErrorResponse(apierror.TypeGraphQueryFailed, "graph query failed", http.StatusInternalServerError, nil, &err)
-		errResponse.log.write(server.Logger)
-		return errResponse.write(ctx)
+		errResponse = httputil.NewError(apierror.TypeGraphQueryFailed, "graph query failed", http.StatusInternalServerError, nil, &err)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 	out := []string{}
 	for r := range res {
@@ -41,7 +48,7 @@ func (server *Server) handleListProjects(ctx fiber.Ctx) error {
 			out = append(out, renda)
 		}
 	}
-	return jsonResponseFrom(out, http.StatusOK).write(ctx)
+	return httputil.JSON(out, http.StatusOK).Write(ctx)
 }
 
 // handleDirGet godoc
@@ -56,35 +63,35 @@ func (server *Server) handleListProjects(ctx fiber.Ctx) error {
 // @Failure 403 {object} ErrorResponse "User is not allowed on the resource path"
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /dir/{projectId} [get]
-func (server *Server) handleDirGet(ctx fiber.Ctx) error {
+func (handler *Handler) handleDirGet(ctx fiber.Ctx) error {
 	projectID := ctx.Params("projectId")
 	dirPath := ctx.Query("directory")
 	if dirPath == "" || !isValidPosixPath(&dirPath) {
-		errResponse := newTypedErrorResponse(apierror.TypeInvalidDirectory, fmt.Sprintf("Invalid or missing Directory path: %s", dirPath), http.StatusBadRequest, map[string]any{"directory": dirPath}, nil)
-		errResponse.log.write(server.Logger)
-		return errResponse.write(ctx)
+		errResponse := httputil.NewError(apierror.TypeInvalidDirectory, fmt.Sprintf("Invalid or missing Directory path: %s", dirPath), http.StatusBadRequest, map[string]any{"directory": dirPath}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 
 	projectSplit := strings.Split(projectID, "-")
 	if len(projectSplit) != 2 {
-		errResponse := newTypedErrorResponse(apierror.TypeInvalidProjectID, fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Path())), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
-		errResponse.log.write(server.Logger)
-		return errResponse.write(ctx)
+		errResponse := httputil.NewError(apierror.TypeInvalidProjectID, fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Path())), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 	projectID = "/programs/" + projectSplit[0] + "/projects/" + projectSplit[1]
 
 	q := buildDirGetQuery(projectID, dirPath)
-	res, err := server.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: server.gripGraphName, Query: q.Statements})
+	res, err := handler.gripqlClient.Traversal(ctx, &gripql.GraphQuery{Graph: handler.gripGraphName, Query: q.Statements})
 	if err != nil {
-		errResponse := newTypedErrorResponse(apierror.TypeGraphQueryFailed, "graph query failed", http.StatusInternalServerError, nil, &err)
-		errResponse.log.write(server.Logger)
-		return errResponse.write(ctx)
+		errResponse := httputil.NewError(apierror.TypeGraphQueryFailed, "graph query failed", http.StatusInternalServerError, nil, &err)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 	out := []any{}
 	for r := range res {
 		out = append(out, r.GetVertex())
 	}
-	return jsonResponseFrom(out, http.StatusOK).write(ctx)
+	return httputil.JSON(out, http.StatusOK).Write(ctx)
 }
 
 func isValidPosixPath(p *string) bool {

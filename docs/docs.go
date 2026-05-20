@@ -398,7 +398,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/adapter.CreateCollectionRequest"
+                            "$ref": "#/definitions/vectoradapter.CreateCollectionRequest"
                         }
                     }
                 ],
@@ -553,7 +553,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/adapter.UpsertRequest"
+                            "$ref": "#/definitions/vectoradapter.UpsertRequest"
                         }
                     }
                 ],
@@ -606,7 +606,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/adapter.DeletePoints"
+                            "$ref": "#/definitions/vectoradapter.DeletePoints"
                         }
                     }
                 ],
@@ -659,7 +659,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/adapter.QueryPointsRequest"
+                            "$ref": "#/definitions/vectoradapter.QueryPointsRequest"
                         }
                     }
                 ],
@@ -667,7 +667,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/adapter.QueryPointsResponseItem"
+                            "$ref": "#/definitions/vectoradapter.QueryPointsResponseItem"
                         }
                     },
                     "400": {
@@ -750,22 +750,22 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "adapter.CreateCollectionRequest": {
+        "vectoradapter.CreateCollectionRequest": {
             "type": "object",
             "properties": {
                 "vectors": {
                     "type": "object",
                     "additionalProperties": {
-                        "$ref": "#/definitions/adapter.VectorParams"
+                        "$ref": "#/definitions/vectoradapter.VectorParams"
                     }
                 }
             }
         },
-        "adapter.DeletePoints": {
+        "vectoradapter.DeletePoints": {
             "type": "object",
             "properties": {
                 "filter": {
-                    "$ref": "#/definitions/adapter.HeadFilter"
+                    "$ref": "#/definitions/vectoradapter.HeadFilter"
                 },
                 "points": {
                     "type": "array",
@@ -775,35 +775,35 @@ const docTemplate = `{
                 }
             }
         },
-        "adapter.HeadFilter": {
+        "vectoradapter.HeadFilter": {
             "type": "object",
             "properties": {
                 "must": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/adapter.IndFilter"
+                        "$ref": "#/definitions/vectoradapter.IndFilter"
                     }
                 }
             }
         },
-        "adapter.IndFilter": {
+        "vectoradapter.IndFilter": {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string"
                 },
                 "match": {
-                    "$ref": "#/definitions/adapter.MatchFilter"
+                    "$ref": "#/definitions/vectoradapter.MatchFilter"
                 }
             }
         },
-        "adapter.MatchFilter": {
+        "vectoradapter.MatchFilter": {
             "type": "object",
             "properties": {
                 "value": {}
             }
         },
-        "adapter.Point": {
+        "vectoradapter.Point": {
             "type": "object",
             "properties": {
                 "id": {
@@ -825,7 +825,7 @@ const docTemplate = `{
                 }
             }
         },
-        "adapter.QueryPointsRequest": {
+        "vectoradapter.QueryPointsRequest": {
             "description": "Request body for querying points in a Qdrant collection",
             "type": "object",
             "properties": {
@@ -833,7 +833,7 @@ const docTemplate = `{
                     "description": "Optional filter for narrowing search",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/adapter.HeadFilter"
+                            "$ref": "#/definitions/vectoradapter.HeadFilter"
                         }
                     ]
                 },
@@ -859,7 +859,7 @@ const docTemplate = `{
                     "description": "Additional search parameters",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/adapter.SearchParamsRequest"
+                            "$ref": "#/definitions/vectoradapter.SearchParamsRequest"
                         }
                     ]
                 },
@@ -895,7 +895,7 @@ const docTemplate = `{
                 }
             }
         },
-        "adapter.QueryPointsResponseItem": {
+        "vectoradapter.QueryPointsResponseItem": {
             "description": "Simplified Qdrant point response",
             "type": "object",
             "properties": {
@@ -916,7 +916,7 @@ const docTemplate = `{
                 }
             }
         },
-        "adapter.SearchParamsRequest": {
+        "vectoradapter.SearchParamsRequest": {
             "type": "object",
             "properties": {
                 "exact": {
@@ -933,18 +933,18 @@ const docTemplate = `{
                 }
             }
         },
-        "adapter.UpsertRequest": {
+        "vectoradapter.UpsertRequest": {
             "type": "object",
             "properties": {
                 "points": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/adapter.Point"
+                        "$ref": "#/definitions/vectoradapter.Point"
                     }
                 }
             }
         },
-        "adapter.VectorParams": {
+        "vectoradapter.VectorParams": {
             "type": "object",
             "properties": {
                 "distance": {

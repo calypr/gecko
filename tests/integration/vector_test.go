@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calypr/gecko/internal/adapter"
+	"github.com/calypr/gecko/internal/vectoradapter"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
@@ -188,7 +188,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	t.Run("QueryPoints_Success", func(t *testing.T) {
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			LookupID:   ptr("c3fb3d5c-e423-46ba-a47a-9ff97b94fc50"),
 			Limit:      100,
 			VectorName: VECTOR_NAME,
@@ -220,7 +220,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	t.Run("QueryPoints_MissingVector_BadRequest", func(t *testing.T) {
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			Query: []float32{},
 			Limit: 5,
 		}
@@ -276,17 +276,17 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	t.Run("QueryPoints_ByColorFilter_Success", func(t *testing.T) {
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			LookupID:    ptr(ids[0]), // Use first ID, which has color_0
 			Limit:       10,
 			VectorName:  VECTOR_NAME,
 			WithVector:  ptr(true),
 			WithPayload: ptr(true),
-			Filter: &adapter.HeadFilter{
-				Must: []adapter.IndFilter{
+			Filter: &vectoradapter.HeadFilter{
+				Must: []vectoradapter.IndFilter{
 					{
 						Key: "color",
-						Match: adapter.MatchFilter{
+						Match: vectoradapter.MatchFilter{
 							Value: "color_0",
 						},
 					},
@@ -339,7 +339,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 		// Now query using the vector we just generated
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			Query:      testVec,
 			Limit:      10,
 			VectorName: VECTOR_NAME,
@@ -366,7 +366,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	t.Run("QueryPoints_BySingleID_Success", func(t *testing.T) {
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			LookupID:   ptr(ids[0]),
 			Limit:      10,
 			VectorName: VECTOR_NAME,
@@ -393,7 +393,7 @@ func TestQdrantCollectionWorkflow(t *testing.T) {
 
 	t.Run("QueryPoints_ByMultipleIDs_Success", func(t *testing.T) {
 		url := fmt.Sprintf(queryEndpoint, baseURL, testCollectionName)
-		requestBody := adapter.QueryPointsRequest{
+		requestBody := vectoradapter.QueryPointsRequest{
 			Positives:  []string{ids[0], ids[1]},
 			Negatives:  []string{ids[9]},
 			Limit:      7,

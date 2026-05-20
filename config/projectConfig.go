@@ -3,12 +3,9 @@ package config
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"net/mail"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type ProjectConfig struct {
@@ -21,7 +18,9 @@ type ProjectConfig struct {
 	IconName     string `json:"icon_name"`
 }
 
-var ValidateProjectRepository = validateProjectRepository
+var ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
+	return NormalizeProjectRepositoryURL(raw)
+}
 
 func (p *ProjectConfig) Validate() error {
 	if p == nil {
@@ -66,18 +65,7 @@ func (p *ProjectConfig) Validate() error {
 	return nil
 }
 
-func validateProjectRepository(ctx context.Context, raw string) (string, error) {
-	normalized, err := normalizeProjectRepositoryURL(raw)
-	if err != nil {
-		return "", err
-	}
-	if err := validateNormalizedProjectRepositoryURL(ctx, normalized); err != nil {
-		return "", err
-	}
-	return normalized, nil
-}
-
-func normalizeProjectRepositoryURL(raw string) (string, error) {
+func NormalizeProjectRepositoryURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("src_repo is required")
@@ -134,40 +122,4 @@ func splitProjectRepositoryURL(raw string) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("invalid src_repo URL: %s", raw)
-}
-
-func validateNormalizedProjectRepositoryURL(ctx context.Context, normalized string) error {
-	validationURL := "https://" + normalized + ".git/info/refs?service=git-upload-pack"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validationURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create src_repo validation request: %w", err)
-	}
-	req.Header.Set("User-Agent", "git/2.43.0")
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   5 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-		},
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to reach src_repo: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return nil
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("src_repo does not exist: %s", normalized)
-	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("src_repo exists but is not publicly accessible: %s", normalized)
-	}
-	return fmt.Errorf("src_repo validation failed for %s: status %s", normalized, resp.Status)
 }
