@@ -205,9 +205,6 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHandler
 			return ctx.Next()
 		}
 		permission := "read"
-		if ctx.Method() != fiber.MethodGet {
-			permission = "create"
-		}
 		token := ctx.Get("Authorization")
 		if token == "" {
 			return writeError(ctx, logger, httputil.NewError("missing_authorization", "Authorization token not provided", http.StatusUnauthorized, nil, nil))
@@ -238,6 +235,43 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHandler
 			}
 		}
 		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to %s on project %s/%s", permission, organization, project), http.StatusForbidden, map[string]any{"organization": organization, "project": project, "method": permission}, nil))
+	}
+}
+
+func GitOrganizationAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHandler) fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		if jwtHandler == nil {
+			return ctx.Next()
+		}
+		token := ctx.Get("Authorization")
+		if token == "" {
+			return writeError(ctx, logger, httputil.NewError("missing_authorization", "Authorization token not provided", http.StatusUnauthorized, nil, nil))
+		}
+		organization := strings.TrimSpace(ctx.Params("orgTitle"))
+		if organization == "" {
+			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization is required", http.StatusBadRequest, nil, nil))
+		}
+		allowed, err := jwtHandler.GetAllowedResources(token, "read", "*")
+		if err != nil {
+			return writeError(ctx, logger, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil))
+		}
+		resources, conversionErr := convertAnyToStringSlice(allowed)
+		if conversionErr != nil {
+			return writeError(ctx, logger, conversionErr)
+		}
+		expectedPrefixes := []string{
+			fmt.Sprintf("/organization/%s", organization),
+			fmt.Sprintf("/programs/%s", organization),
+		}
+		for _, resource := range resources {
+			normalized := normalizeGitResourcePath(resource)
+			for _, prefix := range expectedPrefixes {
+				if normalized == prefix || strings.HasPrefix(normalized, prefix+"/") {
+					return ctx.Next()
+				}
+			}
+		}
+		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil))
 	}
 }
 

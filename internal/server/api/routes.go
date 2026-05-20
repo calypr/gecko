@@ -95,6 +95,8 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	}
 	gitGroup := app.Group("/git")
 	gitGroup.Get("/projects", handler.handleGitProjectsGET)
+	orgGit := gitGroup.Group("/organizations/:orgTitle", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}))
+	orgGit.Post("/connect", handler.handleGitOrganizationConnectPOST)
 	projectGit := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
 	projectGit.Get("", handler.handleGitProjectGET)
 	projectGit.Post("/connect", handler.handleGitProjectConnectPOST)

@@ -1,0 +1,12 @@
+.git
+.github
+bin
+coverage.out
+node_modules
+.tmp
+.vscode
+.idea
+.DS_Store
+README.md
+*_test.go
+tests

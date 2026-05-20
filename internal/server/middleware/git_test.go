@@ -35,3 +35,21 @@ func TestGitProjectAuthAllowsOrganizationResource(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }
+
+func TestGitOrganizationAuthAllowsProjectResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", GitOrganizationAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/organization/org-a/project/proj-a"}}), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/organizations/org-a/connect", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}

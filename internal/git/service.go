@@ -1,12 +1,16 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,6 +74,122 @@ func ValidateAccessToken(raw string) (string, error) {
 		return "", fmt.Errorf("git access token is required")
 	}
 	return token, nil
+}
+
+func ValidateAuthorizationHeader(raw string) (string, error) {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return "", fmt.Errorf("authorization header is required")
+	}
+	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		return "", fmt.Errorf("authorization header must use bearer auth")
+	}
+	return token, nil
+}
+
+func (service *GitService) BuildGitHubAppInstallURL(targetPath string) (string, error) {
+	installURL := strings.TrimSpace(service.config.GitHubAppInstallURL)
+	if installURL == "" {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "GitHub App installation URL is not configured",
+		}
+	}
+	parsedURL, err := url.Parse(installURL)
+	if err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("invalid GitHub App installation URL: %s", err),
+		}
+	}
+	query := parsedURL.Query()
+	query.Set("state", base64.RawURLEncoding.EncodeToString([]byte(targetPath)))
+	parsedURL.RawQuery = query.Encode()
+	return parsedURL.String(), nil
+}
+
+func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (string, error) {
+	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "Fence base URL is not configured for git refresh",
+		}
+	}
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+
+	requestBody, err := json.Marshal(map[string]string{
+		"owner": identity.Owner,
+		"repo":  identity.Repo,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal fence github token request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/token",
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return "", fmt.Errorf("build fence github token request: %w", err)
+	}
+	req.Header.Set("Authorization", authorizationHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := service.client.Do(req)
+	if err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("Fence github token request failed: %s", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read fence github token response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		message := decodeFenceErrorResponse(body)
+		if message == "" {
+			message = fmt.Sprintf("Fence github token request failed with status %d", resp.StatusCode)
+		}
+		code := "integration_error"
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			code = "missing_authorization"
+		case http.StatusForbidden:
+			code = "forbidden"
+		case http.StatusNotFound:
+			code = "not_found"
+		}
+		return "", &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Code:       code,
+			Message:    message,
+		}
+	}
+
+	var payload fenceGitHubTokenResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("invalid Fence github token response: %s", err),
+		}
+	}
+	return ValidateAccessToken(payload.Token)
 }
 
 func (service *GitService) fetchRepositoryMetadata(ctx context.Context, accessToken string, identity GitRepositoryIdentity) (*githubRepositoryResponse, error) {
@@ -307,6 +427,8 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 		return nil, state, err
 	}
 	updated := *state
+	updated.InstallationTarget = sql.NullString{String: identity.Owner, Valid: identity.Owner != ""}
+	updated.InstallationTargetType = sql.NullString{String: "Organization", Valid: identity.Owner != ""}
 	updated.DefaultBranch = sql.NullString{String: repoMetadata.DefaultBranch, Valid: repoMetadata.DefaultBranch != ""}
 	updated.SyncState = GitSyncReady
 	updated.LastRefreshedAt = sql.NullTime{Time: time.Now().UTC(), Valid: true}
@@ -328,10 +450,12 @@ func (service *GitService) StatusFromState(projectID string, organization string
 	if state == nil {
 		return response
 	}
+	if state.InstallationID.Valid || state.InstallationTarget.Valid {
+		response.InstallationState = GitInstallationConnected
+	}
 	if state.InstallationID.Valid {
 		installationID := state.InstallationID.Int64
 		response.InstallationID = &installationID
-		response.InstallationState = GitInstallationConnected
 	}
 	if state.InstallationTarget.Valid {
 		response.InstallationTarget = state.InstallationTarget.String

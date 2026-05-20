@@ -1,6 +1,7 @@
 package git
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -20,9 +21,11 @@ const (
 )
 
 type GitServiceConfig struct {
-	DataDir       string
-	GitHubAPIBase string
-	HTTPClient    *http.Client
+	DataDir             string
+	GitHubAPIBase       string
+	GitHubAppInstallURL string
+	FenceBaseURL        string
+	HTTPClient          *http.Client
 }
 
 type GitService struct {
@@ -56,8 +59,13 @@ type GitProjectStatusResponse struct {
 }
 
 type GitProjectConnectResponse struct {
-	Registered bool   `json:"registered"`
-	Message    string `json:"message,omitempty"`
+	Registered  bool   `json:"registered"`
+	Message     string `json:"message,omitempty"`
+	RedirectURL string `json:"redirect_url,omitempty"`
+}
+
+type GitOrganizationConnectResponse struct {
+	RedirectURL string `json:"redirect_url"`
 }
 
 type GitProjectRefreshResponse struct {
@@ -112,6 +120,42 @@ type GitProjectFileResponse struct {
 type githubRepositoryResponse struct {
 	DefaultBranch string `json:"default_branch"`
 	HTMLURL       string `json:"html_url"`
+}
+
+type fenceGitHubTokenResponse struct {
+	Token      string                `json:"token"`
+	ExpiresAt  string                `json:"expires_at"`
+	Repository GitRepositoryIdentity `json:"repository"`
+}
+
+type HTTPStatusError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (err *HTTPStatusError) Error() string {
+	if err == nil {
+		return ""
+	}
+	if err.Message != "" {
+		return err.Message
+	}
+	return http.StatusText(err.StatusCode)
+}
+
+func decodeFenceErrorResponse(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if message, ok := payload["message"].(string); ok {
+		return message
+	}
+	return ""
 }
 
 func NewGitService(config GitServiceConfig) *GitService {
