@@ -88,8 +88,9 @@ func withConfigType(configType string) fiber.Handler {
 
 func (server *Server) MakeRouter() *fiber.App {
 	app := fiber.New(fiber.Config{
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadBufferSize: 32 * 1024,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   10 * time.Second,
 	})
 
 	app.Use(func(ctx fiber.Ctx) error {
