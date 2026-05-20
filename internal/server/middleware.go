@@ -36,10 +36,23 @@ func (server *Server) logRequestMiddleware(ctx fiber.Ctx) error {
 		ctx.Path(),
 		string(ctx.Request().URI().QueryString()),
 		routePattern,
-		ctx.AllParams(),
+		routeParams(ctx),
 		ctx.Get("X-Request-Id"),
 	)
 	return err
+}
+
+func routeParams(ctx fiber.Ctx) map[string]string {
+	params := make(map[string]string)
+	for _, name := range []string{"configType", "configId", "orgTitle", "projectTitle", "projectId", "collection", "id"} {
+		if value := ctx.Params(name); value != "" {
+			params[name] = value
+		}
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
 }
 
 func (server *Server) GetProjectsFromToken(ctx fiber.Ctx, jwtHandler middleware.JWTHandler, method string, service string) ([]any, *ErrorResponse) {
