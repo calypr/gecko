@@ -93,7 +93,7 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	if handler.gitService == nil {
 		return
 	}
-	gitGroup := app.Group("/gecko/git")
+	gitGroup := app.Group("/git")
 	gitGroup.Get("/projects", handler.handleGitProjectsGET)
 	gitGroup.Post("/organizations/:orgTitle/connect", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationConnectPOST)
 
