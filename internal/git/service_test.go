@@ -84,6 +84,91 @@ func TestSyncRepositoryMirrorPullsUpdatesAndReadsTree(t *testing.T) {
 	}
 }
 
+func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
+	var receivedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		receivedAuth = request.Header.Get("Authorization")
+		if request.URL.Path != "/credentials/github/organization-installation" {
+			t.Fatalf("unexpected request path: %s", request.URL.Path)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installed":            true,
+			"organization":         "HTAN_INT",
+			"installation_id":      42,
+			"target":               "HTAN_INT",
+			"target_type":          "Organization",
+			"html_url":             "https://github.com/organizations/HTAN_INT/settings/installations/42",
+			"repository_selection": "selected",
+		})
+	}))
+	defer server.Close()
+
+	service := NewGitService(GitServiceConfig{FenceBaseURL: server.URL, HTTPClient: server.Client()})
+	status, err := service.RequestOrganizationInstallationStatus(context.Background(), "Bearer user-token", "HTAN_INT")
+	if err != nil {
+		t.Fatalf("request organization installation status: %v", err)
+	}
+	if !status.Installed {
+		t.Fatal("expected installed status")
+	}
+	if status.InstallationID == nil || *status.InstallationID != 42 {
+		t.Fatalf("unexpected installation id: %+v", status.InstallationID)
+	}
+	if status.RepositorySelection != "selected" {
+		t.Fatalf("unexpected repository selection: %q", status.RepositorySelection)
+	}
+	if receivedAuth != "Bearer user-token" {
+		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+}
+
+func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
+	var receivedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		receivedAuth = request.Header.Get("Authorization")
+		if request.URL.Path != "/credentials/github/installation" {
+			t.Fatalf("unexpected request path: %s", request.URL.Path)
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected request method: %s", request.Method)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installed":       true,
+			"installation_id": 42,
+			"target":          "HTAN_INT",
+			"target_type":     "Organization",
+			"html_url":        "https://github.com/organizations/HTAN_INT/settings/installations/42",
+		})
+	}))
+	defer server.Close()
+
+	service := NewGitService(GitServiceConfig{
+		FenceBaseURL: server.URL,
+		HTTPClient:   server.Client(),
+	})
+	status, err := service.RequestInstallationStatus(context.Background(), "Bearer user-token", GitRepositoryIdentity{
+		Owner: "HTAN_INT",
+		Repo:  "BForePC",
+	})
+	if err != nil {
+		t.Fatalf("request installation status: %v", err)
+	}
+	if !status.Installed {
+		t.Fatal("expected installed status")
+	}
+	if status.InstallationID == nil || *status.InstallationID != 42 {
+		t.Fatalf("unexpected installation id: %+v", status.InstallationID)
+	}
+	if status.Target != "HTAN_INT" {
+		t.Fatalf("unexpected target: %q", status.Target)
+	}
+	if receivedAuth != "Bearer user-token" {
+		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+}
+
 func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.T) {
 	var receivedAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

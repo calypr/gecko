@@ -24,6 +24,20 @@ type GitProjectState struct {
 	LastError              sql.NullString `db:"last_error"`
 }
 
+type GitOrganizationState struct {
+	Organization           string         `db:"organization"`
+	Installed              bool           `db:"installed"`
+	InstallationID         sql.NullInt64  `db:"installation_id"`
+	InstallationTargetType sql.NullString `db:"installation_target_type"`
+	InstallationTarget     sql.NullString `db:"installation_target"`
+	HTMLURL                sql.NullString `db:"html_url"`
+	RepositorySelection    sql.NullString `db:"repository_selection"`
+	ConfiguredAt           sql.NullTime   `db:"configured_at"`
+	LastSeenAt             sql.NullTime   `db:"last_seen_at"`
+	UpdatedAt              time.Time      `db:"updated_at"`
+	LastError              sql.NullString `db:"last_error"`
+}
+
 func (state GitProjectState) RefreshedAt() *time.Time {
 	if !state.LastRefreshedAt.Valid {
 		return nil
@@ -47,9 +61,22 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 			last_refreshed_at TIMESTAMPTZ NULL,
 			last_error TEXT NULL
 		);
+		CREATE TABLE IF NOT EXISTS config_schema.git_organization_state (
+			organization TEXT PRIMARY KEY,
+			installed BOOLEAN NOT NULL DEFAULT FALSE,
+			installation_id BIGINT NULL,
+			installation_target_type TEXT NULL,
+			installation_target TEXT NULL,
+			html_url TEXT NULL,
+			repository_selection TEXT NULL,
+			configured_at TIMESTAMPTZ NULL,
+			last_seen_at TIMESTAMPTZ NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_error TEXT NULL
+		);
 	`)
 	if err != nil {
-		return fmt.Errorf("ensure git project state table: %w", err)
+		return fmt.Errorf("ensure git state tables: %w", err)
 	}
 	return nil
 }
@@ -109,6 +136,64 @@ func ListGitProjectStates(db *sqlx.DB) (map[string]GitProjectState, error) {
 	indexed := make(map[string]GitProjectState, len(states))
 	for _, state := range states {
 		indexed[state.ProjectID] = state
+	}
+	return indexed, nil
+}
+
+func GitOrganizationStateByOrganization(db *sqlx.DB, organization string) (*GitOrganizationState, error) {
+	if db == nil {
+		return nil, nil
+	}
+	var state GitOrganizationState
+	err := db.Get(&state, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state WHERE organization = $1`, organization)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &state, nil
+}
+
+func UpsertGitOrganizationState(db *sqlx.DB, state GitOrganizationState) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.NamedExec(`
+		INSERT INTO config_schema.git_organization_state (
+			organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error
+		) VALUES (
+			:organization, :installed, :installation_id, :installation_target_type, :installation_target, :html_url, :repository_selection, :configured_at, :last_seen_at, :updated_at, :last_error
+		)
+		ON CONFLICT (organization) DO UPDATE SET
+			installed = EXCLUDED.installed,
+			installation_id = EXCLUDED.installation_id,
+			installation_target_type = EXCLUDED.installation_target_type,
+			installation_target = EXCLUDED.installation_target,
+			html_url = EXCLUDED.html_url,
+			repository_selection = EXCLUDED.repository_selection,
+			configured_at = EXCLUDED.configured_at,
+			last_seen_at = EXCLUDED.last_seen_at,
+			updated_at = EXCLUDED.updated_at,
+			last_error = EXCLUDED.last_error;
+	`, state)
+	if err != nil {
+		return fmt.Errorf("upsert git organization state: %w", err)
+	}
+	return nil
+}
+
+func ListGitOrganizationStates(db *sqlx.DB) (map[string]GitOrganizationState, error) {
+	states := []GitOrganizationState{}
+	if err := db.Select(&states, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state`); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return map[string]GitOrganizationState{}, nil
+		}
+		return nil, err
+	}
+	indexed := make(map[string]GitOrganizationState, len(states))
+	for _, state := range states {
+		indexed[state.Organization] = state
 	}
 	return indexed, nil
 }

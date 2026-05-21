@@ -95,7 +95,11 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	}
 	gitGroup := app.Group("/git")
 	gitGroup.Get("/projects", handler.handleGitProjectsGET)
+	gitGroup.Get("/organizations/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsStatusGET)
+	gitGroup.Post("/organizations/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsReconcilePOST)
 	gitGroup.Post("/organizations/:orgTitle/connect", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationConnectPOST)
+	gitGroup.Get("/organizations/:orgTitle/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationStatusGET)
+	gitGroup.Post("/organizations/:orgTitle/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationReconcilePOST)
 
 	projectGitRead := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
 	projectGitRead.Get("", handler.handleGitProjectGET)

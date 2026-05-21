@@ -175,6 +175,165 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	return installURL, nil
 }
 
+func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string) (GitRepositoryInstallationStatus, error) {
+	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "Fence base URL is not configured for git organization installation status",
+		}
+	}
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+	requestBody, err := json.Marshal(map[string]string{"owner": organization})
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("marshal fence github organization installation status request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/organization-installation",
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("build fence github organization installation status request: %w", err)
+	}
+	req.Header.Set("Authorization", authorizationHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := service.client.Do(req)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{StatusCode: http.StatusBadGateway, Code: "integration_error", Message: fmt.Sprintf("Fence github organization installation status request failed: %s", err)}
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("read fence github organization installation status response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		message := decodeFenceErrorResponse(body)
+		if message == "" {
+			message = fmt.Sprintf("Fence github organization installation status request failed with status %d", resp.StatusCode)
+		}
+		code := "integration_error"
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			code = "missing_authorization"
+		case http.StatusForbidden:
+			code = "forbidden"
+		case http.StatusNotFound:
+			code = "not_found"
+		}
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{StatusCode: resp.StatusCode, Code: code, Message: message}
+	}
+	var payload fenceGitHubOrganizationInstallationStatusResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{StatusCode: http.StatusBadGateway, Code: "integration_error", Message: fmt.Sprintf("invalid Fence github organization installation status response: %s", err)}
+	}
+	return GitRepositoryInstallationStatus{
+		Installed:           payload.Installed,
+		InstallationID:      payload.InstallationID,
+		Target:              strings.TrimSpace(payload.Target),
+		TargetType:          strings.TrimSpace(payload.TargetType),
+		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
+		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
+	}, nil
+}
+
+func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
+	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "Fence base URL is not configured for git installation status",
+		}
+	}
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+
+	requestBody, err := json.Marshal(map[string]string{
+		"owner": identity.Owner,
+		"repo":  identity.Repo,
+	})
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("marshal fence github installation status request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/installation",
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("build fence github installation status request: %w", err)
+	}
+	req.Header.Set("Authorization", authorizationHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := service.client.Do(req)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("Fence github installation status request failed: %s", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return GitRepositoryInstallationStatus{}, fmt.Errorf("read fence github installation status response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		message := decodeFenceErrorResponse(body)
+		if message == "" {
+			message = fmt.Sprintf("Fence github installation status request failed with status %d", resp.StatusCode)
+		}
+		code := "integration_error"
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			code = "missing_authorization"
+		case http.StatusForbidden:
+			code = "forbidden"
+		case http.StatusNotFound:
+			code = "not_found"
+		}
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Code:       code,
+			Message:    message,
+		}
+	}
+
+	var payload fenceGitHubInstallationStatusResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return GitRepositoryInstallationStatus{}, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("invalid Fence github installation status response: %s", err),
+		}
+	}
+	return GitRepositoryInstallationStatus{
+		Installed:      payload.Installed,
+		InstallationID: payload.InstallationID,
+		Target:         strings.TrimSpace(payload.Target),
+		TargetType:     strings.TrimSpace(payload.TargetType),
+		HTMLURL:        strings.TrimSpace(payload.HTMLURL),
+	}, nil
+}
+
 func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (string, error) {
 	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
 		return "", &HTTPStatusError{
@@ -501,7 +660,7 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 	return &GitProjectRefreshResponse{Success: true, ProjectID: projectID, SyncState: GitSyncReady, DefaultBranch: repoMetadata.DefaultBranch, LastFetchedRef: repoMetadata.DefaultBranch}, &updated, nil
 }
 
-func (service *GitService) StatusFromState(projectID string, organization string, project string, cfg appconfig.ProjectConfig, identity GitRepositoryIdentity, state *geckodb.GitProjectState) GitProjectStatusResponse {
+func (service *GitService) StatusFromState(projectID string, organization string, project string, cfg appconfig.ProjectConfig, identity GitRepositoryIdentity, state *geckodb.GitProjectState, orgState *geckodb.GitOrganizationState) GitProjectStatusResponse {
 	response := GitProjectStatusResponse{
 		ProjectID:         projectID,
 		Organization:      organization,
@@ -511,6 +670,28 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		Repository:        identity,
 		InstallationState: GitInstallationNotConnected,
 		SyncState:         GitSyncNeverSynced,
+	}
+	if orgState != nil {
+		response.OrganizationAppInstalled = orgState.Installed
+		if orgState.HTMLURL.Valid {
+			response.OrganizationHTMLURL = orgState.HTMLURL.String
+		}
+		if orgState.RepositorySelection.Valid {
+			response.OrganizationRepositorySelection = orgState.RepositorySelection.String
+		}
+		if orgState.Installed && orgState.RepositorySelection.Valid && orgState.RepositorySelection.String == "all" {
+			response.InstallationState = GitInstallationConnected
+			if orgState.InstallationID.Valid {
+				installationID := orgState.InstallationID.Int64
+				response.InstallationID = &installationID
+			}
+			if orgState.InstallationTarget.Valid {
+				response.InstallationTarget = orgState.InstallationTarget.String
+			}
+			if orgState.InstallationTargetType.Valid {
+				response.InstallationTargetType = orgState.InstallationTargetType.String
+			}
+		}
 	}
 	if state == nil {
 		return response
@@ -547,4 +728,19 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		}
 	}
 	return response
+}
+
+func OrganizationConfigurationState(appInstalled bool, configuredProjects int, totalProjects int) string {
+	switch {
+	case !appInstalled:
+		return "not_connected"
+	case totalProjects == 0:
+		return "connected"
+	case configuredProjects <= 0:
+		return "installed_unconfigured"
+	case configuredProjects < totalProjects:
+		return "partially_configured"
+	default:
+		return "connected"
+	}
 }

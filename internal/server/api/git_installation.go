@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/calypr/gecko/apierror"
@@ -27,13 +28,24 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	requestBody := map[string]string{}
+	if len(ctx.Body()) > 0 {
+		if errResponse := httputil.ParseJSONBody(ctx.Body(), &requestBody, map[string]any{"organization": organization}); errResponse != nil {
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+	}
+	redirectPath := strings.TrimSpace(requestBody["redirect_path"])
+	if redirectPath == "" {
+		redirectPath = "/git"
+	}
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	redirectURL, err := handler.gitService.RequestInstallationURL(
 		connectCtx,
 		authorizationHeader,
 		organization,
-		fmt.Sprintf("/git/%s", organization),
+		redirectPath,
 	)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
