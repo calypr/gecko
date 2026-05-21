@@ -209,51 +209,13 @@ func projectConfigOrganizations(projectIDs []string) []string {
 
 func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organization string, authorizationHeader string, projectIDs []string) *httputil.ErrorResponse {
 	now := time.Now().UTC()
-	orgInstallation, err := handler.gitService.RequestOrganizationInstallationStatus(ctx, authorizationHeader, organization)
-	if err != nil {
-		if statusErr, ok := err.(*git.HTTPStatusError); ok {
-			if statusErr.StatusCode != http.StatusNotFound {
-				response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization}, nil)
-				response.WriteLog(handler.logger)
-				return response
-			}
-			orgInstallation = git.GitRepositoryInstallationStatus{}
-		} else {
-			response := httputil.NewError("integration_error", fmt.Sprintf("failed to load GitHub organization installation status: %s", err), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
-			response.WriteLog(handler.logger)
-			return response
-		}
+	type trackedProject struct {
+		projectID string
+		cfg       appconfig.ProjectConfig
+		identity  git.GitRepositoryIdentity
 	}
-
-	orgState := geckodb.GitOrganizationState{
-		Organization: organization,
-		Installed:    orgInstallation.Installed,
-		UpdatedAt:    now,
-		LastSeenAt:   sql.NullTime{Time: now, Valid: true},
-		ConfiguredAt: sql.NullTime{Time: now, Valid: orgInstallation.Installed},
-		LastError:    sql.NullString{},
-	}
-	if orgInstallation.InstallationID != nil {
-		orgState.InstallationID = sql.NullInt64{Int64: *orgInstallation.InstallationID, Valid: true}
-	}
-	if orgInstallation.Target != "" {
-		orgState.InstallationTarget = sql.NullString{String: orgInstallation.Target, Valid: true}
-	}
-	if orgInstallation.TargetType != "" {
-		orgState.InstallationTargetType = sql.NullString{String: orgInstallation.TargetType, Valid: true}
-	}
-	if orgInstallation.HTMLURL != "" {
-		orgState.HTMLURL = sql.NullString{String: orgInstallation.HTMLURL, Valid: true}
-	}
-	if orgInstallation.RepositorySelection != "" {
-		orgState.RepositorySelection = sql.NullString{String: orgInstallation.RepositorySelection, Valid: true}
-	}
-	if err := geckodb.UpsertGitOrganizationState(handler.db, orgState); err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to persist git organization state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
-		response.WriteLog(handler.logger)
-		return response
-	}
-
+	projects := make([]trackedProject, 0)
+	owners := make(map[string]struct{})
 	for _, projectID := range projectIDs {
 		parts := strings.SplitN(projectID, "/", 2)
 		if len(parts) != 2 || parts[0] != organization {
@@ -267,31 +229,98 @@ func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organ
 		if err != nil {
 			continue
 		}
-		projectState, _ := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+		projects = append(projects, trackedProject{
+			projectID: projectID,
+			cfg:       cfg,
+			identity:  identity,
+		})
+		owners[identity.Owner] = struct{}{}
+	}
+
+	ownerInstallations := make(map[string]git.GitRepositoryInstallationStatus, len(owners))
+	var primaryInstallation git.GitRepositoryInstallationStatus
+	hasPrimaryInstallation := false
+	for owner := range owners {
+		orgInstallation, err := handler.gitService.RequestOrganizationInstallationStatus(ctx, authorizationHeader, owner)
+		if err != nil {
+			if statusErr, ok := err.(*git.HTTPStatusError); ok {
+				if statusErr.StatusCode != http.StatusNotFound {
+					response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "github_owner": owner}, nil)
+					response.WriteLog(handler.logger)
+					return response
+				}
+				orgInstallation = git.GitRepositoryInstallationStatus{}
+			} else {
+				response := httputil.NewError("integration_error", fmt.Sprintf("failed to load GitHub organization installation status: %s", err), http.StatusBadGateway, map[string]any{"organization": organization, "github_owner": owner}, nil)
+				response.WriteLog(handler.logger)
+				return response
+			}
+		}
+		ownerInstallations[owner] = orgInstallation
+		if orgInstallation.Installed && !hasPrimaryInstallation {
+			primaryInstallation = orgInstallation
+			hasPrimaryInstallation = true
+		}
+	}
+
+	orgState := geckodb.GitOrganizationState{
+		Organization: organization,
+		Installed:    hasPrimaryInstallation,
+		UpdatedAt:    now,
+		LastSeenAt:   sql.NullTime{Time: now, Valid: true},
+		ConfiguredAt: sql.NullTime{Time: now, Valid: hasPrimaryInstallation},
+		LastError:    sql.NullString{},
+	}
+	if hasPrimaryInstallation {
+		if primaryInstallation.InstallationID != nil {
+			orgState.InstallationID = sql.NullInt64{Int64: *primaryInstallation.InstallationID, Valid: true}
+		}
+		if primaryInstallation.Target != "" {
+			orgState.InstallationTarget = sql.NullString{String: primaryInstallation.Target, Valid: true}
+		}
+		if primaryInstallation.TargetType != "" {
+			orgState.InstallationTargetType = sql.NullString{String: primaryInstallation.TargetType, Valid: true}
+		}
+		if primaryInstallation.HTMLURL != "" {
+			orgState.HTMLURL = sql.NullString{String: primaryInstallation.HTMLURL, Valid: true}
+		}
+		if primaryInstallation.RepositorySelection != "" {
+			orgState.RepositorySelection = sql.NullString{String: primaryInstallation.RepositorySelection, Valid: true}
+		}
+	}
+	if err := geckodb.UpsertGitOrganizationState(handler.db, orgState); err != nil {
+		response := httputil.NewError("database_error", fmt.Sprintf("failed to persist git organization state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response
+	}
+
+	for _, tracked := range projects {
+		projectState, _ := geckodb.GitProjectStateByProjectID(handler.db, tracked.projectID)
 		if projectState == nil {
 			projectState = &geckodb.GitProjectState{
-				ProjectID:  projectID,
-				RepoHost:   identity.Host,
-				RepoOwner:  identity.Owner,
-				RepoName:   identity.Repo,
-				MirrorPath: handler.gitService.MirrorPathForIdentity(identity),
+				ProjectID:  tracked.projectID,
+				RepoHost:   tracked.identity.Host,
+				RepoOwner:  tracked.identity.Owner,
+				RepoName:   tracked.identity.Repo,
+				MirrorPath: handler.gitService.MirrorPathForIdentity(tracked.identity),
 				SyncState:  git.GitSyncNeverSynced,
 			}
 		}
 
-		if orgInstallation.Installed && orgInstallation.RepositorySelection == "all" {
-			if orgInstallation.InstallationID != nil {
-				projectState.InstallationID = sql.NullInt64{Int64: *orgInstallation.InstallationID, Valid: true}
+		ownerInstallation := ownerInstallations[tracked.identity.Owner]
+		if ownerInstallation.Installed && ownerInstallation.RepositorySelection == "all" {
+			if ownerInstallation.InstallationID != nil {
+				projectState.InstallationID = sql.NullInt64{Int64: *ownerInstallation.InstallationID, Valid: true}
 			} else {
 				projectState.InstallationID = sql.NullInt64{}
 			}
-			projectState.InstallationTarget = sql.NullString{String: organization, Valid: organization != ""}
+			projectState.InstallationTarget = sql.NullString{String: tracked.identity.Owner, Valid: tracked.identity.Owner != ""}
 			projectState.InstallationTargetType = sql.NullString{String: "Organization", Valid: true}
 			_ = geckodb.UpsertGitProjectState(handler.db, *projectState)
 			continue
 		}
 
-		repoInstallation, err := handler.gitService.RequestInstallationStatus(ctx, authorizationHeader, identity)
+		repoInstallation, err := handler.gitService.RequestInstallationStatus(ctx, authorizationHeader, tracked.identity)
 		if err != nil {
 			if statusErr, ok := err.(*git.HTTPStatusError); ok {
 				if statusErr.StatusCode == http.StatusForbidden || statusErr.StatusCode == http.StatusNotFound {
@@ -301,11 +330,11 @@ func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organ
 					_ = geckodb.UpsertGitProjectState(handler.db, *projectState)
 					continue
 				}
-				response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "project_id": projectID, "repository": cfg.SrcRepo}, nil)
+				response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "project_id": tracked.projectID, "repository": tracked.cfg.SrcRepo}, nil)
 				response.WriteLog(handler.logger)
 				return response
 			}
-			response := httputil.NewError("integration_error", fmt.Sprintf("failed to load GitHub installation status: %s", err), http.StatusBadGateway, map[string]any{"organization": organization, "project_id": projectID, "repository": cfg.SrcRepo}, nil)
+			response := httputil.NewError("integration_error", fmt.Sprintf("failed to load GitHub installation status: %s", err), http.StatusBadGateway, map[string]any{"organization": organization, "project_id": tracked.projectID, "repository": tracked.cfg.SrcRepo}, nil)
 			response.WriteLog(handler.logger)
 			return response
 		}

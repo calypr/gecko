@@ -679,19 +679,6 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		if orgState.RepositorySelection.Valid {
 			response.OrganizationRepositorySelection = orgState.RepositorySelection.String
 		}
-		if orgState.Installed && orgState.RepositorySelection.Valid && orgState.RepositorySelection.String == "all" {
-			response.InstallationState = GitInstallationConnected
-			if orgState.InstallationID.Valid {
-				installationID := orgState.InstallationID.Int64
-				response.InstallationID = &installationID
-			}
-			if orgState.InstallationTarget.Valid {
-				response.InstallationTarget = orgState.InstallationTarget.String
-			}
-			if orgState.InstallationTargetType.Valid {
-				response.InstallationTargetType = orgState.InstallationTargetType.String
-			}
-		}
 	}
 	if state == nil {
 		return response
