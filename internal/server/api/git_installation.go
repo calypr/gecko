@@ -14,38 +14,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func (handler *Handler) handleGitProjectConnectPOST(ctx fiber.Ctx) error {
-	organization, project, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
-	if errResponse != nil {
-		return errResponse.Write(ctx)
-	}
-	state := geckodb.GitProjectState{ProjectID: projectID, RepoHost: identity.Host, RepoOwner: identity.Owner, RepoName: identity.Repo, MirrorPath: handler.gitService.MirrorPathForIdentity(identity), SyncState: git.GitSyncNeverSynced}
-	if err := geckodb.UpsertGitProjectState(handler.db, state); err != nil {
-		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
-		return response.Write(ctx)
-	}
-	redirectURL, err := handler.gitService.BuildGitHubAppInstallURL(
-		fmt.Sprintf("/git/%s/project/%s", organization, project),
-	)
-	if err != nil {
-		if statusErr, ok := err.(*git.HTTPStatusError); ok {
-			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID}, nil)
-			response.WriteLog(handler.logger)
-			return response.Write(ctx)
-		}
-		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
-		return response.Write(ctx)
-	}
-	handler.logger.Info("registered git project %s/%s (%s) for fence-backed sync", organization, project, projectID)
-	return httputil.JSON(git.GitProjectConnectResponse{
-		Registered:  true,
-		Message:     "project registered for Fence-backed git sync",
-		RedirectURL: redirectURL,
-	}, http.StatusOK).Write(ctx)
-}
-
 func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	organization := ctx.Params("orgTitle")
 	if organization == "" {
@@ -53,7 +21,18 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	redirectURL, err := handler.gitService.BuildGitHubAppInstallURL(
+	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	if tokenErr != nil {
+		response := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, nil, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	redirectURL, err := handler.gitService.RequestInstallationURL(
+		connectCtx,
+		authorizationHeader,
+		organization,
 		fmt.Sprintf("/git/%s", organization),
 	)
 	if err != nil {
@@ -62,7 +41,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
 		}
-		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to build GitHub App install URL: %s", err), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to request GitHub App install URL from Fence: %s", err), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}

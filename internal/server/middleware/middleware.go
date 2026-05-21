@@ -199,6 +199,16 @@ func AppCardAuth(logger arborist.Logger, jwtHandler gripmiddleware.JWTHandler) f
 	}
 }
 
+func RequireAuthorization(logger arborist.Logger) fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+		if authorizationHeader == "" {
+			return writeError(ctx, logger, httputil.NewError(apierror.TypeMissingAuthorization, "Authorization token not provided", http.StatusUnauthorized, nil, nil))
+		}
+		return ctx.Next()
+	}
+}
+
 func GitProjectAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		if jwtHandler == nil {

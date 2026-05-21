@@ -93,18 +93,19 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	if handler.gitService == nil {
 		return
 	}
-	gitGroup := app.Group("/git")
+	gitGroup := app.Group("/gecko/git")
 	gitGroup.Get("/projects", handler.handleGitProjectsGET)
-	orgGit := gitGroup.Group("/organizations/:orgTitle", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}))
-	orgGit.Post("/connect", handler.handleGitOrganizationConnectPOST)
-	projectGit := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
-	projectGit.Get("", handler.handleGitProjectGET)
-	projectGit.Post("/connect", handler.handleGitProjectConnectPOST)
-	projectGit.Post("/update", handler.handleGitProjectUpdatePOST)
-	projectGit.Get("/refs", handler.handleGitProjectRefsGET)
-	projectGit.Get("/tree", handler.handleGitProjectTreeGET)
-	projectGit.Get("/tree/*", handler.handleGitProjectTreeGET)
-	projectGit.Get("/file/*", handler.handleGitProjectFileGET)
+	gitGroup.Post("/organizations/:orgTitle/connect", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationConnectPOST)
+
+	projectGitRead := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
+	projectGitRead.Get("", handler.handleGitProjectGET)
+	projectGitRead.Get("/refs", handler.handleGitProjectRefsGET)
+	projectGitRead.Get("/tree", handler.handleGitProjectTreeGET)
+	projectGitRead.Get("/tree/*", handler.handleGitProjectTreeGET)
+	projectGitRead.Get("/file/*", handler.handleGitProjectFileGET)
+
+	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.logger))
+	projectGitWrite.Post("/update", handler.handleGitProjectUpdatePOST)
 }
 
 func (handler *Handler) registerVectorRoutes(app *fiber.App) {

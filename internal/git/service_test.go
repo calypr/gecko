@@ -2,7 +2,6 @@ package git
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -154,17 +153,74 @@ func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
 	}
 }
 
-func TestBuildGitHubAppInstallURLPreservesState(t *testing.T) {
+func TestRequestInstallationURLForwardsAuthorizationAndParsesInstallURL(t *testing.T) {
+	var receivedAuth string
+	var receivedBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		receivedAuth = request.Header.Get("Authorization")
+		if request.URL.Path != "/credentials/github/install-url" {
+			t.Fatalf("unexpected request path: %s", request.URL.Path)
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected request method: %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"install_url": "https://github.com/apps/calypr-github/installations/new?state=abc",
+			"owner":       "HTAN_INT",
+		})
+	}))
+	defer server.Close()
+
 	service := NewGitService(GitServiceConfig{
-		GitHubAppInstallURL: "https://github.com/apps/fence-broker/installations/new",
+		FenceBaseURL: server.URL,
+		HTTPClient:   server.Client(),
 	})
-	redirectURL, err := service.BuildGitHubAppInstallURL("/git/HTAN_INT")
+	redirectURL, err := service.RequestInstallationURL(context.Background(), "Bearer user-token", "HTAN_INT", "/git/HTAN_INT")
 	if err != nil {
-		t.Fatalf("build install URL: %v", err)
+		t.Fatalf("request installation URL: %v", err)
 	}
-	expectedState := base64.RawURLEncoding.EncodeToString([]byte("/git/HTAN_INT"))
-	expectedURL := "https://github.com/apps/fence-broker/installations/new?state=" + expectedState
-	if redirectURL != expectedURL {
-		t.Fatalf("expected %q, got %q", expectedURL, redirectURL)
+	if redirectURL != "https://github.com/apps/calypr-github/installations/new?state=abc" {
+		t.Fatalf("unexpected redirect URL: %q", redirectURL)
+	}
+	if receivedAuth != "Bearer user-token" {
+		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+	if receivedBody["owner"] != "HTAN_INT" {
+		t.Fatalf("expected owner HTAN_INT, got %q", receivedBody["owner"])
+	}
+	if receivedBody["redirect_path"] != "/git/HTAN_INT" {
+		t.Fatalf("expected redirect_path /git/HTAN_INT, got %q", receivedBody["redirect_path"])
+	}
+}
+
+func TestRequestInstallationURLReturnsFenceStatusErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(writer).Encode(map[string]any{"message": "forbidden by fence"})
+	}))
+	defer server.Close()
+
+	service := NewGitService(GitServiceConfig{
+		FenceBaseURL: server.URL,
+		HTTPClient:   server.Client(),
+	})
+	_, err := service.RequestInstallationURL(context.Background(), "Bearer user-token", "HTAN_INT", "/git/HTAN_INT")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	statusErr, ok := err.(*HTTPStatusError)
+	if !ok {
+		t.Fatalf("expected HTTPStatusError, got %T", err)
+	}
+	if statusErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", statusErr.StatusCode)
+	}
+	if statusErr.Message != "forbidden by fence" {
+		t.Fatalf("unexpected status error message: %q", statusErr.Message)
 	}
 }

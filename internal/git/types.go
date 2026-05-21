@@ -21,11 +21,10 @@ const (
 )
 
 type GitServiceConfig struct {
-	DataDir             string
-	GitHubAPIBase       string
-	GitHubAppInstallURL string
-	FenceBaseURL        string
-	HTTPClient          *http.Client
+	DataDir       string
+	GitHubAPIBase string
+	FenceBaseURL  string
+	HTTPClient    *http.Client
 }
 
 type GitService struct {
@@ -56,12 +55,6 @@ type GitProjectStatusResponse struct {
 	LastRefreshedAt        *time.Time              `json:"last_refreshed_at,omitempty"`
 	LastError              string                  `json:"last_error,omitempty"`
 	MirrorReady            bool                    `json:"mirror_ready"`
-}
-
-type GitProjectConnectResponse struct {
-	Registered  bool   `json:"registered"`
-	Message     string `json:"message,omitempty"`
-	RedirectURL string `json:"redirect_url,omitempty"`
 }
 
 type GitOrganizationConnectResponse struct {
@@ -126,6 +119,11 @@ type fenceGitHubTokenResponse struct {
 	Token      string                `json:"token"`
 	ExpiresAt  string                `json:"expires_at"`
 	Repository GitRepositoryIdentity `json:"repository"`
+}
+
+type fenceGitHubInstallURLResponse struct {
+	InstallURL string `json:"install_url"`
+	Owner      string `json:"owner"`
 }
 
 type HTTPStatusError struct {

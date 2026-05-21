@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,27 +86,93 @@ func ValidateAuthorizationHeader(raw string) (string, error) {
 	return token, nil
 }
 
-func (service *GitService) BuildGitHubAppInstallURL(targetPath string) (string, error) {
-	installURL := strings.TrimSpace(service.config.GitHubAppInstallURL)
-	if installURL == "" {
+func (service *GitService) RequestInstallationURL(ctx context.Context, authorizationHeader string, owner string, redirectPath string) (string, error) {
+	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
 		return "", &HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
-			Message:    "GitHub App installation URL is not configured",
+			Message:    "Fence base URL is not configured for GitHub App installation",
 		}
 	}
-	parsedURL, err := url.Parse(installURL)
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+	requestBody, err := json.Marshal(map[string]string{
+		"owner":         owner,
+		"redirect_path": redirectPath,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal fence github install URL request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/install-url",
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return "", fmt.Errorf("build fence github install URL request: %w", err)
+	}
+	req.Header.Set("Authorization", authorizationHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := service.client.Do(req)
 	if err != nil {
 		return "", &HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
-			Message:    fmt.Sprintf("invalid GitHub App installation URL: %s", err),
+			Message:    fmt.Sprintf("Fence github install URL request failed: %s", err),
 		}
 	}
-	query := parsedURL.Query()
-	query.Set("state", base64.RawURLEncoding.EncodeToString([]byte(targetPath)))
-	parsedURL.RawQuery = query.Encode()
-	return parsedURL.String(), nil
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read fence github install URL response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		message := decodeFenceErrorResponse(body)
+		if message == "" {
+			message = fmt.Sprintf("Fence github install URL request failed with status %d", resp.StatusCode)
+		}
+		code := "integration_error"
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			code = "missing_authorization"
+		case http.StatusForbidden:
+			code = "forbidden"
+		case http.StatusNotFound:
+			code = "not_found"
+		}
+		return "", &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Code:       code,
+			Message:    message,
+		}
+	}
+
+	var payload fenceGitHubInstallURLResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("invalid Fence github install URL response: %s", err),
+		}
+	}
+	installURL := strings.TrimSpace(payload.InstallURL)
+	if installURL == "" {
+		return "", &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "Fence github install URL response did not include install_url",
+		}
+	}
+	return installURL, nil
 }
 
 func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (string, error) {

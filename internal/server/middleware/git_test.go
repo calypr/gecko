@@ -53,3 +53,38 @@ func TestGitOrganizationAuthAllowsProjectResource(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 }
+
+func TestRequireAuthorizationRejectsMissingHeader(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", RequireAuthorization(logger), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/organizations/org-a/connect", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestRequireAuthorizationAllowsBearerHeader(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/connect", RequireAuthorization(logger), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/connect", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
