@@ -81,8 +81,11 @@ func TestSyncRepositoryMirrorPullsUpdatesAndReadsTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build updated file response: %v", err)
 	}
-	if fileResponse.Content != "hello gecko updated" {
-		t.Fatalf("expected pulled file content, got %q", fileResponse.Content)
+	if fileResponse.Name != "README.md" {
+		t.Fatalf("expected README.md file name, got %q", fileResponse.Name)
+	}
+	if fileResponse.Hash == "" {
+		t.Fatal("expected file hash to be populated")
 	}
 }
 
@@ -175,8 +178,11 @@ func TestBuildGitRefsResponseIncludesRemoteBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build branch file response: %v", err)
 	}
-	if fileResponse.Content != "branch file" {
-		t.Fatalf("expected branch file content, got %q", fileResponse.Content)
+	if fileResponse.Name != "benchmark.txt" {
+		t.Fatalf("expected benchmark.txt file name, got %q", fileResponse.Name)
+	}
+	if fileResponse.Hash == "" {
+		t.Fatal("expected branch file hash to be populated")
 	}
 }
 

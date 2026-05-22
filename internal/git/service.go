@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
@@ -692,17 +690,8 @@ func BuildGitFileResponse(projectID string, ref string, path string, repo *gogit
 	if err != nil {
 		return nil, fmt.Errorf("read git file content for %s: %w", normalizedPath, err)
 	}
-	truncated := len(contentBytes) > inlineLimit
-	if truncated {
+	if len(contentBytes) > inlineLimit {
 		contentBytes = contentBytes[:inlineLimit]
-	}
-	encoding := "utf-8"
-	content := ""
-	if utf8.Valid(contentBytes) {
-		content = string(contentBytes)
-	} else {
-		encoding = "base64"
-		content = base64.StdEncoding.EncodeToString(contentBytes)
 	}
 	return &GitProjectFileResponse{
 		ProjectID:  projectID,
@@ -711,31 +700,16 @@ func BuildGitFileResponse(projectID string, ref string, path string, repo *gogit
 		Name:       filepath.Base(normalizedPath),
 		Hash:       file.Hash.String(),
 		Size:       file.Size,
-		Encoding:   encoding,
-		Content:    content,
-		Truncated:  truncated,
 		LFSPointer: ParseGitLFSPointer(contentBytes),
 	}, nil
 }
 
 func BuildGitHubFileResponse(projectID string, ref string, path string, metadata *github.RepositoryContent, contentBytes []byte) *GitProjectFileResponse {
-	truncated := false
-	const inlineLimit = 256 * 1024
-	if len(contentBytes) > inlineLimit {
-		truncated = true
-		contentBytes = contentBytes[:inlineLimit]
-	}
-	encoding := "utf-8"
-	content := ""
-	if utf8.Valid(contentBytes) {
-		content = string(contentBytes)
-	} else {
-		encoding = "base64"
-		content = base64.StdEncoding.EncodeToString(contentBytes)
-	}
 	name := filepath.Base(strings.Trim(strings.TrimSpace(path), "/"))
 	hash := ""
 	size := int64(len(contentBytes))
+	htmlURL := ""
+	downloadURL := ""
 	if metadata != nil {
 		if metadata.GetName() != "" {
 			name = metadata.GetName()
@@ -746,22 +720,23 @@ func BuildGitHubFileResponse(projectID string, ref string, path string, metadata
 		if metadata.GetSize() > 0 {
 			size = int64(metadata.GetSize())
 		}
+		htmlURL = metadata.GetHTMLURL()
+		downloadURL = metadata.GetDownloadURL()
 	}
 	return &GitProjectFileResponse{
-		ProjectID:  projectID,
-		Ref:        ref,
-		Path:       strings.Trim(strings.TrimSpace(path), "/"),
-		Name:       name,
-		Hash:       hash,
-		Size:       size,
-		Encoding:   encoding,
-		Content:    content,
-		Truncated:  truncated,
-		LFSPointer: ParseGitLFSPointer(contentBytes),
+		ProjectID:   projectID,
+		Ref:         ref,
+		Path:        strings.Trim(strings.TrimSpace(path), "/"),
+		Name:        name,
+		Hash:        hash,
+		Size:        size,
+		HTMLURL:     htmlURL,
+		DownloadURL: downloadURL,
+		LFSPointer:  ParseGitLFSPointer(contentBytes),
 	}
 }
 
-func (service *GitService) DownloadGitHubFile(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
+func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
 	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
 	if err != nil {
 		return nil, nil, &HTTPStatusError{
@@ -782,23 +757,40 @@ func (service *GitService) DownloadGitHubFile(ctx context.Context, authorization
 	if strings.TrimSpace(ref) != "" {
 		opts.Ref = strings.TrimSpace(ref)
 	}
-	reader, metadata, response, err := client.Repositories.DownloadContentsWithMeta(ctx, identity.Owner, identity.Repo, path, opts)
+	metadata, _, response, err := client.Repositories.GetContents(ctx, identity.Owner, identity.Repo, path, opts)
 	if err != nil {
-		return nil, nil, err
+		statusCode := http.StatusBadGateway
+		if response != nil && response.StatusCode > 0 {
+			statusCode = response.StatusCode
+		}
+		if statusCode == http.StatusBadGateway && strings.Contains(strings.ToLower(err.Error()), "not found") {
+			statusCode = http.StatusNotFound
+		}
+		return nil, nil, &HTTPStatusError{
+			StatusCode: statusCode,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("GitHub file lookup failed: %s", err),
+		}
 	}
-	defer reader.Close()
 	if response != nil && response.Response != nil && response.StatusCode >= http.StatusBadRequest {
 		return metadata, nil, &HTTPStatusError{
 			StatusCode: response.StatusCode,
 			Code:       "integration_error",
-			Message:    fmt.Sprintf("GitHub file download failed with status %d", response.StatusCode),
+			Message:    fmt.Sprintf("GitHub file lookup failed with status %d", response.StatusCode),
 		}
 	}
-	contentBytes, err := io.ReadAll(reader)
-	if err != nil {
-		return metadata, nil, fmt.Errorf("read github file content: %w", err)
+	if metadata == nil {
+		return nil, nil, &HTTPStatusError{
+			StatusCode: http.StatusNotFound,
+			Code:       "not_found",
+			Message:    fmt.Sprintf("GitHub file %s was not found", path),
+		}
 	}
-	return metadata, contentBytes, nil
+	contentString, err := metadata.GetContent()
+	if err != nil || contentString == "" {
+		return metadata, nil, nil
+	}
+	return metadata, []byte(contentString), nil
 }
 
 func OpenRepository(path string) (*gogit.Repository, error) {

@@ -147,16 +147,15 @@ type GitProjectTreeResponse struct {
 }
 
 type GitProjectFileResponse struct {
-	ProjectID  string             `json:"project_id"`
-	Ref        string             `json:"ref"`
-	Path       string             `json:"path"`
-	Name       string             `json:"name"`
-	Hash       string             `json:"hash"`
-	Size       int64              `json:"size"`
-	Encoding   string             `json:"encoding"`
-	Content    string             `json:"content"`
-	Truncated  bool               `json:"truncated"`
-	LFSPointer *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
+	ProjectID   string             `json:"project_id"`
+	Ref         string             `json:"ref"`
+	Path        string             `json:"path"`
+	Name        string             `json:"name"`
+	Hash        string             `json:"hash"`
+	Size        int64              `json:"size"`
+	HTMLURL     string             `json:"html_url,omitempty"`
+	DownloadURL string             `json:"download_url,omitempty"`
+	LFSPointer  *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
 type GitLFSPointerInfo struct {

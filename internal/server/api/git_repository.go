@@ -1,11 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	"github.com/calypr/gecko/apierror"
@@ -97,7 +94,7 @@ func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
 	}
 	path := strings.Trim(ctx.Params("*"), "/")
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
-	metadata, contentBytes, err := handler.gitService.DownloadGitHubFile(ctx.Context(), authorizationHeader, identity, requestedRef, path)
+	metadata, contentBytes, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, identity, requestedRef, path)
 	if err != nil {
 		statusCode := http.StatusNotFound
 		code := "not_found"
@@ -128,7 +125,7 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 	}
 	path := strings.Trim(ctx.Params("*"), "/")
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
-	metadata, contentBytes, err := handler.gitService.DownloadGitHubFile(ctx.Context(), authorizationHeader, identity, requestedRef, path)
+	metadata, _, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, identity, requestedRef, path)
 	if err != nil {
 		statusCode := http.StatusNotFound
 		code := "not_found"
@@ -142,11 +139,10 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	filename := filepath.Base(path)
-	if metadata != nil && metadata.GetName() != "" {
-		filename = metadata.GetName()
+	if metadata == nil || strings.TrimSpace(metadata.GetDownloadURL()) == "" {
+		response := httputil.NewError("integration_error", "github download url is unavailable for this file", http.StatusBadGateway, map[string]any{"project_id": projectID, "ref": requestedRef, "path": path}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
 	}
-	ctx.Set(fiber.HeaderContentDisposition, fmt.Sprintf("attachment; filename=%q", filename))
-	ctx.Set(fiber.HeaderContentType, http.DetectContentType(contentBytes))
-	return ctx.SendStream(io.NopCloser(bytes.NewReader(contentBytes)), len(contentBytes))
+	return ctx.Redirect().To(strings.TrimSpace(metadata.GetDownloadURL()))
 }
