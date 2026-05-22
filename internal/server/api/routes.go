@@ -111,6 +111,10 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.logger))
 	projectGitWrite.Post("/update", handler.handleGitProjectUpdatePOST)
+	projectGitWrite.Post("/uploads/session", handler.handleGitProjectUploadSessionPOST)
+	projectGitWrite.Get("/uploads/session/:sessionID", handler.handleGitProjectUploadSessionGET)
+	projectGitWrite.Post("/uploads/session/:sessionID/files", handler.handleGitProjectUploadSessionFilesPOST)
+	projectGitWrite.Post("/uploads/session/:sessionID/finalize", handler.handleGitProjectUploadSessionFinalizePOST)
 }
 
 func (handler *Handler) registerVectorRoutes(app *fiber.App) {

@@ -65,6 +65,18 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	if git.RepositoryIsEmpty(repo) {
+		refName := strings.TrimSpace(ctx.Query("ref"))
+		if refName == "" {
+			refName = state.DefaultBranch.String
+		}
+		return httputil.JSON(&git.GitProjectTreeResponse{
+			ProjectID: projectID,
+			Ref:       refName,
+			Path:      strings.Trim(ctx.Params("*"), "/"),
+			Entries:   []git.GitTreeEntry{},
+		}, http.StatusOK).Write(ctx)
+	}
 	refName, hash, err := git.ResolveGitReference(repo, strings.TrimSpace(ctx.Query("ref")), state.DefaultBranch.String)
 	if err != nil {
 		response := httputil.NewError("not_found", fmt.Sprintf("failed to resolve git ref: %s", err), http.StatusNotFound, map[string]any{"project_id": projectID, "ref": ctx.Query("ref")}, nil)

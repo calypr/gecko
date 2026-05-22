@@ -20,8 +20,10 @@ import (
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-github/v87/github"
 )
@@ -461,6 +463,19 @@ func SyncRepositoryMirror(ctx context.Context, remoteURL string, mirrorPath stri
 	if _, err := os.Stat(mirrorPath); errors.Is(err, os.ErrNotExist) {
 		_, err = gogit.PlainCloneContext(ctx, mirrorPath, false, &gogit.CloneOptions{URL: remoteURL, Auth: auth, Tags: gogit.AllTags})
 		if err != nil {
+			if isEmptyRemoteRepositoryError(err) {
+				repo, initErr := gogit.PlainInit(mirrorPath, false)
+				if initErr != nil {
+					return fmt.Errorf("initialize empty repository: %w", initErr)
+				}
+				if _, remoteErr := repo.CreateRemote(&config.RemoteConfig{
+					Name: gogit.DefaultRemoteName,
+					URLs: []string{remoteURL},
+				}); remoteErr != nil && !strings.Contains(strings.ToLower(remoteErr.Error()), "remote already exists") {
+					return fmt.Errorf("create remote for empty repository: %w", remoteErr)
+				}
+				return nil
+			}
 			return fmt.Errorf("clone repository: %w", err)
 		}
 		return nil
@@ -486,6 +501,33 @@ func SyncRepositoryMirror(ctx context.Context, remoteURL string, mirrorPath stri
 		return fmt.Errorf("pull repository: %w", err)
 	}
 	return nil
+}
+
+func isEmptyRemoteRepositoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "remote repository is empty")
+}
+
+func RepositoryIsEmpty(repo *gogit.Repository) bool {
+	if repo == nil {
+		return true
+	}
+	iter, err := repo.References()
+	if err != nil {
+		return true
+	}
+	hasRefs := false
+	_ = iter.ForEach(func(reference *plumbing.Reference) error {
+		name := reference.Name()
+		if name.IsBranch() || name.IsRemote() || name.IsTag() {
+			hasRefs = true
+			return storer.ErrStop
+		}
+		return nil
+	})
+	return !hasRefs
 }
 
 func ResolveGitReference(repo *gogit.Repository, requestedRef string, defaultBranch string) (string, plumbing.Hash, error) {
