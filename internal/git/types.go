@@ -131,12 +131,13 @@ type GitProjectRefsResponse struct {
 }
 
 type GitTreeEntry struct {
-	Name       string             `json:"name"`
-	Path       string             `json:"path"`
-	Type       string             `json:"type"`
-	Hash       string             `json:"hash"`
-	Size       int64              `json:"size,omitempty"`
-	LFSPointer *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
+	Name           string             `json:"name"`
+	Path           string             `json:"path"`
+	Type           string             `json:"type"`
+	Hash           string             `json:"hash"`
+	Size           int64              `json:"size,omitempty"`
+	LastModifiedAt *time.Time         `json:"last_modified_at,omitempty"`
+	LFSPointer     *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
 type GitProjectTreeResponse struct {

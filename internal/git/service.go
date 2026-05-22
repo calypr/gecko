@@ -565,6 +565,9 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 				}
 			}
 		}
+		if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entryPath); err == nil && lastModifiedAt != nil {
+			gitEntry.LastModifiedAt = lastModifiedAt
+		}
 		entries = append(entries, gitEntry)
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -574,6 +577,33 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
 	return &GitProjectTreeResponse{ProjectID: projectID, Ref: ref, Path: normalizedPath, Entries: entries}, nil
+}
+
+func lookupGitPathLastModified(repo *gogit.Repository, from plumbing.Hash, path string) (*time.Time, error) {
+	normalizedPath := strings.Trim(strings.TrimSpace(path), "/")
+	if normalizedPath == "" {
+		return nil, nil
+	}
+
+	iter, err := repo.Log(&gogit.LogOptions{
+		From:  from,
+		Order: gogit.LogOrderCommitterTime,
+		PathFilter: func(candidate string) bool {
+			trimmed := strings.Trim(strings.TrimSpace(candidate), "/")
+			return trimmed == normalizedPath || strings.HasPrefix(trimmed, normalizedPath+"/")
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	commit, err := iter.Next()
+	if err != nil {
+		return nil, err
+	}
+	lastModifiedAt := commit.Committer.When.UTC()
+	return &lastModifiedAt, nil
 }
 
 func ParseGitLFSPointer(content []byte) *GitLFSPointerInfo {
