@@ -109,7 +109,7 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 		baseBranch = strings.TrimSpace(state.DefaultBranch.String)
 	}
 	if baseBranch == "" {
-		response := httputil.NewError("invalid_request", "base_branch is required", http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+		response := httputil.NewError("conflict", "repository has no default branch yet. Initialize your repo first before uploading files.", http.StatusConflict, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}

@@ -430,9 +430,6 @@ func (service *GitService) fetchRepositoryMetadata(ctx context.Context, accessTo
 		return nil, fmt.Errorf("github repository metadata lookup failed for %s/%s: %w", identity.Owner, identity.Repo, err)
 	}
 	defaultBranch := repo.GetDefaultBranch()
-	if defaultBranch == "" {
-		defaultBranch = "main"
-	}
 	htmlURL := repo.GetHTMLURL()
 	if htmlURL == "" {
 		htmlURL = identity.URL
