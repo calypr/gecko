@@ -107,6 +107,7 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	projectGitRead.Get("/tree", handler.handleGitProjectTreeGET)
 	projectGitRead.Get("/tree/*", handler.handleGitProjectTreeGET)
 	projectGitRead.Get("/file/*", handler.handleGitProjectFileGET)
+	projectGitRead.Get("/download/*", handler.handleGitProjectDownloadGET)
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.logger))
 	projectGitWrite.Post("/update", handler.handleGitProjectUpdatePOST)

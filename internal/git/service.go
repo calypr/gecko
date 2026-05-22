@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +27,8 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-github/v87/github"
 )
+
+var gitLFSPointerOIDPattern = regexp.MustCompile(`^oid sha256:([a-fA-F0-9]{64})$`)
 
 func ParseRepositoryIdentity(raw string) (GitRepositoryIdentity, error) {
 	normalized, err := appconfig.NormalizeProjectRepositoryURL(raw)
@@ -489,10 +493,21 @@ func SyncRepositoryMirror(ctx context.Context, remoteURL string, mirrorPath stri
 func ResolveGitReference(repo *gogit.Repository, requestedRef string, defaultBranch string) (string, plumbing.Hash, error) {
 	candidates := []string{}
 	if requestedRef != "" {
-		candidates = append(candidates, requestedRef, "refs/heads/"+requestedRef, "refs/tags/"+requestedRef)
+		candidates = append(
+			candidates,
+			requestedRef,
+			"refs/heads/"+requestedRef,
+			"refs/remotes/origin/"+requestedRef,
+			"refs/tags/"+requestedRef,
+		)
 	}
 	if defaultBranch != "" && requestedRef == "" {
-		candidates = append(candidates, defaultBranch, "refs/heads/"+defaultBranch)
+		candidates = append(
+			candidates,
+			defaultBranch,
+			"refs/heads/"+defaultBranch,
+			"refs/remotes/origin/"+defaultBranch,
+		)
 	}
 	candidates = append(candidates, "HEAD")
 	for _, candidate := range candidates {
@@ -501,6 +516,9 @@ func ResolveGitReference(repo *gogit.Repository, requestedRef string, defaultBra
 			resolved := candidate
 			if strings.HasPrefix(candidate, "refs/heads/") {
 				resolved = strings.TrimPrefix(candidate, "refs/heads/")
+			}
+			if strings.HasPrefix(candidate, "refs/remotes/origin/") {
+				resolved = strings.TrimPrefix(candidate, "refs/remotes/origin/")
 			}
 			if strings.HasPrefix(candidate, "refs/tags/") {
 				resolved = strings.TrimPrefix(candidate, "refs/tags/")
@@ -540,6 +558,13 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 			gitEntry.Type = "blob"
 			if file, err := tree.File(entry.Name); err == nil {
 				gitEntry.Size = file.Size
+				if reader, err := file.Reader(); err == nil {
+					contentBytes, readErr := io.ReadAll(io.LimitReader(reader, 2048))
+					_ = reader.Close()
+					if readErr == nil {
+						gitEntry.LFSPointer = ParseGitLFSPointer(contentBytes)
+					}
+				}
 			}
 		}
 		entries = append(entries, gitEntry)
@@ -553,8 +578,44 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 	return &GitProjectTreeResponse{ProjectID: projectID, Ref: ref, Path: normalizedPath, Entries: entries}, nil
 }
 
+func ParseGitLFSPointer(content []byte) *GitLFSPointerInfo {
+	trimmed := strings.TrimSpace(string(content))
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 3 {
+		return nil
+	}
+
+	versionLine := strings.TrimSpace(lines[0])
+	if versionLine != "version https://git-lfs.github.com/spec/v1" {
+		return nil
+	}
+	oidMatch := gitLFSPointerOIDPattern.FindStringSubmatch(strings.TrimSpace(lines[1]))
+	if len(oidMatch) != 2 {
+		return nil
+	}
+	sizeLine := strings.TrimSpace(lines[2])
+	if !strings.HasPrefix(sizeLine, "size ") {
+		return nil
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(sizeLine, "size ")), 10, 64)
+	if err != nil {
+		return nil
+	}
+
+	return &GitLFSPointerInfo{
+		Version: "https://git-lfs.github.com/spec/v1",
+		OID:     strings.ToLower(oidMatch[1]),
+		Size:    size,
+	}
+}
+
 func BuildGitRefsResponse(projectID string, defaultBranch string, repo *gogit.Repository) (*GitProjectRefsResponse, error) {
 	refs := make([]GitRef, 0)
+	seenBranches := make(map[string]struct{})
+	seenTags := make(map[string]struct{})
 	iter, err := repo.References()
 	if err != nil {
 		return nil, fmt.Errorf("list git refs: %w", err)
@@ -564,9 +625,28 @@ func BuildGitRefsResponse(projectID string, defaultBranch string, repo *gogit.Re
 		switch {
 		case name.IsBranch():
 			branchName := name.Short()
+			if _, ok := seenBranches[branchName]; ok {
+				return nil
+			}
+			seenBranches[branchName] = struct{}{}
+			refs = append(refs, GitRef{Name: branchName, Type: "branch", Hash: reference.Hash().String(), Default: branchName == defaultBranch})
+		case name.IsRemote() && strings.HasPrefix(name.String(), "refs/remotes/origin/"):
+			branchName := strings.TrimPrefix(name.String(), "refs/remotes/origin/")
+			if branchName == "HEAD" {
+				return nil
+			}
+			if _, ok := seenBranches[branchName]; ok {
+				return nil
+			}
+			seenBranches[branchName] = struct{}{}
 			refs = append(refs, GitRef{Name: branchName, Type: "branch", Hash: reference.Hash().String(), Default: branchName == defaultBranch})
 		case name.IsTag():
-			refs = append(refs, GitRef{Name: name.Short(), Type: "tag", Hash: reference.Hash().String()})
+			tagName := name.Short()
+			if _, ok := seenTags[tagName]; ok {
+				return nil
+			}
+			seenTags[tagName] = struct{}{}
+			refs = append(refs, GitRef{Name: tagName, Type: "tag", Hash: reference.Hash().String()})
 		}
 		return nil
 	})
@@ -624,7 +704,101 @@ func BuildGitFileResponse(projectID string, ref string, path string, repo *gogit
 		encoding = "base64"
 		content = base64.StdEncoding.EncodeToString(contentBytes)
 	}
-	return &GitProjectFileResponse{ProjectID: projectID, Ref: ref, Path: normalizedPath, Name: filepath.Base(normalizedPath), Hash: file.Hash.String(), Size: file.Size, Encoding: encoding, Content: content, Truncated: truncated}, nil
+	return &GitProjectFileResponse{
+		ProjectID:  projectID,
+		Ref:        ref,
+		Path:       normalizedPath,
+		Name:       filepath.Base(normalizedPath),
+		Hash:       file.Hash.String(),
+		Size:       file.Size,
+		Encoding:   encoding,
+		Content:    content,
+		Truncated:  truncated,
+		LFSPointer: ParseGitLFSPointer(contentBytes),
+	}, nil
+}
+
+func BuildGitHubFileResponse(projectID string, ref string, path string, metadata *github.RepositoryContent, contentBytes []byte) *GitProjectFileResponse {
+	truncated := false
+	const inlineLimit = 256 * 1024
+	if len(contentBytes) > inlineLimit {
+		truncated = true
+		contentBytes = contentBytes[:inlineLimit]
+	}
+	encoding := "utf-8"
+	content := ""
+	if utf8.Valid(contentBytes) {
+		content = string(contentBytes)
+	} else {
+		encoding = "base64"
+		content = base64.StdEncoding.EncodeToString(contentBytes)
+	}
+	name := filepath.Base(strings.Trim(strings.TrimSpace(path), "/"))
+	hash := ""
+	size := int64(len(contentBytes))
+	if metadata != nil {
+		if metadata.GetName() != "" {
+			name = metadata.GetName()
+		}
+		if metadata.GetSHA() != "" {
+			hash = metadata.GetSHA()
+		}
+		if metadata.GetSize() > 0 {
+			size = int64(metadata.GetSize())
+		}
+	}
+	return &GitProjectFileResponse{
+		ProjectID:  projectID,
+		Ref:        ref,
+		Path:       strings.Trim(strings.TrimSpace(path), "/"),
+		Name:       name,
+		Hash:       hash,
+		Size:       size,
+		Encoding:   encoding,
+		Content:    content,
+		Truncated:  truncated,
+		LFSPointer: ParseGitLFSPointer(contentBytes),
+	}
+}
+
+func (service *GitService) DownloadGitHubFile(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return nil, nil, &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity)
+	if err != nil {
+		return nil, nil, err
+	}
+	client, err := service.githubClient(accessToken)
+	if err != nil {
+		return nil, nil, err
+	}
+	opts := &github.RepositoryContentGetOptions{}
+	if strings.TrimSpace(ref) != "" {
+		opts.Ref = strings.TrimSpace(ref)
+	}
+	reader, metadata, response, err := client.Repositories.DownloadContentsWithMeta(ctx, identity.Owner, identity.Repo, path, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer reader.Close()
+	if response != nil && response.Response != nil && response.StatusCode >= http.StatusBadRequest {
+		return metadata, nil, &HTTPStatusError{
+			StatusCode: response.StatusCode,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("GitHub file download failed with status %d", response.StatusCode),
+		}
+	}
+	contentBytes, err := io.ReadAll(reader)
+	if err != nil {
+		return metadata, nil, fmt.Errorf("read github file content: %w", err)
+	}
+	return metadata, contentBytes, nil
 }
 
 func OpenRepository(path string) (*gogit.Repository, error) {

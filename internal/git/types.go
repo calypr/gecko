@@ -131,11 +131,12 @@ type GitProjectRefsResponse struct {
 }
 
 type GitTreeEntry struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Type string `json:"type"`
-	Hash string `json:"hash"`
-	Size int64  `json:"size,omitempty"`
+	Name       string             `json:"name"`
+	Path       string             `json:"path"`
+	Type       string             `json:"type"`
+	Hash       string             `json:"hash"`
+	Size       int64              `json:"size,omitempty"`
+	LFSPointer *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
 type GitProjectTreeResponse struct {
@@ -146,15 +147,22 @@ type GitProjectTreeResponse struct {
 }
 
 type GitProjectFileResponse struct {
-	ProjectID string `json:"project_id"`
-	Ref       string `json:"ref"`
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Hash      string `json:"hash"`
-	Size      int64  `json:"size"`
-	Encoding  string `json:"encoding"`
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
+	ProjectID  string             `json:"project_id"`
+	Ref        string             `json:"ref"`
+	Path       string             `json:"path"`
+	Name       string             `json:"name"`
+	Hash       string             `json:"hash"`
+	Size       int64              `json:"size"`
+	Encoding   string             `json:"encoding"`
+	Content    string             `json:"content"`
+	Truncated  bool               `json:"truncated"`
+	LFSPointer *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
+}
+
+type GitLFSPointerInfo struct {
+	Version string `json:"version"`
+	OID     string `json:"oid"`
+	Size    int64  `json:"size"`
 }
 
 type githubRepositoryResponse struct {
