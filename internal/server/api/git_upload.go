@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -34,6 +35,30 @@ func (handler *Handler) ensureConnectedMirrorProject(projectID string, identity 
 		return nil, response
 	}
 	return state, nil
+}
+
+func (handler *Handler) ensureMirrorReadyForUpload(ctx context.Context, authorizationHeader string, projectID string, identity git.GitRepositoryIdentity, state *geckodb.GitProjectState) (*geckodb.GitProjectState, error) {
+	if state == nil {
+		return nil, fmt.Errorf("git project state is required")
+	}
+	if _, err := git.OpenRepository(state.MirrorPath); err == nil {
+		return state, nil
+	}
+	if _, err := os.Stat(state.MirrorPath); err == nil {
+		return nil, fmt.Errorf("open git repository at %s failed and mirror path exists", state.MirrorPath)
+	}
+	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
+	if err != nil {
+		return nil, err
+	}
+	_, updatedState, err := handler.gitService.RefreshProject(ctx, projectID, identity, state, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
+		return nil, fmt.Errorf("persist refreshed git project state: %w", err)
+	}
+	return updatedState, nil
 }
 
 func sessionFilesFromManifest(sessionID string, subdirectory string, baseBranch string, files []git.GitUploadSessionFileManifest, mirrorState *geckodb.GitProjectState) ([]geckodb.GitUploadSessionFile, bool, error) {
@@ -95,6 +120,12 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
+	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	if tokenErr != nil {
+		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	state, errResponse := handler.ensureConnectedMirrorProject(projectID, identity)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
@@ -120,6 +151,19 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 	}
 	targetSubdir := git.NormalizeGitUploadSubdirectory(requestBody.TargetSubdir)
 	sessionID := uuid.NewString()
+	prepareCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	state, err := handler.ensureMirrorReadyForUpload(prepareCtx, authorizationHeader, projectID, identity, state)
+	if err != nil {
+		if statusErr, ok := err.(*git.HTTPStatusError); ok {
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+		response := httputil.NewError("integration_error", fmt.Sprintf("failed to prepare upload session: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	files, hasConflicts, err := sessionFilesFromManifest(sessionID, targetSubdir, baseBranch, requestBody.Files, state)
 	if err != nil {
 		response := httputil.NewError("integration_error", fmt.Sprintf("failed to prepare upload session: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
