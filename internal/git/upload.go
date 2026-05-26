@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -133,6 +134,18 @@ func GitPathExistsInRef(repo *gogit.Repository, hash plumbing.Hash, path string)
 	return false, nil
 }
 
+func githubWriteStatusError(message string, response *github.Response, err error) *HTTPStatusError {
+	statusCode := http.StatusBadGateway
+	if response != nil && response.StatusCode > 0 {
+		statusCode = response.StatusCode
+	}
+	return &HTTPStatusError{
+		StatusCode: statusCode,
+		Code:       "integration_error",
+		Message:    fmt.Sprintf("%s: %s", message, err),
+	}
+}
+
 func (service *GitService) CreateGitHubUploadPullRequest(
 	ctx context.Context,
 	authorizationHeader string,
@@ -151,22 +164,14 @@ func (service *GitService) CreateGitHubUploadPullRequest(
 	if err != nil {
 		return "", "", err
 	}
-	baseRef, _, err := client.Git.GetRef(ctx, identity.Owner, identity.Repo, "refs/heads/"+baseBranch)
+	baseRef, response, err := client.Git.GetRef(ctx, identity.Owner, identity.Repo, "refs/heads/"+baseBranch)
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to load GitHub base branch ref: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to load GitHub base branch ref", response, err)
 	}
 	baseCommitSHA := baseRef.GetObject().GetSHA()
-	baseCommit, _, err := client.Git.GetCommit(ctx, identity.Owner, identity.Repo, baseCommitSHA)
+	baseCommit, response, err := client.Git.GetCommit(ctx, identity.Owner, identity.Repo, baseCommitSHA)
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to load GitHub base commit: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to load GitHub base commit", response, err)
 	}
 	entries := make([]*github.TreeEntry, 0, len(files))
 	for _, file := range files {
@@ -180,49 +185,33 @@ func (service *GitService) CreateGitHubUploadPullRequest(
 			Content: github.Ptr(BuildLFSPointerContent(file.Checksum.String, file.Size)),
 		})
 	}
-	tree, _, err := client.Git.CreateTree(ctx, identity.Owner, identity.Repo, baseCommit.GetTree().GetSHA(), entries)
+	tree, response, err := client.Git.CreateTree(ctx, identity.Owner, identity.Repo, baseCommit.GetTree().GetSHA(), entries)
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to create GitHub tree: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to create GitHub tree", response, err)
 	}
-	commit, _, err := client.Git.CreateCommit(ctx, identity.Owner, identity.Repo, github.Commit{
+	commit, response, err := client.Git.CreateCommit(ctx, identity.Owner, identity.Repo, github.Commit{
 		Message: github.Ptr(title),
 		Tree:    &github.Tree{SHA: github.Ptr(tree.GetSHA())},
 		Parents: []*github.Commit{{SHA: github.Ptr(baseCommitSHA)}},
 	}, nil)
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to create GitHub commit: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to create GitHub commit", response, err)
 	}
-	_, _, err = client.Git.CreateRef(ctx, identity.Owner, identity.Repo, github.CreateRef{
+	_, response, err = client.Git.CreateRef(ctx, identity.Owner, identity.Repo, github.CreateRef{
 		Ref: "refs/heads/" + branchName,
 		SHA: commit.GetSHA(),
 	})
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to create GitHub branch: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to create GitHub branch", response, err)
 	}
-	pr, _, err := client.PullRequests.Create(ctx, identity.Owner, identity.Repo, &github.NewPullRequest{
+	pr, response, err := client.PullRequests.Create(ctx, identity.Owner, identity.Repo, &github.NewPullRequest{
 		Title: github.Ptr(title),
 		Body:  github.Ptr(body),
 		Base:  github.Ptr(baseBranch),
 		Head:  github.Ptr(branchName),
 	})
 	if err != nil {
-		return "", "", &HTTPStatusError{
-			StatusCode: 502,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("failed to create GitHub pull request: %s", err),
-		}
+		return "", "", githubWriteStatusError("failed to create GitHub pull request", response, err)
 	}
 	return commit.GetSHA(), pr.GetHTMLURL(), nil
 }
