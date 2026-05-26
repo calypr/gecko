@@ -338,7 +338,7 @@ func (service *GitService) RequestInstallationStatus(ctx context.Context, author
 	}, nil
 }
 
-func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (string, error) {
+func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity, access string) (string, error) {
 	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
 		return "", &HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
@@ -355,9 +355,14 @@ func (service *GitService) RequestInstallationToken(ctx context.Context, authori
 		}
 	}
 
+	requestedAccess := strings.TrimSpace(access)
+	if requestedAccess == "" {
+		requestedAccess = "read"
+	}
 	requestBody, err := json.Marshal(map[string]string{
-		"owner": identity.Owner,
-		"repo":  identity.Repo,
+		"owner":  identity.Owner,
+		"repo":   identity.Repo,
+		"access": requestedAccess,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal fence github token request: %w", err)
@@ -814,7 +819,7 @@ func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizat
 			Message:    err.Error(),
 		}
 	}
-	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity)
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
 	if err != nil {
 		return nil, nil, err
 	}

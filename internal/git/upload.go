@@ -156,7 +156,7 @@ func (service *GitService) CreateGitHubUploadPullRequest(
 	body string,
 	files []geckodb.GitUploadSessionFile,
 ) (string, string, error) {
-	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity)
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity, "write")
 	if err != nil {
 		return "", "", err
 	}

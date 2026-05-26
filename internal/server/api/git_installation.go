@@ -82,7 +82,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	}
 	refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	accessToken, err := handler.gitService.RequestInstallationToken(refreshCtx, authorizationHeader, identity)
+	accessToken, err := handler.gitService.RequestInstallationToken(refreshCtx, authorizationHeader, identity, "read")
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
 			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)

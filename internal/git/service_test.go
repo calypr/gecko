@@ -345,6 +345,7 @@ func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testin
 
 func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.T) {
 	var receivedAuth string
+	var receivedBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
 		if request.URL.Path != "/credentials/github/token" {
@@ -352,6 +353,9 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 		}
 		if request.Method != http.MethodPost {
 			t.Fatalf("unexpected request method: %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -369,7 +373,7 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	token, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
-	})
+	}, "write")
 	if err != nil {
 		t.Fatalf("request installation token: %v", err)
 	}
@@ -378,6 +382,9 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	}
 	if receivedAuth != "Bearer user-token" {
 		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+	if receivedBody["access"] != "write" {
+		t.Fatalf("expected write access request, got %#v", receivedBody)
 	}
 }
 
@@ -396,7 +403,7 @@ func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
 	_, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
-	})
+	}, "read")
 	if err == nil {
 		t.Fatal("expected error")
 	}

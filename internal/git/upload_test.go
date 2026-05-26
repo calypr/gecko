@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,9 +13,13 @@ import (
 )
 
 func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
+	var tokenRequest map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/credentials/github/token":
+			if err := json.NewDecoder(r.Body).Decode(&tokenRequest); err != nil {
+				t.Fatalf("decode token request: %v", err)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"token":"test-token","expires_at":"2030-01-01T00:00:00Z","repository":{"owner":"EllrottLab","repo":"git_drs_test"}}`))
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/api/v3/repos/EllrottLab/git_drs_test/git/ref/heads/main"):
@@ -65,5 +70,8 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 	}
 	if !strings.Contains(statusErr.Message, "failed to create GitHub tree") {
 		t.Fatalf("unexpected message: %q", statusErr.Message)
+	}
+	if tokenRequest["access"] != "write" {
+		t.Fatalf("expected write access token request, got %#v", tokenRequest)
 	}
 }
