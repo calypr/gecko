@@ -149,7 +149,10 @@ type Config struct {
 	FileActions    FileActionsConfig   `json:"fileActions,omitempty"`
 }
 
-type FileActionsConfig map[string][]string
+type FileActionsConfig struct {
+	Extensions map[string][]string `json:"extensions,omitempty"`
+	Actions    map[string]string   `json:"actions,omitempty"`
+}
 
 type SharedFiltersConfig struct {
 	SharedFilter map[string][]FilterPair `json:"defined"`

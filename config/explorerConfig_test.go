@@ -77,7 +77,15 @@ const explorerJSON = `{
     }
   ],
   "fileActions": {
-    "action1": ["field1"]
+    "extensions": {
+      "tiff": ["file_download", "file_image"],
+      "tif": ["file_download", "file_image"],
+      "default": ["file_download"]
+    },
+    "actions": {
+      "file_download": "/user/data/download",
+      "file_image": "/image-viewer/view"
+    }
   }
 }`
 
@@ -146,5 +154,13 @@ func TestExplorerConfig_Fields(t *testing.T) {
 		if !ok || len(slice) != 1 || slice[0] != "proj1" {
 			t.Errorf("preFilters project_id = %v, want [proj1]", val)
 		}
+	}
+
+	if got := cfg.FileActions.Extensions["tiff"]; !reflect.DeepEqual(got, []string{"file_download", "file_image"}) {
+		t.Errorf("FileActions.Extensions[tiff] = %v, want %v", got, []string{"file_download", "file_image"})
+	}
+
+	if got := cfg.FileActions.Actions["file_image"]; got != "/image-viewer/view" {
+		t.Errorf("FileActions.Actions[file_image] = %q, want %q", got, "/image-viewer/view")
 	}
 }
