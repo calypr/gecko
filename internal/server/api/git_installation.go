@@ -65,7 +65,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	state, err := handler.loadGitProjectState(projectID, identity)
 	if err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)

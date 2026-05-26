@@ -16,8 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
-func (handler *Handler) ensureConnectedMirrorProject(projectID string) (*geckodb.GitProjectState, *httputil.ErrorResponse) {
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+func (handler *Handler) ensureConnectedMirrorProject(projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, *httputil.ErrorResponse) {
+	state, err := handler.loadGitProjectState(projectID, identity)
 	if err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to read git project state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
@@ -95,7 +95,7 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, errResponse := handler.ensureConnectedMirrorProject(projectID)
+	state, errResponse := handler.ensureConnectedMirrorProject(projectID, identity)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}

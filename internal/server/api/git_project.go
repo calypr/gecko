@@ -47,6 +47,28 @@ func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string
 	return organization, project, projectID, cfg, identity, nil
 }
 
+func (handler *Handler) loadGitProjectState(projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, error) {
+	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	if err != nil || state == nil {
+		return state, err
+	}
+	expectedMirrorPath := handler.gitService.MirrorPathForIdentity(identity)
+	if state.RepoHost == identity.Host &&
+		state.RepoOwner == identity.Owner &&
+		state.RepoName == identity.Repo &&
+		state.MirrorPath == expectedMirrorPath {
+		return state, nil
+	}
+	state.RepoHost = identity.Host
+	state.RepoOwner = identity.Owner
+	state.RepoName = identity.Repo
+	state.MirrorPath = expectedMirrorPath
+	if err := geckodb.UpsertGitProjectState(handler.db, *state); err != nil {
+		return nil, fmt.Errorf("persist git project state mirror path: %w", err)
+	}
+	return state, nil
+}
+
 func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 	states, err := geckodb.ListGitProjectStates(handler.db)
 	if err != nil {
@@ -400,7 +422,7 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	state, err := handler.loadGitProjectState(projectID, identity)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)

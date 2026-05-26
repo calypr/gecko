@@ -2,7 +2,9 @@ package git
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	appconfig "github.com/calypr/gecko/config"
@@ -171,9 +173,9 @@ type GitUploadSessionFileManifest struct {
 }
 
 type GitUploadSessionCreateRequest struct {
-	BaseBranch       string                         `json:"base_branch"`
-	TargetSubdir     string                         `json:"target_subdirectory"`
-	Files            []GitUploadSessionFileManifest `json:"files"`
+	BaseBranch   string                         `json:"base_branch"`
+	TargetSubdir string                         `json:"target_subdirectory"`
+	Files        []GitUploadSessionFileManifest `json:"files"`
 }
 
 type GitUploadSessionFileAttachment struct {
@@ -194,29 +196,29 @@ type GitUploadSessionFinalizeRequest struct {
 }
 
 type GitUploadSessionFileStatus struct {
-	FileName   string `json:"file_name"`
-	TargetPath string `json:"target_path"`
-	Size       int64  `json:"size"`
-	Checksum   string `json:"checksum,omitempty"`
+	FileName    string `json:"file_name"`
+	TargetPath  string `json:"target_path"`
+	Size        int64  `json:"size"`
+	Checksum    string `json:"checksum,omitempty"`
 	DRSObjectID string `json:"drs_object_id,omitempty"`
-	Status     string `json:"status"`
-	Error      string `json:"error,omitempty"`
-	Collision  bool   `json:"collision"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+	Collision   bool   `json:"collision"`
 }
 
 type GitUploadSessionResponse struct {
-	SessionID        string                       `json:"session_id"`
-	ProjectID        string                       `json:"project_id"`
-	BaseBranch       string                       `json:"base_branch"`
-	TargetSubdir     string                       `json:"target_subdirectory,omitempty"`
-	BranchName       string                       `json:"branch_name"`
-	PRTitle          string                       `json:"pr_title"`
-	PRBody           string                       `json:"pr_body"`
-	Status           string                       `json:"status"`
-	PullRequestURL   string                       `json:"pull_request_url,omitempty"`
-	CommitSHA        string                       `json:"commit_sha,omitempty"`
-	Files            []GitUploadSessionFileStatus `json:"files"`
-	HasConflicts     bool                         `json:"has_conflicts"`
+	SessionID      string                       `json:"session_id"`
+	ProjectID      string                       `json:"project_id"`
+	BaseBranch     string                       `json:"base_branch"`
+	TargetSubdir   string                       `json:"target_subdirectory,omitempty"`
+	BranchName     string                       `json:"branch_name"`
+	PRTitle        string                       `json:"pr_title"`
+	PRBody         string                       `json:"pr_body"`
+	Status         string                       `json:"status"`
+	PullRequestURL string                       `json:"pull_request_url,omitempty"`
+	CommitSHA      string                       `json:"commit_sha,omitempty"`
+	Files          []GitUploadSessionFileStatus `json:"files"`
+	HasConflicts   bool                         `json:"has_conflicts"`
 }
 
 type githubRepositoryResponse struct {
@@ -285,9 +287,6 @@ func decodeFenceErrorResponse(body []byte) string {
 }
 
 func NewGitService(config GitServiceConfig) *GitService {
-	if config.DataDir == "" {
-		config.DataDir = "/tmp/gecko-git"
-	}
 	if config.GitHubAPIBase == "" {
 		config.GitHubAPIBase = "https://api.github.com"
 	}
@@ -299,6 +298,9 @@ func NewGitService(config GitServiceConfig) *GitService {
 }
 
 func (service *GitService) Init(db *sqlx.DB) error {
+	if strings.TrimSpace(service.config.DataDir) == "" {
+		return fmt.Errorf("git data dir is required; set GIT_DATA_DIR or --git-data-dir")
+	}
 	if err := service.EnsureDataDir(); err != nil {
 		return err
 	}

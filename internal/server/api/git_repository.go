@@ -6,18 +6,17 @@ import (
 	"strings"
 
 	"github.com/calypr/gecko/apierror"
-	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/gofiber/fiber/v3"
 )
 
 func (handler *Handler) handleGitProjectRefsGET(ctx fiber.Ctx) error {
-	_, _, projectID, _, _, errResponse := handler.resolveGitProject(ctx)
+	_, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	state, err := handler.loadGitProjectState(projectID, identity)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
@@ -44,11 +43,11 @@ func (handler *Handler) handleGitProjectRefsGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
-	_, _, projectID, _, _, errResponse := handler.resolveGitProject(ctx)
+	_, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	state, err := handler.loadGitProjectState(projectID, identity)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
