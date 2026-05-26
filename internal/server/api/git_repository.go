@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/git"
@@ -26,6 +28,15 @@ func (handler *Handler) handleGitProjectRefsGET(ctx fiber.Ctx) error {
 		response := httputil.NewError("conflict", fmt.Sprintf("project %s has not been refreshed yet", projectID), http.StatusConflict, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
+	}
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	if authorizationHeader != "" {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		if err != nil {
+			handler.logger.Warning("failed to warm git mirror for %s refs: %v", projectID, err)
+		}
 	}
 	repo, err := git.OpenRepository(state.MirrorPath)
 	if err != nil {
@@ -57,6 +68,15 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 		response := httputil.NewError("conflict", fmt.Sprintf("project %s has not been refreshed yet", projectID), http.StatusConflict, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
+	}
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	if authorizationHeader != "" {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		if err != nil {
+			handler.logger.Warning("failed to warm git mirror for %s tree: %v", projectID, err)
+		}
 	}
 	repo, err := git.OpenRepository(state.MirrorPath)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -67,6 +68,36 @@ func (handler *Handler) loadGitProjectState(projectID string, identity git.GitRe
 		return nil, fmt.Errorf("persist git project state mirror path: %w", err)
 	}
 	return state, nil
+}
+
+func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizationHeader string, projectID string, identity git.GitRepositoryIdentity, state *geckodb.GitProjectState) (*geckodb.GitProjectState, error) {
+	if state == nil || !state.InstallationID.Valid {
+		return state, nil
+	}
+	if strings.TrimSpace(state.MirrorPath) == "" {
+		return state, nil
+	}
+	if _, err := os.Stat(state.MirrorPath); err == nil {
+		return state, nil
+	}
+	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
+	if err != nil {
+		state.SyncState = git.GitSyncError
+		state.LastError = sql.NullString{String: err.Error(), Valid: true}
+		_ = geckodb.UpsertGitProjectState(handler.db, *state)
+		return state, err
+	}
+	_, updatedState, err := handler.gitService.RefreshProject(ctx, projectID, identity, state, accessToken)
+	if err != nil {
+		state.SyncState = git.GitSyncError
+		state.LastError = sql.NullString{String: err.Error(), Valid: true}
+		_ = geckodb.UpsertGitProjectState(handler.db, *state)
+		return state, err
+	}
+	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
+		return nil, fmt.Errorf("persist refreshed git project state: %w", err)
+	}
+	return updatedState, nil
 }
 
 func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
@@ -427,6 +458,15 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
+	}
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	if authorizationHeader != "" {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		if err != nil {
+			handler.logger.Warning("failed to warm git mirror for %s: %v", projectID, err)
+		}
 	}
 	orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, organization)
 	return httputil.JSON(handler.gitService.StatusFromState(projectID, organization, project, cfg, identity, state, orgState), http.StatusOK).Write(ctx)
