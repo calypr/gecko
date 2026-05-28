@@ -302,16 +302,6 @@ type fenceGitHubInstallationStatusResponse struct {
 	RepositorySelection string `json:"repository_selection"`
 }
 
-type fenceGitHubOrganizationInstallationStatusResponse struct {
-	Installed           bool   `json:"installed"`
-	Organization        string `json:"organization"`
-	InstallationID      *int64 `json:"installation_id"`
-	Target              string `json:"target"`
-	TargetType          string `json:"target_type"`
-	HTMLURL             string `json:"html_url"`
-	RepositorySelection string `json:"repository_selection"`
-}
-
 type HTTPStatusError struct {
 	StatusCode int
 	Code       string

@@ -16,7 +16,7 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 	var tokenRequest map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/credentials/github/token":
+		case r.Method == http.MethodPost && r.URL.Path == "/credentials/github":
 			if err := json.NewDecoder(r.Body).Decode(&tokenRequest); err != nil {
 				t.Fatalf("decode token request: %v", err)
 			}

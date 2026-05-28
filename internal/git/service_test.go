@@ -262,7 +262,7 @@ func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStat
 	var receivedAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github/organization-installation" {
+		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
 		}
 		writer.Header().Set("Content-Type", "application/json")
@@ -301,7 +301,7 @@ func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testin
 	var receivedAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github/installation" {
+		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
 		}
 		if request.Method != http.MethodPost {
@@ -345,10 +345,10 @@ func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testin
 
 func TestListInstallationRepositoriesFromFenceForwardsAuthorizationAndParsesRepositories(t *testing.T) {
 	var receivedAuth string
-	var receivedBody map[string]int64
+	var receivedBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github/installation-repositories" {
+		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
 		}
 		if request.Method != http.MethodPost {
@@ -377,14 +377,17 @@ func TestListInstallationRepositoriesFromFenceForwardsAuthorizationAndParsesRepo
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	repositories, err := service.ListInstallationRepositoriesFromFence(context.Background(), "Bearer user-token", 42)
+	repositories, err := service.listInstallationRepositoriesFromFence(context.Background(), "Bearer user-token", 42)
 	if err != nil {
 		t.Fatalf("list installation repositories: %v", err)
 	}
 	if receivedAuth != "Bearer user-token" {
 		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
 	}
-	if receivedBody["installation_id"] != 42 {
+	if receivedBody["action"] != "installation_repositories" {
+		t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
+	}
+	if receivedBody["installation_id"] != float64(42) {
 		t.Fatalf("expected installation id in request body, got %#v", receivedBody)
 	}
 	if len(repositories) != 1 {
@@ -400,7 +403,7 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	var receivedBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github/token" {
+		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
 		}
 		if request.Method != http.MethodPost {
@@ -437,6 +440,9 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	}
 	if receivedBody["access"] != "write" {
 		t.Fatalf("expected write access request, got %#v", receivedBody)
+	}
+	if receivedBody["action"] != "installation_token" {
+		t.Fatalf("expected installation_token action, got %#v", receivedBody)
 	}
 }
 
@@ -476,7 +482,7 @@ func TestRequestInstallationURLForwardsAuthorizationAndParsesInstallURL(t *testi
 	var receivedBody map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github/install-url" {
+		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
 		}
 		if request.Method != http.MethodPost {
@@ -509,6 +515,9 @@ func TestRequestInstallationURLForwardsAuthorizationAndParsesInstallURL(t *testi
 	}
 	if receivedBody["owner"] != "HTAN_INT" {
 		t.Fatalf("expected owner HTAN_INT, got %q", receivedBody["owner"])
+	}
+	if receivedBody["action"] != "install_url" {
+		t.Fatalf("expected install_url action, got %#v", receivedBody)
 	}
 	if receivedBody["redirect_path"] != "/git/HTAN_INT" {
 		t.Fatalf("expected redirect_path /git/HTAN_INT, got %q", receivedBody["redirect_path"])

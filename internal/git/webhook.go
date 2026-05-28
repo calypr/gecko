@@ -1,7 +1,6 @@
 package git
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -9,8 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -53,7 +50,7 @@ func pendingRepositoryID(installationID int64, repoID int64) string {
 	return fmt.Sprintf("%d:%d", installationID, repoID)
 }
 
-func pendingRepositoryFromWebhook(installationID int64, repository GitHubWebhookRepository) (*geckodb.GitPendingRepository, error) {
+func pendingRepositoryFromGitHubRepository(installationID int64, repository GitHubWebhookRepository) (*geckodb.GitPendingRepository, error) {
 	identity, err := ParseRepositoryIdentity(firstNonEmptyString(repository.CloneURL, repository.HTMLURL, repository.FullName))
 	if err != nil {
 		return nil, err
@@ -95,7 +92,7 @@ func (service *GitService) HandleGitHubWebhook(_ context.Context, db *sqlx.DB, e
 			return fmt.Errorf("installation_repositories webhook missing installation id")
 		}
 		for _, repository := range payload.RepositoriesAdded {
-			pending, err := pendingRepositoryFromWebhook(installationID, repository)
+			pending, err := pendingRepositoryFromGitHubRepository(installationID, repository)
 			if err != nil {
 				return fmt.Errorf("normalize added repository %s: %w", repository.FullName, err)
 			}
@@ -116,83 +113,13 @@ func (service *GitService) HandleGitHubWebhook(_ context.Context, db *sqlx.DB, e
 	}
 }
 
-func ListPendingRepositories(db *sqlx.DB, installationID int64) ([]geckodb.GitPendingRepository, error) {
-	if db == nil {
-		return []geckodb.GitPendingRepository{}, nil
-	}
-	return geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
-}
-
-func (service *GitService) ListInstallationRepositoriesFromFence(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubWebhookRepository, error) {
-	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
-		return nil, &HTTPStatusError{
-			StatusCode: http.StatusBadGateway,
-			Code:       "integration_error",
-			Message:    "Fence base URL is not configured for GitHub installation repository reconcile",
-		}
-	}
-	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
-	if err != nil {
-		return nil, &HTTPStatusError{
-			StatusCode: http.StatusUnauthorized,
-			Code:       "missing_authorization",
-			Message:    err.Error(),
-		}
-	}
-	requestBody, err := json.Marshal(map[string]int64{"installation_id": installationID})
-	if err != nil {
-		return nil, fmt.Errorf("marshal fence github installation repositories request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/installation-repositories",
-		bytes.NewReader(requestBody),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build fence github installation repositories request: %w", err)
-	}
-	req.Header.Set("Authorization", authorizationHeader)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := service.client.Do(req)
-	if err != nil {
-		return nil, &HTTPStatusError{
-			StatusCode: http.StatusBadGateway,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("Fence github installation repositories request failed: %s", err),
-		}
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read fence github installation repositories response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		message := decodeFenceErrorResponse(body)
-		if message == "" {
-			message = fmt.Sprintf("Fence github installation repositories request failed with status %d", resp.StatusCode)
-		}
-		code := "integration_error"
-		switch resp.StatusCode {
-		case http.StatusUnauthorized:
-			code = "missing_authorization"
-		case http.StatusForbidden:
-			code = "forbidden"
-		case http.StatusNotFound:
-			code = "not_found"
-		}
-		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Code: code, Message: message}
-	}
-
+func (service *GitService) listInstallationRepositoriesFromFence(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubWebhookRepository, error) {
 	var payload fenceGitHubInstallationRepositoriesResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, &HTTPStatusError{
-			StatusCode: http.StatusBadGateway,
-			Code:       "integration_error",
-			Message:    fmt.Sprintf("invalid Fence github installation repositories response: %s", err),
-		}
+	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+		"action":          "installation_repositories",
+		"installation_id": installationID,
+	}, &payload); err != nil {
+		return nil, err
 	}
 	return payload.Repositories, nil
 }
@@ -201,7 +128,7 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 	if db == nil {
 		return []geckodb.GitPendingRepository{}, nil
 	}
-	repositories, err := service.ListInstallationRepositoriesFromFence(ctx, authorizationHeader, installationID)
+	repositories, err := service.listInstallationRepositoriesFromFence(ctx, authorizationHeader, installationID)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +157,7 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 
 	for _, repository := range repositories {
 		currentRepoIDs[repository.ID] = struct{}{}
-		pending, err := pendingRepositoryFromWebhook(installationID, repository)
+		pending, err := pendingRepositoryFromGitHubRepository(installationID, repository)
 		if err != nil {
 			continue
 		}
