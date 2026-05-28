@@ -902,14 +902,15 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 
 func (service *GitService) StatusFromState(projectID string, organization string, project string, cfg appconfig.ProjectConfig, identity GitRepositoryIdentity, state *geckodb.GitProjectState, orgState *geckodb.GitOrganizationState) GitProjectStatusResponse {
 	response := GitProjectStatusResponse{
-		ProjectID:         projectID,
-		Organization:      organization,
-		Project:           project,
-		ResourcePath:      fmt.Sprintf("/organization/%s/project/%s", organization, project),
-		Config:            cfg,
-		Repository:        identity,
-		InstallationState: GitInstallationNotConnected,
-		SyncState:         GitSyncNeverSynced,
+		ProjectID:                 projectID,
+		Organization:              organization,
+		Project:                   project,
+		ResourcePath:              OrganizationProjectResourcePath(organization, project),
+		RequestAccessResourcePath: ProgramProjectResourcePath(organization, project),
+		Config:                    cfg,
+		Repository:                identity,
+		InstallationState:         GitInstallationNotConnected,
+		SyncState:                 GitSyncNeverSynced,
 	}
 	if orgState != nil {
 		response.OrganizationAppInstalled = orgState.Installed

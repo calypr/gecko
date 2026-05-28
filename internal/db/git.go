@@ -38,25 +38,43 @@ type GitOrganizationState struct {
 	LastError              sql.NullString `db:"last_error"`
 }
 
+type GitPendingRepository struct {
+	ID             string         `db:"id"`
+	InstallationID int64          `db:"installation_id"`
+	Organization   string         `db:"organization"`
+	RepoID         int64          `db:"repo_id"`
+	RepoName       string         `db:"repo_name"`
+	RepoFullName   string         `db:"repo_full_name"`
+	RepoHTMLURL    sql.NullString `db:"repo_html_url"`
+	RepoCloneURL   sql.NullString `db:"repo_clone_url"`
+	RepoHost       string         `db:"repo_host"`
+	RepoOwner      string         `db:"repo_owner"`
+	RepoPath       string         `db:"repo_path"`
+	AddedAt        time.Time      `db:"added_at"`
+	UpdatedAt      time.Time      `db:"updated_at"`
+	ResolvedAt     sql.NullTime   `db:"resolved_at"`
+	RemovedAt      sql.NullTime   `db:"removed_at"`
+}
+
 type GitUploadSession struct {
-	ID               string         `db:"id"`
-	ProjectID        string         `db:"project_id"`
-	Organization     string         `db:"organization"`
-	Project          string         `db:"project"`
-	RepoHost         string         `db:"repo_host"`
-	RepoOwner        string         `db:"repo_owner"`
-	RepoName         string         `db:"repo_name"`
-	BaseBranch       string         `db:"base_branch"`
-	TargetSubdir     sql.NullString `db:"target_subdirectory"`
-	BranchName       string         `db:"branch_name"`
-	PRTitle          string         `db:"pr_title"`
-	PRBody           string         `db:"pr_body"`
-	Status           string         `db:"status"`
-	PullRequestURL   sql.NullString `db:"pull_request_url"`
-	CommitSHA        sql.NullString `db:"commit_sha"`
-	LastError        sql.NullString `db:"last_error"`
-	CreatedAt        time.Time      `db:"created_at"`
-	UpdatedAt        time.Time      `db:"updated_at"`
+	ID             string         `db:"id"`
+	ProjectID      string         `db:"project_id"`
+	Organization   string         `db:"organization"`
+	Project        string         `db:"project"`
+	RepoHost       string         `db:"repo_host"`
+	RepoOwner      string         `db:"repo_owner"`
+	RepoName       string         `db:"repo_name"`
+	BaseBranch     string         `db:"base_branch"`
+	TargetSubdir   sql.NullString `db:"target_subdirectory"`
+	BranchName     string         `db:"branch_name"`
+	PRTitle        string         `db:"pr_title"`
+	PRBody         string         `db:"pr_body"`
+	Status         string         `db:"status"`
+	PullRequestURL sql.NullString `db:"pull_request_url"`
+	CommitSHA      sql.NullString `db:"commit_sha"`
+	LastError      sql.NullString `db:"last_error"`
+	CreatedAt      time.Time      `db:"created_at"`
+	UpdatedAt      time.Time      `db:"updated_at"`
 }
 
 type GitUploadSessionFile struct {
@@ -137,7 +155,25 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 			error TEXT NULL,
 			PRIMARY KEY (session_id, target_path)
 		);
-	`)
+		CREATE TABLE IF NOT EXISTS config_schema.git_pending_repository (
+			id TEXT PRIMARY KEY,
+			installation_id BIGINT NOT NULL,
+			organization TEXT NOT NULL,
+			repo_id BIGINT NOT NULL,
+			repo_name TEXT NOT NULL,
+			repo_full_name TEXT NOT NULL,
+			repo_html_url TEXT NULL,
+			repo_clone_url TEXT NULL,
+			repo_host TEXT NOT NULL,
+			repo_owner TEXT NOT NULL,
+			repo_path TEXT NOT NULL,
+			added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			resolved_at TIMESTAMPTZ NULL,
+			removed_at TIMESTAMPTZ NULL,
+			UNIQUE (installation_id, repo_id)
+		);
+		`)
 	if err != nil {
 		return fmt.Errorf("ensure git state tables: %w", err)
 	}
@@ -236,6 +272,140 @@ func ListGitUploadSessionFiles(db *sqlx.DB, sessionID string) ([]GitUploadSessio
 		return nil, err
 	}
 	return files, nil
+}
+
+func UpsertGitPendingRepository(db *sqlx.DB, pending GitPendingRepository) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.NamedExec(`
+		INSERT INTO config_schema.git_pending_repository (
+			id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
+		) VALUES (
+			:id, :installation_id, :organization, :repo_id, :repo_name, :repo_full_name, :repo_html_url, :repo_clone_url, :repo_host, :repo_owner, :repo_path, :added_at, :updated_at, :resolved_at, :removed_at
+		)
+		ON CONFLICT (installation_id, repo_id) DO UPDATE SET
+			id = EXCLUDED.id,
+			organization = EXCLUDED.organization,
+			repo_name = EXCLUDED.repo_name,
+			repo_full_name = EXCLUDED.repo_full_name,
+			repo_html_url = EXCLUDED.repo_html_url,
+			repo_clone_url = EXCLUDED.repo_clone_url,
+			repo_host = EXCLUDED.repo_host,
+			repo_owner = EXCLUDED.repo_owner,
+			repo_path = EXCLUDED.repo_path,
+			added_at = EXCLUDED.added_at,
+			updated_at = EXCLUDED.updated_at,
+			resolved_at = EXCLUDED.resolved_at,
+			removed_at = EXCLUDED.removed_at
+	`, pending)
+	if err != nil {
+		return fmt.Errorf("upsert git pending repository: %w", err)
+	}
+	return nil
+}
+
+func ListGitPendingRepositoriesByInstallation(db *sqlx.DB, installationID int64) ([]GitPendingRepository, error) {
+	if db == nil {
+		return []GitPendingRepository{}, nil
+	}
+	records := []GitPendingRepository{}
+	if err := db.Select(&records, `
+		SELECT id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
+		FROM config_schema.git_pending_repository
+		WHERE installation_id = $1 AND resolved_at IS NULL AND removed_at IS NULL
+		ORDER BY added_at, repo_full_name
+	`, installationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []GitPendingRepository{}, nil
+		}
+		return nil, err
+	}
+	return records, nil
+}
+
+func ListGitPendingRepositories(db *sqlx.DB) ([]GitPendingRepository, error) {
+	if db == nil {
+		return []GitPendingRepository{}, nil
+	}
+	records := []GitPendingRepository{}
+	if err := db.Select(&records, `
+		SELECT id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
+		FROM config_schema.git_pending_repository
+		WHERE resolved_at IS NULL AND removed_at IS NULL
+		ORDER BY added_at, repo_full_name
+	`); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []GitPendingRepository{}, nil
+		}
+		return nil, err
+	}
+	return records, nil
+}
+
+func ResolveGitPendingRepositoryByID(db *sqlx.DB, id string) error {
+	if db == nil || id == "" {
+		return nil
+	}
+	_, err := db.Exec(`UPDATE config_schema.git_pending_repository SET resolved_at = NOW(), updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("resolve git pending repository by id: %w", err)
+	}
+	return nil
+}
+
+func ResolveGitPendingRepositoriesByRepo(db *sqlx.DB, installationID int64, repoHost string, repoOwner string, repoPath string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`
+		UPDATE config_schema.git_pending_repository
+		SET resolved_at = NOW(), updated_at = NOW()
+		WHERE installation_id = $1
+		  AND repo_host = $2
+		  AND repo_owner = $3
+		  AND repo_path = $4
+		  AND resolved_at IS NULL
+		  AND removed_at IS NULL
+	`, installationID, repoHost, repoOwner, repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve git pending repositories by repo: %w", err)
+	}
+	return nil
+}
+
+func ResolveGitPendingRepositoriesByRepositoryIdentity(db *sqlx.DB, repoHost string, repoOwner string, repoPath string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`
+		UPDATE config_schema.git_pending_repository
+		SET resolved_at = NOW(), updated_at = NOW()
+		WHERE repo_host = $1
+		  AND repo_owner = $2
+		  AND repo_path = $3
+		  AND resolved_at IS NULL
+		  AND removed_at IS NULL
+	`, repoHost, repoOwner, repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve git pending repositories by repository identity: %w", err)
+	}
+	return nil
+}
+
+func RemoveGitPendingRepository(db *sqlx.DB, installationID int64, repoID int64) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(`
+		UPDATE config_schema.git_pending_repository
+		SET removed_at = NOW(), updated_at = NOW()
+		WHERE installation_id = $1 AND repo_id = $2 AND removed_at IS NULL
+	`, installationID, repoID)
+	if err != nil {
+		return fmt.Errorf("remove git pending repository: %w", err)
+	}
+	return nil
 }
 
 func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState, error) {

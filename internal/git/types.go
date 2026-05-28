@@ -23,10 +23,13 @@ const (
 )
 
 type GitServiceConfig struct {
-	DataDir       string
-	GitHubAPIBase string
-	FenceBaseURL  string
-	HTTPClient    *http.Client
+	DataDir             string
+	GitHubAPIBase       string
+	GitHubAppID         string
+	GitHubAppPrivateKey string
+	GitHubWebhookSecret string
+	FenceBaseURL        string
+	HTTPClient          *http.Client
 }
 
 type GitService struct {
@@ -46,6 +49,9 @@ type GitProjectStatusResponse struct {
 	Organization                    string                  `json:"organization"`
 	Project                         string                  `json:"project"`
 	ResourcePath                    string                  `json:"resource_path"`
+	Accessible                      bool                    `json:"accessible"`
+	RequestAccess                   bool                    `json:"request_access"`
+	RequestAccessResourcePath       string                  `json:"request_access_resource_path,omitempty"`
 	Config                          appconfig.ProjectConfig `json:"config"`
 	Repository                      GitRepositoryIdentity   `json:"repository"`
 	InstallationState               string                  `json:"installation_state"`
@@ -76,11 +82,58 @@ type GitRepositoryInstallationStatus struct {
 }
 
 type GitOrganizationProjectStatus struct {
-	ProjectID    string                          `json:"project_id"`
-	Project      string                          `json:"project"`
-	Repository   GitRepositoryIdentity           `json:"repository"`
-	Configured   bool                            `json:"configured"`
-	Installation GitRepositoryInstallationStatus `json:"installation"`
+	ProjectID                 string                          `json:"project_id"`
+	Project                   string                          `json:"project"`
+	ResourcePath              string                          `json:"resource_path"`
+	Repository                GitRepositoryIdentity           `json:"repository"`
+	Configured                bool                            `json:"configured"`
+	Accessible                bool                            `json:"accessible"`
+	RequestAccess             bool                            `json:"request_access"`
+	RequestAccessResourcePath string                          `json:"request_access_resource_path,omitempty"`
+	Installation              GitRepositoryInstallationStatus `json:"installation"`
+}
+
+type GitPendingRepository struct {
+	ID             string `json:"id"`
+	InstallationID int64  `json:"installation_id"`
+	Organization   string `json:"organization"`
+	RepoID         int64  `json:"repo_id"`
+	RepoName       string `json:"repo_name"`
+	RepoFullName   string `json:"repo_full_name"`
+	RepoHTMLURL    string `json:"repo_html_url,omitempty"`
+	RepoCloneURL   string `json:"repo_clone_url,omitempty"`
+	RepoHost       string `json:"repo_host"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoPath       string `json:"repo_path"`
+	AddedAt        string `json:"added_at"`
+}
+
+type GitPendingRepositoriesResponse struct {
+	InstallationID int64                  `json:"installation_id"`
+	Pending        []GitPendingRepository `json:"pending"`
+}
+
+type GitPendingRepositoriesReconcileRequest struct {
+	InstallationID int64 `json:"installation_id"`
+}
+
+type GitHubWebhookRepository struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	HTMLURL  string `json:"html_url"`
+	CloneURL string `json:"clone_url"`
+}
+
+type GitHubWebhookInstallation struct {
+	ID int64 `json:"id"`
+}
+
+type GitHubWebhookInstallationRepositoriesPayload struct {
+	Action              string                    `json:"action"`
+	Installation        GitHubWebhookInstallation `json:"installation"`
+	RepositoriesAdded   []GitHubWebhookRepository `json:"repositories_added"`
+	RepositoriesRemoved []GitHubWebhookRepository `json:"repositories_removed"`
 }
 
 type GitOrganizationStatusResponse struct {

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -118,7 +120,48 @@ func (handler *Handler) handleProjectConfigGET(ctx fiber.Ctx) error {
 
 func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 	configType, configID := handler.resolveProjectConfigParams(ctx)
-	return handler.handleConfigPUTByID(ctx, configType, configID)
+	cfg, errResponse := configForType(configType)
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+
+	if errResponse = httputil.ParseJSONBody(ctx.Body(), cfg, map[string]any{"config_type": configType, "config_id": configID}); errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	if validatable, ok := cfg.(interface{ Validate() error }); ok {
+		if err := validatable.Validate(); err != nil {
+			errResponse = httputil.NewError(apierror.TypeValidationFailed, fmt.Sprintf("body data validation failed: %s", err), http.StatusBadRequest, map[string]any{"config_type": configType, "config_id": configID}, nil)
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+	}
+	if err := geckodb.ConfigPUTGeneric(handler.db, configID, configType, cfg); err != nil {
+		errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("configPut failed: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+
+	if projectCfg, ok := cfg.(*config.ProjectConfig); ok {
+		if identity, err := git.ParseRepositoryIdentity(projectCfg.SrcRepo); err == nil {
+			if resolveErr := geckodb.ResolveGitPendingRepositoriesByRepositoryIdentity(handler.db, identity.Host, identity.Owner, identity.Repo); resolveErr != nil {
+				errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("resolve pending repository failed: %s", resolveErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
+				errResponse.WriteLog(handler.logger)
+				return errResponse.Write(ctx)
+			}
+		}
+		pendingRepoID := strings.TrimSpace(ctx.Query("pending_repo_id"))
+		if pendingRepoID != "" {
+			if resolveErr := geckodb.ResolveGitPendingRepositoryByID(handler.db, pendingRepoID); resolveErr != nil {
+				errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("resolve pending repository failed: %s", resolveErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID, "pending_repo_id": pendingRepoID}, nil)
+				errResponse.WriteLog(handler.logger)
+				return errResponse.Write(ctx)
+			}
+		}
+	}
+
+	return httputil.JSON(map[string]any{"code": http.StatusOK, "message": fmt.Sprintf("ACCEPTED: %s for type: %s", configID, configType)}, http.StatusOK).Write(ctx)
 }
 
 func (handler *Handler) handleProjectConfigDELETE(ctx fiber.Ctx) error {

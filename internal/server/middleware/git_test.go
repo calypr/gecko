@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"net/http/httptest"
@@ -86,5 +87,38 @@ func TestRequireAuthorizationAllowsBearerHeader(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectAuthForbiddenIncludesRequestAccessDetails(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Get("/git/projects/:orgTitle/:projectTitle", GitProjectAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/organization/org-a/project/other"}}), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("GET", "/git/projects/org-a/proj-a", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Error struct {
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload.Error.Details["request_access"]; got != true {
+		t.Fatalf("expected request_access=true, got %#v", got)
+	}
+	if got := payload.Error.Details["request_access_resource_path"]; got != "/programs/org-a/projects/proj-a" {
+		t.Fatalf("unexpected request_access_resource_path: %#v", got)
 	}
 }

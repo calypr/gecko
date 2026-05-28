@@ -3,7 +3,6 @@ package middleware
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/config"
 	"github.com/calypr/gecko/internal/authz"
+	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/gofiber/fiber/v3"
 	"github.com/uc-cdis/arborist/arborist"
@@ -224,27 +224,21 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHandler
 		if organization == "" || project == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
-		allowed, err := jwtHandler.GetAllowedResources(token, permission, "*")
-		if err != nil {
-			return writeError(ctx, logger, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil))
-		}
-		resources, conversionErr := convertAnyToStringSlice(allowed)
+		resources, conversionErr := GitAllowedResources(jwtHandler, token, permission)
 		if conversionErr != nil {
 			return writeError(ctx, logger, conversionErr)
 		}
-		expected := []string{
-			fmt.Sprintf("/organization/%s/project/%s", organization, project),
-			fmt.Sprintf("/programs/%s/projects/%s", organization, project),
+		if GitProjectReadable(resources, organization, project) {
+			return ctx.Next()
 		}
-		for _, resource := range resources {
-			normalized := normalizeGitResourcePath(resource)
-			for _, candidate := range expected {
-				if normalized == candidate {
-					return ctx.Next()
-				}
-			}
-		}
-		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to %s on project %s/%s", permission, organization, project), http.StatusForbidden, map[string]any{"organization": organization, "project": project, "method": permission}, nil))
+		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to %s on project %s/%s", permission, organization, project), http.StatusForbidden, map[string]any{
+			"organization":                 organization,
+			"project":                      project,
+			"method":                       permission,
+			"resource_path":                git.ProgramProjectResourcePath(organization, project),
+			"request_access":               true,
+			"request_access_resource_path": git.ProgramProjectResourcePath(organization, project),
+		}, nil))
 	}
 }
 
@@ -298,15 +292,19 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *httputil.ErrorResponse)
 }
 
 func normalizeGitResourcePath(resource string) string {
-	trimmed := strings.TrimSpace(resource)
-	if trimmed == "" {
-		return ""
+	return git.NormalizeResourcePath(resource)
+}
+
+func GitAllowedResources(jwtHandler JWTAllowedResourceHandler, token string, permission string) ([]string, *httputil.ErrorResponse) {
+	allowed, err := jwtHandler.GetAllowedResources(token, permission, "*")
+	if err != nil {
+		return nil, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil)
 	}
-	if parsed, err := url.Parse(trimmed); err == nil && parsed.Path != "" {
-		trimmed = parsed.Path
-	}
-	trimmed = "/" + strings.Trim(trimmed, "/")
-	return strings.TrimSuffix(trimmed, "/")
+	return convertAnyToStringSlice(allowed)
+}
+
+func GitProjectReadable(resources []string, organization string, project string) bool {
+	return git.ResourceListAllowsProject(resources, organization, project)
 }
 
 func writeError(ctx fiber.Ctx, logger arborist.Logger, response *httputil.ErrorResponse) error {

@@ -94,6 +94,9 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 		return
 	}
 	gitGroup := app.Group("/git")
+	gitGroup.Post("/github/webhook", handler.handleGitHubWebhookPOST)
+	gitGroup.Get("/pending", servermw.RequireAuthorization(handler.logger), handler.handleGitPendingRepositoriesGET)
+	gitGroup.Post("/pending/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitPendingRepositoriesReconcilePOST)
 	gitGroup.Get("/projects", handler.handleGitProjectsGET)
 	gitGroup.Get("/organizations/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsStatusGET)
 	gitGroup.Post("/organizations/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsReconcilePOST)

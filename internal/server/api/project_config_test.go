@@ -129,6 +129,9 @@ func TestProjectConfigPUT_ByOrganizationAndProject(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO config_schema\.projects`).
 		WithArgs("HTAN_INT/BForePC", content).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`UPDATE config_schema\.git_pending_repository`).
+		WithArgs("github.com", "example", "BForePC").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	app := fiber.New()
 	projects := app.Group("/config/projects", withConfigType(string(config.TypeProjects)))
