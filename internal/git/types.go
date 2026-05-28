@@ -123,6 +123,11 @@ type GitHubWebhookRepository struct {
 	CloneURL string `json:"clone_url"`
 }
 
+type fenceGitHubInstallationRepositoriesResponse struct {
+	InstallationID int64                     `json:"installation_id"`
+	Repositories   []GitHubWebhookRepository `json:"repositories"`
+}
+
 type GitHubWebhookInstallation struct {
 	ID int64 `json:"id"`
 }

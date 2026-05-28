@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -8,9 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
+	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/jmoiron/sqlx"
 )
@@ -115,6 +119,138 @@ func (service *GitService) HandleGitHubWebhook(_ context.Context, db *sqlx.DB, e
 func ListPendingRepositories(db *sqlx.DB, installationID int64) ([]geckodb.GitPendingRepository, error) {
 	if db == nil {
 		return []geckodb.GitPendingRepository{}, nil
+	}
+	return geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
+}
+
+func (service *GitService) ListInstallationRepositoriesFromFence(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubWebhookRepository, error) {
+	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
+		return nil, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    "Fence base URL is not configured for GitHub installation repository reconcile",
+		}
+	}
+	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	if err != nil {
+		return nil, &HTTPStatusError{
+			StatusCode: http.StatusUnauthorized,
+			Code:       "missing_authorization",
+			Message:    err.Error(),
+		}
+	}
+	requestBody, err := json.Marshal(map[string]int64{"installation_id": installationID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal fence github installation repositories request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github/installation-repositories",
+		bytes.NewReader(requestBody),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build fence github installation repositories request: %w", err)
+	}
+	req.Header.Set("Authorization", authorizationHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := service.client.Do(req)
+	if err != nil {
+		return nil, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("Fence github installation repositories request failed: %s", err),
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read fence github installation repositories response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		message := decodeFenceErrorResponse(body)
+		if message == "" {
+			message = fmt.Sprintf("Fence github installation repositories request failed with status %d", resp.StatusCode)
+		}
+		code := "integration_error"
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			code = "missing_authorization"
+		case http.StatusForbidden:
+			code = "forbidden"
+		case http.StatusNotFound:
+			code = "not_found"
+		}
+		return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Code: code, Message: message}
+	}
+
+	var payload fenceGitHubInstallationRepositoriesResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, &HTTPStatusError{
+			StatusCode: http.StatusBadGateway,
+			Code:       "integration_error",
+			Message:    fmt.Sprintf("invalid Fence github installation repositories response: %s", err),
+		}
+	}
+	return payload.Repositories, nil
+}
+
+func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db *sqlx.DB, authorizationHeader string, installationID int64) ([]geckodb.GitPendingRepository, error) {
+	if db == nil {
+		return []geckodb.GitPendingRepository{}, nil
+	}
+	repositories, err := service.ListInstallationRepositoriesFromFence(ctx, authorizationHeader, installationID)
+	if err != nil {
+		return nil, err
+	}
+	existingProjects, err := geckodb.ConfigListByType(db, string(appconfig.TypeProjects))
+	if err != nil {
+		return nil, fmt.Errorf("list project configs: %w", err)
+	}
+	currentPendingRepositories, err := geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
+	if err != nil {
+		return nil, fmt.Errorf("list current pending repositories: %w", err)
+	}
+
+	currentRepoIDs := make(map[int64]struct{}, len(repositories))
+	existingRepoKeys := make(map[string]struct{}, len(existingProjects))
+	for _, projectID := range existingProjects {
+		var cfg appconfig.ProjectConfig
+		if err := geckodb.ConfigGETGeneric(db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+			continue
+		}
+		identity, identityErr := ParseRepositoryIdentity(cfg.SrcRepo)
+		if identityErr != nil {
+			continue
+		}
+		existingRepoKeys[strings.ToLower(identity.Host+"/"+identity.Owner+"/"+identity.Repo)] = struct{}{}
+	}
+
+	for _, repository := range repositories {
+		currentRepoIDs[repository.ID] = struct{}{}
+		pending, err := pendingRepositoryFromWebhook(installationID, repository)
+		if err != nil {
+			continue
+		}
+		repoKey := strings.ToLower(pending.RepoHost + "/" + pending.RepoOwner + "/" + pending.RepoPath)
+		if _, exists := existingRepoKeys[repoKey]; exists {
+			_ = geckodb.ResolveGitPendingRepositoriesByRepo(db, installationID, pending.RepoHost, pending.RepoOwner, pending.RepoPath)
+			continue
+		}
+		if err := geckodb.UpsertGitPendingRepository(db, *pending); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, pendingRepository := range currentPendingRepositories {
+		if _, exists := currentRepoIDs[pendingRepository.RepoID]; exists {
+			continue
+		}
+		if err := geckodb.RemoveGitPendingRepository(db, installationID, pendingRepository.RepoID); err != nil {
+			return nil, err
+		}
 	}
 	return geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
 }

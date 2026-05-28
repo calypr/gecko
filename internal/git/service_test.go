@@ -343,6 +343,58 @@ func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testin
 	}
 }
 
+func TestListInstallationRepositoriesFromFenceForwardsAuthorizationAndParsesRepositories(t *testing.T) {
+	var receivedAuth string
+	var receivedBody map[string]int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		receivedAuth = request.Header.Get("Authorization")
+		if request.URL.Path != "/credentials/github/installation-repositories" {
+			t.Fatalf("unexpected request path: %s", request.URL.Path)
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected request method: %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installation_id": 42,
+			"repositories": []map[string]any{
+				{
+					"id":        101,
+					"name":      "git_drs_test",
+					"full_name": "Ellrott_Lab/git_drs_test",
+					"html_url":  "https://github.com/EllrottLab/git_drs_test",
+					"clone_url": "https://github.com/EllrottLab/git_drs_test.git",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	service := NewGitService(GitServiceConfig{
+		FenceBaseURL: server.URL,
+		HTTPClient:   server.Client(),
+	})
+	repositories, err := service.ListInstallationRepositoriesFromFence(context.Background(), "Bearer user-token", 42)
+	if err != nil {
+		t.Fatalf("list installation repositories: %v", err)
+	}
+	if receivedAuth != "Bearer user-token" {
+		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+	if receivedBody["installation_id"] != 42 {
+		t.Fatalf("expected installation id in request body, got %#v", receivedBody)
+	}
+	if len(repositories) != 1 {
+		t.Fatalf("expected one repository, got %+v", repositories)
+	}
+	if repositories[0].FullName != "Ellrott_Lab/git_drs_test" {
+		t.Fatalf("unexpected repository: %+v", repositories[0])
+	}
+}
+
 func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.T) {
 	var receivedAuth string
 	var receivedBody map[string]string
