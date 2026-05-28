@@ -12,6 +12,7 @@ import (
 type Dependencies struct {
 	DB            *sqlx.DB
 	Logger        arborist.Logger
+	JWTApp        arborist.JWTDecoder
 	QdrantClient  *qdrant.Client
 	GripqlClient  *gripql.Client
 	GripGraphName string
@@ -21,6 +22,7 @@ type Dependencies struct {
 type Handler struct {
 	db            *sqlx.DB
 	logger        arborist.Logger
+	jwtApp        arborist.JWTDecoder
 	qdrantClient  *qdrant.Client
 	gripqlClient  *gripql.Client
 	gripGraphName string
@@ -31,6 +33,7 @@ func Register(app *fiber.App, deps Dependencies) {
 	handler := &Handler{
 		db:            deps.DB,
 		logger:        deps.Logger,
+		jwtApp:        deps.JWTApp,
 		qdrantClient:  deps.QdrantClient,
 		gripqlClient:  deps.GripqlClient,
 		gripGraphName: deps.GripGraphName,

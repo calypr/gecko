@@ -13,6 +13,7 @@ import (
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
 func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
@@ -28,6 +29,11 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	userID, userErr := handler.authenticatedUserID(ctx)
+	if userErr != nil {
+		userErr.WriteLog(handler.logger)
+		return userErr.Write(ctx)
+	}
 	requestBody := map[string]string{}
 	if len(ctx.Body()) > 0 {
 		if errResponse := httputil.ParseJSONBody(ctx.Body(), &requestBody, map[string]any{"organization": organization}); errResponse != nil {
@@ -41,11 +47,45 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	}
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	beforeRepoIDs := []int64{}
+	var installationID sql.NullInt64
+	if status, statusErr := handler.gitService.RequestOrganizationInstallationStatus(connectCtx, authorizationHeader, organization); statusErr != nil {
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to inspect existing GitHub App installation: %s", statusErr), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	} else if status.Installed && status.InstallationID != nil {
+		installationID = sql.NullInt64{Int64: *status.InstallationID, Valid: true}
+		repositories, listErr := handler.gitService.ListInstallationRepositories(connectCtx, authorizationHeader, *status.InstallationID)
+		if listErr != nil {
+			response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to snapshot existing GitHub App repositories: %s", listErr), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+		for _, repository := range repositories {
+			beforeRepoIDs = append(beforeRepoIDs, repository.ID)
+		}
+	}
+	setupSessionID := uuid.NewString()
+	now := time.Now().UTC()
+	setupSession := geckodb.GitSetupSession{
+		ID:              setupSessionID,
+		CreatedByUserID: userID,
+		Organization:    organization,
+		InstallationID:  installationID,
+		BeforeRepoIDs:   geckodb.EncodeRepoIDs(beforeRepoIDs),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := geckodb.UpsertGitSetupSession(handler.db, setupSession); err != nil {
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to create GitHub setup session: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	redirectURL, err := handler.gitService.RequestInstallationURL(
 		connectCtx,
 		authorizationHeader,
 		organization,
-		redirectPath,
+		git.GitSetupState(setupSessionID),
 	)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
@@ -57,7 +97,8 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	return httputil.JSON(git.GitOrganizationConnectResponse{RedirectURL: redirectURL}, http.StatusOK).Write(ctx)
+	_ = redirectPath
+	return httputil.JSON(git.GitOrganizationConnectResponse{RedirectURL: redirectURL, SetupSessionID: setupSessionID}, http.StatusOK).Write(ctx)
 }
 
 func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {

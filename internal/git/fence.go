@@ -124,6 +124,10 @@ func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Con
 	}, nil
 }
 
+func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubWebhookRepository, error) {
+	return service.listInstallationRepositoriesFromFence(ctx, authorizationHeader, installationID)
+}
+
 func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
 	var payload fenceGitHubInstallationStatusResponse
 	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{

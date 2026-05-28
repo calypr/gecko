@@ -46,8 +46,26 @@ func (service *GitService) VerifyWebhookSignature(body []byte, signature string)
 	return nil
 }
 
+const GitSetupStatePrefix = "gecko_git_setup:"
+
+func GitSetupState(setupSessionID string) string {
+	return GitSetupStatePrefix + strings.TrimSpace(setupSessionID)
+}
+
+func ParseGitSetupState(raw string) string {
+	value := strings.TrimSpace(raw)
+	if !strings.HasPrefix(value, GitSetupStatePrefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, GitSetupStatePrefix))
+}
+
 func pendingRepositoryID(installationID int64, repoID int64) string {
 	return fmt.Sprintf("%d:%d", installationID, repoID)
+}
+
+func userPendingRepositoryID(installationID int64, repoID int64, userID string) string {
+	return fmt.Sprintf("%d:%d:%s", installationID, repoID, strings.TrimSpace(userID))
 }
 
 func pendingRepositoryFromGitHubRepository(installationID int64, repository GitHubWebhookRepository) (*geckodb.GitPendingRepository, error) {
@@ -59,6 +77,7 @@ func pendingRepositoryFromGitHubRepository(installationID int64, repository GitH
 	return &geckodb.GitPendingRepository{
 		ID:             pendingRepositoryID(installationID, repository.ID),
 		InstallationID: installationID,
+		Source:         "webhook",
 		Organization:   identity.Owner,
 		RepoID:         repository.ID,
 		RepoName:       identity.Repo,
@@ -124,7 +143,7 @@ func (service *GitService) listInstallationRepositoriesFromFence(ctx context.Con
 	return payload.Repositories, nil
 }
 
-func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db *sqlx.DB, authorizationHeader string, installationID int64) ([]geckodb.GitPendingRepository, error) {
+func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db *sqlx.DB, authorizationHeader string, installationID int64, setupSession *geckodb.GitSetupSession) ([]geckodb.GitPendingRepository, error) {
 	if db == nil {
 		return []geckodb.GitPendingRepository{}, nil
 	}
@@ -136,7 +155,20 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 	if err != nil {
 		return nil, fmt.Errorf("list project configs: %w", err)
 	}
-	currentPendingRepositories, err := geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
+	setupSessionID := ""
+	createdByUserID := ""
+	beforeRepoIDs := map[int64]struct{}{}
+	if setupSession != nil {
+		setupSessionID = setupSession.ID
+		createdByUserID = setupSession.CreatedByUserID
+		beforeRepoIDs = geckodb.DecodeRepoIDs(setupSession.BeforeRepoIDs)
+	}
+	var currentPendingRepositories []geckodb.GitPendingRepository
+	if createdByUserID == "" {
+		currentPendingRepositories, err = geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
+	} else {
+		currentPendingRepositories, err = geckodb.ListGitPendingRepositoriesByUser(db, createdByUserID, installationID, setupSessionID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list current pending repositories: %w", err)
 	}
@@ -157,9 +189,18 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 
 	for _, repository := range repositories {
 		currentRepoIDs[repository.ID] = struct{}{}
+		if _, existedBeforeSetup := beforeRepoIDs[repository.ID]; existedBeforeSetup {
+			continue
+		}
 		pending, err := pendingRepositoryFromGitHubRepository(installationID, repository)
 		if err != nil {
 			continue
+		}
+		if setupSessionID != "" {
+			pending.ID = userPendingRepositoryID(installationID, repository.ID, createdByUserID)
+			pending.SetupSessionID = nullableString(setupSessionID)
+			pending.CreatedByUserID = nullableString(createdByUserID)
+			pending.Source = "setup_session"
 		}
 		repoKey := strings.ToLower(pending.RepoHost + "/" + pending.RepoOwner + "/" + pending.RepoPath)
 		if _, exists := existingRepoKeys[repoKey]; exists {
@@ -178,6 +219,9 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 		if err := geckodb.RemoveGitPendingRepository(db, installationID, pendingRepository.RepoID); err != nil {
 			return nil, err
 		}
+	}
+	if createdByUserID != "" {
+		return geckodb.ListGitPendingRepositoriesByUser(db, createdByUserID, installationID, setupSessionID)
 	}
 	return geckodb.ListGitPendingRepositoriesByInstallation(db, installationID)
 }
@@ -200,6 +244,12 @@ func PendingRepositoryResponse(record geckodb.GitPendingRepository) GitPendingRe
 	}
 	if record.RepoCloneURL.Valid {
 		response.RepoCloneURL = record.RepoCloneURL.String
+	}
+	if record.SetupSessionID.Valid {
+		response.SetupSessionID = record.SetupSessionID.String
+	}
+	if record.CreatedByUserID.Valid {
+		response.CreatedByUserID = record.CreatedByUserID.String
 	}
 	return response
 }

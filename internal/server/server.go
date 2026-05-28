@@ -111,6 +111,7 @@ func (server *Server) MakeRouter() *fiber.App {
 	api.Register(app, api.Dependencies{
 		DB:            server.db,
 		Logger:        server.Logger,
+		JWTApp:        server.jwtApp,
 		QdrantClient:  server.qdrantClient,
 		GripqlClient:  server.gripqlClient,
 		GripGraphName: server.gripGraphName,

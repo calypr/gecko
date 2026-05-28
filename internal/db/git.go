@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -39,21 +40,35 @@ type GitOrganizationState struct {
 }
 
 type GitPendingRepository struct {
-	ID             string         `db:"id"`
-	InstallationID int64          `db:"installation_id"`
-	Organization   string         `db:"organization"`
-	RepoID         int64          `db:"repo_id"`
-	RepoName       string         `db:"repo_name"`
-	RepoFullName   string         `db:"repo_full_name"`
-	RepoHTMLURL    sql.NullString `db:"repo_html_url"`
-	RepoCloneURL   sql.NullString `db:"repo_clone_url"`
-	RepoHost       string         `db:"repo_host"`
-	RepoOwner      string         `db:"repo_owner"`
-	RepoPath       string         `db:"repo_path"`
-	AddedAt        time.Time      `db:"added_at"`
-	UpdatedAt      time.Time      `db:"updated_at"`
-	ResolvedAt     sql.NullTime   `db:"resolved_at"`
-	RemovedAt      sql.NullTime   `db:"removed_at"`
+	ID              string         `db:"id"`
+	InstallationID  int64          `db:"installation_id"`
+	SetupSessionID  sql.NullString `db:"setup_session_id"`
+	CreatedByUserID sql.NullString `db:"created_by_user_id"`
+	Source          string         `db:"source"`
+	Organization    string         `db:"organization"`
+	RepoID          int64          `db:"repo_id"`
+	RepoName        string         `db:"repo_name"`
+	RepoFullName    string         `db:"repo_full_name"`
+	RepoHTMLURL     sql.NullString `db:"repo_html_url"`
+	RepoCloneURL    sql.NullString `db:"repo_clone_url"`
+	RepoHost        string         `db:"repo_host"`
+	RepoOwner       string         `db:"repo_owner"`
+	RepoPath        string         `db:"repo_path"`
+	AddedAt         time.Time      `db:"added_at"`
+	UpdatedAt       time.Time      `db:"updated_at"`
+	ResolvedAt      sql.NullTime   `db:"resolved_at"`
+	RemovedAt       sql.NullTime   `db:"removed_at"`
+}
+
+type GitSetupSession struct {
+	ID              string        `db:"id"`
+	CreatedByUserID string        `db:"created_by_user_id"`
+	Organization    string        `db:"organization"`
+	InstallationID  sql.NullInt64 `db:"installation_id"`
+	BeforeRepoIDs   string        `db:"before_repo_ids"`
+	CreatedAt       time.Time     `db:"created_at"`
+	UpdatedAt       time.Time     `db:"updated_at"`
+	CompletedAt     sql.NullTime  `db:"completed_at"`
 }
 
 type GitUploadSession struct {
@@ -158,6 +173,9 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 		CREATE TABLE IF NOT EXISTS config_schema.git_pending_repository (
 			id TEXT PRIMARY KEY,
 			installation_id BIGINT NOT NULL,
+			setup_session_id TEXT NULL,
+			created_by_user_id TEXT NULL,
+			source TEXT NOT NULL DEFAULT 'webhook',
 			organization TEXT NOT NULL,
 			repo_id BIGINT NOT NULL,
 			repo_name TEXT NOT NULL,
@@ -170,9 +188,31 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 			added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			resolved_at TIMESTAMPTZ NULL,
-			removed_at TIMESTAMPTZ NULL,
-			UNIQUE (installation_id, repo_id)
+			removed_at TIMESTAMPTZ NULL
 		);
+		CREATE TABLE IF NOT EXISTS config_schema.git_setup_session (
+			id TEXT PRIMARY KEY,
+			created_by_user_id TEXT NOT NULL,
+			organization TEXT NOT NULL,
+			installation_id BIGINT NULL,
+			before_repo_ids TEXT NOT NULL DEFAULT '[]',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			completed_at TIMESTAMPTZ NULL
+		);
+		ALTER TABLE config_schema.git_pending_repository ADD COLUMN IF NOT EXISTS setup_session_id TEXT NULL;
+		ALTER TABLE config_schema.git_pending_repository ADD COLUMN IF NOT EXISTS created_by_user_id TEXT NULL;
+		ALTER TABLE config_schema.git_pending_repository ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'webhook';
+		ALTER TABLE config_schema.git_pending_repository DROP CONSTRAINT IF EXISTS git_pending_repository_installation_id_repo_id_key;
+		CREATE UNIQUE INDEX IF NOT EXISTS git_pending_repository_webhook_repo_key
+			ON config_schema.git_pending_repository (installation_id, repo_id)
+			WHERE created_by_user_id IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS git_pending_repository_user_repo_key
+			ON config_schema.git_pending_repository (installation_id, repo_id, created_by_user_id)
+			WHERE created_by_user_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS git_pending_repository_user_unresolved_idx
+			ON config_schema.git_pending_repository (created_by_user_id, added_at)
+			WHERE resolved_at IS NULL AND removed_at IS NULL;
 		`)
 	if err != nil {
 		return fmt.Errorf("ensure git state tables: %w", err)
@@ -280,12 +320,15 @@ func UpsertGitPendingRepository(db *sqlx.DB, pending GitPendingRepository) error
 	}
 	_, err := db.NamedExec(`
 		INSERT INTO config_schema.git_pending_repository (
-			id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
+			id, installation_id, setup_session_id, created_by_user_id, source, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
 		) VALUES (
-			:id, :installation_id, :organization, :repo_id, :repo_name, :repo_full_name, :repo_html_url, :repo_clone_url, :repo_host, :repo_owner, :repo_path, :added_at, :updated_at, :resolved_at, :removed_at
+			:id, :installation_id, :setup_session_id, :created_by_user_id, :source, :organization, :repo_id, :repo_name, :repo_full_name, :repo_html_url, :repo_clone_url, :repo_host, :repo_owner, :repo_path, :added_at, :updated_at, :resolved_at, :removed_at
 		)
-		ON CONFLICT (installation_id, repo_id) DO UPDATE SET
+		ON CONFLICT (id) DO UPDATE SET
 			id = EXCLUDED.id,
+			setup_session_id = EXCLUDED.setup_session_id,
+			created_by_user_id = EXCLUDED.created_by_user_id,
+			source = EXCLUDED.source,
 			organization = EXCLUDED.organization,
 			repo_name = EXCLUDED.repo_name,
 			repo_full_name = EXCLUDED.repo_full_name,
@@ -305,17 +348,47 @@ func UpsertGitPendingRepository(db *sqlx.DB, pending GitPendingRepository) error
 	return nil
 }
 
+func gitPendingRepositorySelectSQL() string {
+	return `SELECT id, installation_id, setup_session_id, created_by_user_id, source, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at FROM config_schema.git_pending_repository`
+}
+
 func ListGitPendingRepositoriesByInstallation(db *sqlx.DB, installationID int64) ([]GitPendingRepository, error) {
 	if db == nil {
 		return []GitPendingRepository{}, nil
 	}
 	records := []GitPendingRepository{}
-	if err := db.Select(&records, `
-		SELECT id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
-		FROM config_schema.git_pending_repository
+	if err := db.Select(&records, gitPendingRepositorySelectSQL()+`
 		WHERE installation_id = $1 AND resolved_at IS NULL AND removed_at IS NULL
 		ORDER BY added_at, repo_full_name
 	`, installationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []GitPendingRepository{}, nil
+		}
+		return nil, err
+	}
+	return records, nil
+}
+
+func ListGitPendingRepositoriesByUser(db *sqlx.DB, userID string, installationID int64, setupSessionID string) ([]GitPendingRepository, error) {
+	if db == nil {
+		return []GitPendingRepository{}, nil
+	}
+	records := []GitPendingRepository{}
+	query := gitPendingRepositorySelectSQL() + `
+		WHERE created_by_user_id = $1
+		  AND resolved_at IS NULL
+		  AND removed_at IS NULL`
+	args := []any{userID}
+	if installationID > 0 {
+		args = append(args, installationID)
+		query += fmt.Sprintf(" AND installation_id = $%d", len(args))
+	}
+	if setupSessionID != "" {
+		args = append(args, setupSessionID)
+		query += fmt.Sprintf(" AND setup_session_id = $%d", len(args))
+	}
+	query += " ORDER BY added_at, repo_full_name"
+	if err := db.Select(&records, query, args...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []GitPendingRepository{}, nil
 		}
@@ -329,9 +402,7 @@ func ListGitPendingRepositories(db *sqlx.DB) ([]GitPendingRepository, error) {
 		return []GitPendingRepository{}, nil
 	}
 	records := []GitPendingRepository{}
-	if err := db.Select(&records, `
-		SELECT id, installation_id, organization, repo_id, repo_name, repo_full_name, repo_html_url, repo_clone_url, repo_host, repo_owner, repo_path, added_at, updated_at, resolved_at, removed_at
-		FROM config_schema.git_pending_repository
+	if err := db.Select(&records, gitPendingRepositorySelectSQL()+`
 		WHERE resolved_at IS NULL AND removed_at IS NULL
 		ORDER BY added_at, repo_full_name
 	`); err != nil {
@@ -406,6 +477,63 @@ func RemoveGitPendingRepository(db *sqlx.DB, installationID int64, repoID int64)
 		return fmt.Errorf("remove git pending repository: %w", err)
 	}
 	return nil
+}
+
+func UpsertGitSetupSession(db *sqlx.DB, session GitSetupSession) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.NamedExec(`
+		INSERT INTO config_schema.git_setup_session (
+			id, created_by_user_id, organization, installation_id, before_repo_ids, created_at, updated_at, completed_at
+		) VALUES (
+			:id, :created_by_user_id, :organization, :installation_id, :before_repo_ids, :created_at, :updated_at, :completed_at
+		)
+		ON CONFLICT (id) DO UPDATE SET
+			created_by_user_id = EXCLUDED.created_by_user_id,
+			organization = EXCLUDED.organization,
+			installation_id = EXCLUDED.installation_id,
+			before_repo_ids = EXCLUDED.before_repo_ids,
+			updated_at = EXCLUDED.updated_at,
+			completed_at = EXCLUDED.completed_at
+	`, session)
+	if err != nil {
+		return fmt.Errorf("upsert git setup session: %w", err)
+	}
+	return nil
+}
+
+func GitSetupSessionByID(db *sqlx.DB, id string) (*GitSetupSession, error) {
+	if db == nil || id == "" {
+		return nil, nil
+	}
+	var session GitSetupSession
+	err := db.Get(&session, `SELECT id, created_by_user_id, organization, installation_id, before_repo_ids, created_at, updated_at, completed_at FROM config_schema.git_setup_session WHERE id = $1`, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &session, nil
+}
+
+func EncodeRepoIDs(repoIDs []int64) string {
+	body, err := json.Marshal(repoIDs)
+	if err != nil {
+		return "[]"
+	}
+	return string(body)
+}
+
+func DecodeRepoIDs(raw string) map[int64]struct{} {
+	repoIDs := []int64{}
+	_ = json.Unmarshal([]byte(raw), &repoIDs)
+	indexed := make(map[int64]struct{}, len(repoIDs))
+	for _, repoID := range repoIDs {
+		indexed[repoID] = struct{}{}
+	}
+	return indexed
 }
 
 func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState, error) {

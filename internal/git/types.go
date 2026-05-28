@@ -67,7 +67,8 @@ type GitProjectStatusResponse struct {
 }
 
 type GitOrganizationConnectResponse struct {
-	RedirectURL string `json:"redirect_url"`
+	RedirectURL    string `json:"redirect_url"`
+	SetupSessionID string `json:"setup_session_id,omitempty"`
 }
 
 type GitRepositoryInstallationStatus struct {
@@ -92,27 +93,31 @@ type GitOrganizationProjectStatus struct {
 }
 
 type GitPendingRepository struct {
-	ID             string `json:"id"`
-	InstallationID int64  `json:"installation_id"`
-	Organization   string `json:"organization"`
-	RepoID         int64  `json:"repo_id"`
-	RepoName       string `json:"repo_name"`
-	RepoFullName   string `json:"repo_full_name"`
-	RepoHTMLURL    string `json:"repo_html_url,omitempty"`
-	RepoCloneURL   string `json:"repo_clone_url,omitempty"`
-	RepoHost       string `json:"repo_host"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoPath       string `json:"repo_path"`
-	AddedAt        string `json:"added_at"`
+	ID              string `json:"id"`
+	InstallationID  int64  `json:"installation_id"`
+	SetupSessionID  string `json:"setup_session_id,omitempty"`
+	CreatedByUserID string `json:"created_by_user_id,omitempty"`
+	Organization    string `json:"organization"`
+	RepoID          int64  `json:"repo_id"`
+	RepoName        string `json:"repo_name"`
+	RepoFullName    string `json:"repo_full_name"`
+	RepoHTMLURL     string `json:"repo_html_url,omitempty"`
+	RepoCloneURL    string `json:"repo_clone_url,omitempty"`
+	RepoHost        string `json:"repo_host"`
+	RepoOwner       string `json:"repo_owner"`
+	RepoPath        string `json:"repo_path"`
+	AddedAt         string `json:"added_at"`
 }
 
 type GitPendingRepositoriesResponse struct {
-	InstallationID int64                  `json:"installation_id"`
+	InstallationID int64                  `json:"installation_id,omitempty"`
+	SetupSessionID string                 `json:"setup_session_id,omitempty"`
 	Pending        []GitPendingRepository `json:"pending"`
 }
 
 type GitPendingRepositoriesReconcileRequest struct {
-	InstallationID int64 `json:"installation_id"`
+	InstallationID int64  `json:"installation_id"`
+	SetupSessionID string `json:"setup_session_id,omitempty"`
 }
 
 type GitHubWebhookRepository struct {
