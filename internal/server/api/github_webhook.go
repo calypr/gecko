@@ -82,11 +82,12 @@ func (handler *Handler) handleGitPendingRepositoriesReconcilePOST(ctx fiber.Ctx)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	records, err := handler.gitService.ReconcilePendingRepositories(reconcileCtx, handler.db, request.InstallationID)
+	// GitHub App credentials belong to Fence. Gecko's callback reconcile endpoint
+	// intentionally returns webhook-persisted pending state instead of minting
+	// installation tokens or calling GitHub directly.
+	records, err := git.ListPendingRepositories(handler.db, request.InstallationID)
 	if err != nil {
-		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to reconcile pending repositories: %s", err), http.StatusBadGateway, map[string]any{"installation_id": request.InstallationID}, nil)
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to list pending repositories: %s", err), http.StatusInternalServerError, map[string]any{"installation_id": request.InstallationID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}

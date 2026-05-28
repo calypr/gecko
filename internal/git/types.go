@@ -25,8 +25,6 @@ const (
 type GitServiceConfig struct {
 	DataDir             string
 	GitHubAPIBase       string
-	GitHubAppID         string
-	GitHubAppPrivateKey string
 	GitHubWebhookSecret string
 	FenceBaseURL        string
 	HTTPClient          *http.Client

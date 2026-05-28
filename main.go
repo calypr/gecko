@@ -40,8 +40,6 @@ func main() {
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
 	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
 	var githubAPIBaseFlag = flag.String("github-api-base-url", "", "GitHub API base URL (overrides GITHUB_API_BASE_URL env var)")
-	var githubAppIDFlag = flag.String("github-app-id", "", "GitHub App ID for installation repository reconcile (overrides GITHUB_APP_ID env var)")
-	var githubAppPrivateKeyFlag = flag.String("github-app-private-key", "", "GitHub App private key PEM for installation repository reconcile (overrides GITHUB_APP_PRIVATE_KEY env var)")
 	var githubWebhookSecretFlag = flag.String("github-webhook-secret", "", "GitHub webhook secret (overrides GITHUB_WEBHOOK_SECRET env var)")
 	var fenceBaseURLFlag = flag.String("fence-base-url", "", "Fence base URL for GitHub App token exchange (overrides FENCE_BASE_URL env var)")
 	var gitDataDirFlag = flag.String("git-data-dir", "", "Directory for local git mirrors (overrides GIT_DATA_DIR env var)")
@@ -76,8 +74,6 @@ func main() {
 		serverBuilder = serverBuilder.WithDB(db)
 		gitService := git.NewGitService(git.GitServiceConfig{
 			GitHubAPIBase:       firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL")),
-			GitHubAppID:         firstNonEmpty(*githubAppIDFlag, os.Getenv("GITHUB_APP_ID")),
-			GitHubAppPrivateKey: firstNonEmpty(*githubAppPrivateKeyFlag, os.Getenv("GITHUB_APP_PRIVATE_KEY")),
 			GitHubWebhookSecret: firstNonEmpty(*githubWebhookSecretFlag, os.Getenv("GITHUB_WEBHOOK_SECRET")),
 			FenceBaseURL:        firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL")),
 			DataDir:             firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR")),
