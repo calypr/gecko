@@ -122,15 +122,18 @@ type GitPendingRepositoriesReconcileRequest struct {
 }
 
 type CalyprProjectStorageIntent struct {
-	Bucket       string `json:"bucket"`
-	Provider     string `json:"provider"`
-	Endpoint     string `json:"endpoint"`
-	Region       string `json:"region"`
-	AccessKey    string `json:"access_key"`
-	SecretKey    string `json:"secret_key"`
-	Organization string `json:"organization"`
-	ProjectID    string `json:"project_id"`
-	Path         string `json:"path,omitempty"`
+	Bucket              string `json:"bucket"`
+	Provider            string `json:"provider"`
+	Endpoint            string `json:"endpoint"`
+	Region              string `json:"region"`
+	AccessKey           string `json:"access_key"`
+	SecretKey           string `json:"secret_key"`
+	Organization        string `json:"organization"`
+	ProjectID           string `json:"project_id"`
+	Path                string `json:"path,omitempty"`
+	PathPrefix          string `json:"path_prefix,omitempty"`
+	OrganizationSubPath string `json:"organization_sub_path,omitempty"`
+	ProjectSubPath      string `json:"project_sub_path,omitempty"`
 }
 
 type CalyprProjectSetupRequest struct {

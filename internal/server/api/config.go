@@ -208,7 +208,48 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 
 func (handler *Handler) handleProjectConfigDELETE(ctx fiber.Ctx) error {
 	configType, configID := handler.resolveProjectConfigParams(ctx)
+	organization := strings.TrimSpace(ctx.Params("orgTitle"))
+	project := strings.TrimSpace(ctx.Params("projectTitle"))
+	resourcePath := git.ProgramProjectResourcePath(organization, project)
+	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	if tokenErr != nil {
+		errResponse := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, map[string]any{"config_type": configType, "config_id": configID}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	if err := deleteSyfonProjectCleanup(ctx.Context(), authorizationHeader, organization, project); err != nil {
+		errResponse := httputil.NewError("integration_error", fmt.Sprintf("failed to delete syfon project state: %s", err), http.StatusBadGateway, map[string]any{"config_type": configType, "config_id": configID}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	if err := deleteAuthzResource(ctx.Context(), authorizationHeader, resourcePath); err != nil {
+		errResponse := httputil.NewError("integration_error", fmt.Sprintf("failed to delete arborist project resource: %s", err), http.StatusBadGateway, map[string]any{"config_type": configType, "config_id": configID, "resource_path": resourcePath}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
 	return handler.handleConfigDELETEByID(ctx, configType, configID)
+}
+
+func (handler *Handler) handleProjectOrganizationDELETE(ctx fiber.Ctx) error {
+	organization := strings.TrimSpace(ctx.Params("orgTitle"))
+	if organization == "" {
+		errResponse := httputil.NewError("invalid_request", "organization is required", http.StatusBadRequest, nil, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	if tokenErr != nil {
+		errResponse := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, map[string]any{"organization": organization}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	resourcePath := fmt.Sprintf("/programs/%s", organization)
+	if err := deleteAuthzResource(ctx.Context(), authorizationHeader, resourcePath); err != nil {
+		errResponse := httputil.NewError("integration_error", fmt.Sprintf("failed to delete arborist organization resource: %s", err), http.StatusBadGateway, map[string]any{"organization": organization, "resource_path": resourcePath}, nil)
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	return httputil.JSON(map[string]any{"success": true}, http.StatusOK).Write(ctx)
 }
 
 func (handler *Handler) handleConfigGETByID(ctx fiber.Ctx, configType string, configID string) error {

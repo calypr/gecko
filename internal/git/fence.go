@@ -3,73 +3,12 @@ package git
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"sync"
-	"time"
 )
-
-const brokerCacheTTL = 5 * time.Minute
-
-type brokerCacheEntry struct {
-	expiresAt time.Time
-	body      []byte
-}
-
-var brokerCache = struct {
-	mu   sync.RWMutex
-	data map[string]brokerCacheEntry
-}{
-	data: map[string]brokerCacheEntry{},
-}
-
-func brokerCacheKey(authorizationHeader string, requestBody []byte) string {
-	sum := sha256.Sum256(append([]byte(strings.TrimSpace(authorizationHeader)), requestBody...))
-	return hex.EncodeToString(sum[:])
-}
-
-func brokerAction(requestPayload map[string]any) string {
-	action, _ := requestPayload["action"].(string)
-	return strings.TrimSpace(action)
-}
-
-func shouldCacheBrokerAction(action string) bool {
-	switch action {
-	case "organization_installation", "repository_installation", "installation_repositories":
-		return true
-	default:
-		return false
-	}
-}
-
-func getCachedBrokerBody(cacheKey string) ([]byte, bool) {
-	now := time.Now()
-	brokerCache.mu.RLock()
-	entry, ok := brokerCache.data[cacheKey]
-	brokerCache.mu.RUnlock()
-	if !ok || now.After(entry.expiresAt) {
-		return nil, false
-	}
-	body := make([]byte, len(entry.body))
-	copy(body, entry.body)
-	return body, true
-}
-
-func setCachedBrokerBody(cacheKey string, body []byte) {
-	copyBody := make([]byte, len(body))
-	copy(copyBody, body)
-	brokerCache.mu.Lock()
-	brokerCache.data[cacheKey] = brokerCacheEntry{
-		expiresAt: time.Now().Add(brokerCacheTTL),
-		body:      copyBody,
-	}
-	brokerCache.mu.Unlock()
-}
 
 func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authorizationHeader string, requestPayload map[string]any, responsePayload any) error {
 	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
@@ -90,20 +29,6 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 	requestBody, err := json.Marshal(requestPayload)
 	if err != nil {
 		return fmt.Errorf("marshal fence github broker request: %w", err)
-	}
-	action := brokerAction(requestPayload)
-	if shouldCacheBrokerAction(action) {
-		cacheKey := brokerCacheKey(validAuthorizationHeader, requestBody)
-		if cachedBody, ok := getCachedBrokerBody(cacheKey); ok {
-			if err := json.Unmarshal(cachedBody, responsePayload); err != nil {
-				return &HTTPStatusError{
-					StatusCode: http.StatusBadGateway,
-					Code:       "integration_error",
-					Message:    fmt.Sprintf("invalid cached Fence github broker response: %s", err),
-				}
-			}
-			return nil
-		}
 	}
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -157,10 +82,6 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 			Code:       "integration_error",
 			Message:    fmt.Sprintf("invalid Fence github broker response: %s", err),
 		}
-	}
-	if shouldCacheBrokerAction(action) {
-		cacheKey := brokerCacheKey(validAuthorizationHeader, requestBody)
-		setCachedBrokerBody(cacheKey, body)
 	}
 	return nil
 }

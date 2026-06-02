@@ -2,19 +2,15 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	gripmiddleware "github.com/bmeg/grip-graphql/middleware"
 	"github.com/calypr/gecko/apierror"
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
@@ -23,25 +19,6 @@ import (
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
-
-const allowedResourcesCacheTTL = 5 * time.Minute
-
-type allowedResourcesCacheValue struct {
-	expiresAt time.Time
-	resources []string
-}
-
-var allowedResourcesCache = struct {
-	mu   sync.RWMutex
-	data map[string]allowedResourcesCacheValue
-}{
-	data: map[string]allowedResourcesCacheValue{},
-}
-
-func allowedResourcesCacheKey(token string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
-	return hex.EncodeToString(sum[:])
-}
 
 func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
 	if len(allowedResources) == 0 {
@@ -197,12 +174,11 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 	return httputil.JSON(responses, http.StatusOK).Write(ctx)
 }
 
-func (handler *Handler) buildGitOrganizationStatus(ctx context.Context, authorizationHeader string, organization string, projectIDs []string, projectStates map[string]geckodb.GitProjectState, organizationStates map[string]geckodb.GitOrganizationState, allowedResources []string) (git.GitOrganizationStatusResponse, *httputil.ErrorResponse) {
+func (handler *Handler) buildGitOrganizationStatus(ctx context.Context, authorizationHeader string, organization string, projectIDs []string, projectStates map[string]geckodb.GitProjectState, organizationStates map[string]geckodb.GitOrganizationState, allowedResources []string, syfonBuckets syfonBucketListResponse, syfonBucketsErr error) (git.GitOrganizationStatusResponse, *httputil.ErrorResponse) {
 	responsePayload := git.GitOrganizationStatusResponse{
 		Organization: organization,
 		Projects:     make([]git.GitOrganizationProjectStatus, 0),
 	}
-	syfonBuckets, syfonBucketsErr := fetchSyfonBuckets(ctx, authorizationHeader)
 	orgState, hasOrgState := organizationStates[organization]
 	if hasOrgState {
 		responsePayload.AppInstalled = orgState.Installed
@@ -480,6 +456,7 @@ func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organ
 func (handler *Handler) buildGitOrganizationsSummary(ctx context.Context, authorizationHeader string, projectIDs []string, allowedResources []string) (git.GitOrganizationsStatusResponse, *httputil.ErrorResponse) {
 	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	organizations := projectConfigOrganizations(projectIDs)
+	syfonBuckets, syfonBucketsErr := fetchSyfonBuckets(ctx, authorizationHeader)
 	projectStates, err := geckodb.ListGitProjectStates(handler.db)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list git project states: %s", err), http.StatusInternalServerError, nil, nil)
@@ -494,7 +471,7 @@ func (handler *Handler) buildGitOrganizationsSummary(ctx context.Context, author
 	}
 	responsePayload := git.GitOrganizationsStatusResponse{Organizations: make([]git.GitOrganizationStatusResponse, 0, len(organizations))}
 	for _, organization := range organizations {
-		organizationStatus, errResponse := handler.buildGitOrganizationStatus(ctx, authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
+		organizationStatus, errResponse := handler.buildGitOrganizationStatus(ctx, authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources, syfonBuckets, syfonBucketsErr)
 		if errResponse != nil {
 			return git.GitOrganizationsStatusResponse{}, errResponse
 		}
@@ -578,7 +555,8 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		return response.Write(ctx)
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
-	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
+	syfonBuckets, syfonBucketsErr := fetchSyfonBuckets(context.Background(), authorizationHeader)
+	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources, syfonBuckets, syfonBucketsErr)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -609,25 +587,10 @@ func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
 	if token == "" {
 		return nil, nil
 	}
-	now := time.Now()
-	cacheKey := allowedResourcesCacheKey(token)
-	allowedResourcesCache.mu.RLock()
-	entry, ok := allowedResourcesCache.data[cacheKey]
-	allowedResourcesCache.mu.RUnlock()
-	if ok && now.Before(entry.expiresAt) {
-		return entry.resources, nil
-	}
-
-	resources, err := servermw.GitAllowedResources(&gripmiddleware.ProdJWTHandler{}, token, "read")
+	resources, err := servermw.GitAllowedResources(servermw.NewFenceUserAccessHandler(nil), token, "read")
 	if err != nil {
 		return nil, err
 	}
-	allowedResourcesCache.mu.Lock()
-	allowedResourcesCache.data[cacheKey] = allowedResourcesCacheValue{
-		expiresAt: now.Add(allowedResourcesCacheTTL),
-		resources: resources,
-	}
-	allowedResourcesCache.mu.Unlock()
 	return resources, nil
 }
 
@@ -682,7 +645,8 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
+	syfonBuckets, syfonBucketsErr := fetchSyfonBuckets(context.Background(), authorizationHeader)
+	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources, syfonBuckets, syfonBucketsErr)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}

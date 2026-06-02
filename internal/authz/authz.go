@@ -5,24 +5,23 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/bmeg/grip-graphql/middleware"
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/httputil"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
 
-func ProjectsFromToken(ctx fiber.Ctx, jwtHandler middleware.JWTHandler, method string, service string) ([]any, *httputil.ErrorResponse) {
+func ProjectsFromToken(ctx fiber.Ctx, authzHandler servermw.ResourceAccessHandler, method string, service string) ([]any, *httputil.ErrorResponse) {
 	token := ctx.Get("Authorization")
 	if token == "" {
 		return nil, httputil.NewError(apierror.TypeMissingAuthorization, "Authorization token not provided", http.StatusUnauthorized, nil, nil)
 	}
-	anyList, err := jwtHandler.GetAllowedResources(token, method, service)
+	anyList, err := authzHandler.GetAllowedResources(token, method, service)
 	if err != nil {
-		serverErr, ok := err.(*middleware.ServerError)
-		if !ok {
-			return nil, httputil.NewError(apierror.TypeInvalidAuthorizationResponse, "expecting error to be serverError type", http.StatusNotFound, nil, nil)
+		if serverErr, ok := err.(*servermw.AccessError); ok {
+			return nil, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
 		}
-		return nil, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
+		return nil, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil)
 	}
 	return anyList, nil
 }

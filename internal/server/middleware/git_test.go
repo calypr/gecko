@@ -19,6 +19,15 @@ func (handler fakeJWTAllowedResourceHandler) GetAllowedResources(_ string, _ str
 	return handler.resources, nil
 }
 
+func (handler fakeJWTAllowedResourceHandler) CheckResourceServiceAccess(_ string, _ string, _ string, resourcePath string) (bool, error) {
+	for _, resource := range handler.resources {
+		if value, ok := resource.(string); ok && value == resourcePath {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func TestGitProjectAuthAllowsProgramProjectResource(t *testing.T) {
 	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
 	app := fiber.New()
@@ -123,6 +132,42 @@ func TestRequireAuthorizationAllowsBearerHeader(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestProjectConfigAuthAllowsExactProjectResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Delete("/config/projects/:orgTitle/:projectTitle", ProjectConfigAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a/projects/proj-a"}}, "delete"), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("DELETE", "/config/projects/org-a/proj-a", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestProjectConfigAuthRejectsDifferentProjectResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Delete("/config/projects/:orgTitle/:projectTitle", ProjectConfigAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a/projects/other"}}, "delete"), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("DELETE", "/config/projects/org-a/proj-a", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
 	}
 }
 

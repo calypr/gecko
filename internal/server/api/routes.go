@@ -1,9 +1,9 @@
 package api
 
 import (
+	"net/http"
 	"strings"
 
-	"github.com/bmeg/grip-graphql/middleware"
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -17,13 +17,14 @@ func withConfigType(configType string) fiber.Handler {
 }
 
 func (handler *Handler) registerRoutes(app *fiber.App) {
+	authzHandler := servermw.NewFenceUserAccessHandler(http.DefaultClient)
 	app.Get("/swagger/doc.json", func(ctx fiber.Ctx) error {
 		return ctx.SendFile("./docs/swagger.json")
 	})
 	app.Get("/health", handler.handleHealth)
 
-	handler.registerDirectoryRoutes(app)
-	handler.registerConfigRoutes(app)
+	handler.registerDirectoryRoutes(app, authzHandler)
+	handler.registerConfigRoutes(app, authzHandler)
 	handler.registerVectorRoutes(app)
 
 	if handler.gripqlClient == nil || handler.gripGraphName == "" {
@@ -36,15 +37,15 @@ func (handler *Handler) registerRoutes(app *fiber.App) {
 	})
 }
 
-func (handler *Handler) registerDirectoryRoutes(app *fiber.App) {
+func (handler *Handler) registerDirectoryRoutes(app *fiber.App, authzHandler servermw.ResourceAccessHandler) {
 	if handler.gripqlClient == nil {
 		handler.logger.Warning("Skipping gripql Directory endpoints — no database configured")
 		return
 	}
-	handler.registerDirectoryHandlers(app, servermw.GeneralAuth(handler.logger, &middleware.ProdJWTHandler{}, "read", "*"))
+	handler.registerDirectoryHandlers(app, servermw.GeneralAuth(handler.logger, authzHandler, "read", "*"))
 }
 
-func (handler *Handler) registerConfigRoutes(app *fiber.App) {
+func (handler *Handler) registerConfigRoutes(app *fiber.App, authzHandler servermw.ResourceAccessHandler) {
 	if handler.db == nil {
 		handler.logger.Warning("Skipping DB endpoints — no database configured")
 		return
@@ -54,42 +55,43 @@ func (handler *Handler) registerConfigRoutes(app *fiber.App) {
 	configGroup.Get("/types", handler.handleConfigTypesGET)
 	configGroup.Get("/list", handler.handleConfigListGET)
 
-	handler.registerTypedConfigRoutes(configGroup.Group("/explorer", withConfigType("explorer")), true)
-	handler.registerAppsPageRoutes(configGroup.Group("/apps_page", withConfigType("apps_page")))
-	handler.registerTypedConfigRoutes(configGroup.Group("/nav", withConfigType("nav")), false)
-	handler.registerTypedConfigRoutes(configGroup.Group("/file_summary", withConfigType("file_summary")), false)
-	handler.registerTypedConfigRoutes(configGroup.Group("/project", withConfigType("project")), false)
-	handler.registerProjectConfigRoutes(configGroup.Group("/projects", withConfigType("projects")))
-	handler.registerGitRoutes(app)
+	handler.registerTypedConfigRoutes(configGroup.Group("/explorer", withConfigType("explorer")), true, authzHandler)
+	handler.registerAppsPageRoutes(configGroup.Group("/apps_page", withConfigType("apps_page")), authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/nav", withConfigType("nav")), false, authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/file_summary", withConfigType("file_summary")), false, authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/project", withConfigType("project")), false, authzHandler)
+	handler.registerProjectConfigRoutes(configGroup.Group("/projects", withConfigType("projects")), authzHandler)
+	handler.registerGitRoutes(app, authzHandler)
 }
 
-func (handler *Handler) registerTypedConfigRoutes(group fiber.Router, includeDefaultGet bool) {
+func (handler *Handler) registerTypedConfigRoutes(group fiber.Router, includeDefaultGet bool, authzHandler servermw.ResourceAccessHandler) {
 	group.Get("/list", handler.handleConfigListGET)
 	if includeDefaultGet {
-		group.Get("/", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleConfigGET)
+		group.Get("/", servermw.ConfigAuth(handler.logger, authzHandler), handler.handleConfigGET)
 	}
-	group.Get("/:configId", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleConfigGET)
-	group.Put("/:configId", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleConfigPUT)
-	group.Delete("/:configId", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleConfigDELETE)
+	group.Get("/:configId", servermw.ConfigAuth(handler.logger, authzHandler), handler.handleConfigGET)
+	group.Put("/:configId", servermw.ConfigAuth(handler.logger, authzHandler), handler.handleConfigPUT)
+	group.Delete("/:configId", servermw.ConfigAuth(handler.logger, authzHandler), handler.handleConfigDELETE)
 }
 
-func (handler *Handler) registerAppsPageRoutes(appsPage fiber.Router) {
-	handler.registerTypedConfigRoutes(appsPage, true)
+func (handler *Handler) registerAppsPageRoutes(appsPage fiber.Router, authzHandler servermw.ResourceAccessHandler) {
+	handler.registerTypedConfigRoutes(appsPage, true, authzHandler)
 	appCard := appsPage.Group("/appcard")
-	appCard.Get("/:projectId", servermw.AppCardAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleAppCardGET)
-	appCard.Post("/:projectId", servermw.AppCardAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleAppCardPOST)
-	appCard.Delete("/:projectId", servermw.AppCardAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleAppCardDELETE)
+	appCard.Get("/:projectId", servermw.AppCardAuth(handler.logger, authzHandler), handler.handleAppCardGET)
+	appCard.Post("/:projectId", servermw.AppCardAuth(handler.logger, authzHandler), handler.handleAppCardPOST)
+	appCard.Delete("/:projectId", servermw.AppCardAuth(handler.logger, authzHandler), handler.handleAppCardDELETE)
 }
 
-func (handler *Handler) registerProjectConfigRoutes(projects fiber.Router) {
+func (handler *Handler) registerProjectConfigRoutes(projects fiber.Router, authzHandler servermw.ResourceAccessHandler) {
 	projects.Get("", handler.handleConfigListGET)
 	projects.Get("/list", handler.handleConfigListGET)
-	projects.Get("/:orgTitle/:projectTitle", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleProjectConfigGET)
-	projects.Put("/:orgTitle/:projectTitle", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleProjectConfigPUT)
-	projects.Delete("/:orgTitle/:projectTitle", servermw.ConfigAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleProjectConfigDELETE)
+	projects.Delete("/:orgTitle", handler.handleProjectOrganizationDELETE)
+	projects.Get("/:orgTitle/:projectTitle", servermw.ProjectConfigAuth(handler.logger, authzHandler, "read"), handler.handleProjectConfigGET)
+	projects.Put("/:orgTitle/:projectTitle", servermw.ProjectConfigAuth(handler.logger, authzHandler, "update"), handler.handleProjectConfigPUT)
+	projects.Delete("/:orgTitle/:projectTitle", servermw.ProjectConfigAuth(handler.logger, authzHandler, "delete"), handler.handleProjectConfigDELETE)
 }
 
-func (handler *Handler) registerGitRoutes(app *fiber.App) {
+func (handler *Handler) registerGitRoutes(app *fiber.App, authzHandler servermw.ResourceAccessHandler) {
 	if handler.gitService == nil {
 		return
 	}
@@ -101,16 +103,16 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	gitGroup.Get("/organizations/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsStatusGET)
 	gitGroup.Post("/organizations/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsReconcilePOST)
 	gitGroup.Post("/organizations/:orgTitle/connect", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationConnectPOST)
-	gitGroup.Get("/organizations/:orgTitle/status", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleGitOrganizationStatusGET)
-	gitGroup.Post("/organizations/:orgTitle/reconcile", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleGitOrganizationReconcilePOST)
+	gitGroup.Get("/organizations/:orgTitle/status", servermw.GitOrganizationAuth(handler.logger, authzHandler), handler.handleGitOrganizationStatusGET)
+	gitGroup.Post("/organizations/:orgTitle/reconcile", servermw.GitOrganizationAuth(handler.logger, authzHandler), handler.handleGitOrganizationReconcilePOST)
 
-	projectGitRead := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
-	projectGitRead.Get("", handler.handleGitProjectGET)
-	projectGitRead.Get("/refs", handler.handleGitProjectRefsGET)
-	projectGitRead.Get("/tree", handler.handleGitProjectTreeGET)
-	projectGitRead.Get("/tree/*", handler.handleGitProjectTreeGET)
-	projectGitRead.Get("/file/*", handler.handleGitProjectFileGET)
-	projectGitRead.Get("/download/*", handler.handleGitProjectDownloadGET)
+	projectReadAuth := servermw.GitProjectAuth(handler.logger, authzHandler)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle", projectReadAuth, handler.handleGitProjectGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/refs", projectReadAuth, handler.handleGitProjectRefsGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/tree", projectReadAuth, handler.handleGitProjectTreeGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/tree/*", projectReadAuth, handler.handleGitProjectTreeGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/file/*", projectReadAuth, handler.handleGitProjectFileGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/download/*", projectReadAuth, handler.handleGitProjectDownloadGET)
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.logger))
 	projectGitWrite.Put("/setup", handler.handleCalyprProjectSetupPUT)
