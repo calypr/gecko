@@ -86,6 +86,7 @@ type GitOrganizationProjectStatus struct {
 	ResourcePath              string                          `json:"resource_path"`
 	Repository                GitRepositoryIdentity           `json:"repository"`
 	Configured                bool                            `json:"configured"`
+	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
 	Accessible                bool                            `json:"accessible"`
 	RequestAccess             bool                            `json:"request_access"`
 	RequestAccessResourcePath string                          `json:"request_access_resource_path,omitempty"`
@@ -118,6 +119,43 @@ type GitPendingRepositoriesResponse struct {
 type GitPendingRepositoriesReconcileRequest struct {
 	InstallationID int64  `json:"installation_id"`
 	SetupSessionID string `json:"setup_session_id,omitempty"`
+}
+
+type CalyprProjectStorageIntent struct {
+	Bucket       string `json:"bucket"`
+	Provider     string `json:"provider"`
+	Endpoint     string `json:"endpoint"`
+	Region       string `json:"region"`
+	AccessKey    string `json:"access_key"`
+	SecretKey    string `json:"secret_key"`
+	Organization string `json:"organization"`
+	ProjectID    string `json:"project_id"`
+	Path         string `json:"path,omitempty"`
+}
+
+type CalyprProjectSetupRequest struct {
+	Config        appconfig.ProjectConfig     `json:"config"`
+	Storage       *CalyprProjectStorageIntent `json:"storage,omitempty"`
+	PendingRepoID string                      `json:"pending_repo_id,omitempty"`
+}
+
+type CalyprReadinessCheck struct {
+	Pass    bool   `json:"pass"`
+	Reason  string `json:"reason,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+type CalyprProjectReadiness struct {
+	Git    CalyprReadinessCheck `json:"git"`
+	Syfon  CalyprReadinessCheck `json:"syfon"`
+	Config CalyprReadinessCheck `json:"config"`
+}
+
+type CalyprProjectSetupResponse struct {
+	ProjectID    string                 `json:"project_id"`
+	ResourcePath string                 `json:"resource_path"`
+	Configured   bool                   `json:"configured"`
+	Readiness    CalyprProjectReadiness `json:"readiness"`
 }
 
 type GitHubWebhookRepository struct {

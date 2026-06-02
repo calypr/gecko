@@ -322,7 +322,7 @@ func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testin
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	status, err := service.RequestInstallationStatus(context.Background(), "Bearer user-token", GitRepositoryIdentity{
+	status, err := service.RequestInstallationStatus(context.Background(), "Bearer user-token", "HTAN_INT", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
 	})
@@ -425,7 +425,7 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	token, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", GitRepositoryIdentity{
+	token, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
 	}, "write")
@@ -444,6 +444,9 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	if receivedBody["action"] != "installation_token" {
 		t.Fatalf("expected installation_token action, got %#v", receivedBody)
 	}
+	if receivedBody["organization"] != "HTAN_INT" {
+		t.Fatalf("expected organization HTAN_INT, got %#v", receivedBody)
+	}
 }
 
 func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
@@ -458,7 +461,7 @@ func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	_, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", GitRepositoryIdentity{
+	_, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
 	}, "read")

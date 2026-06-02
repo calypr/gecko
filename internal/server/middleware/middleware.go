@@ -256,24 +256,15 @@ func GitOrganizationAuth(logger arborist.Logger, jwtHandler JWTAllowedResourceHa
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization is required", http.StatusBadRequest, nil, nil))
 		}
 		allowed, err := jwtHandler.GetAllowedResources(token, "read", "*")
-		if err != nil {
+	if err != nil {
 			return writeError(ctx, logger, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil))
 		}
 		resources, conversionErr := convertAnyToStringSlice(allowed)
 		if conversionErr != nil {
 			return writeError(ctx, logger, conversionErr)
 		}
-		expectedPrefixes := []string{
-			fmt.Sprintf("/organization/%s", organization),
-			fmt.Sprintf("/programs/%s", organization),
-		}
-		for _, resource := range resources {
-			normalized := normalizeGitResourcePath(resource)
-			for _, prefix := range expectedPrefixes {
-				if normalized == prefix || strings.HasPrefix(normalized, prefix+"/") {
-					return ctx.Next()
-				}
-			}
+		if git.ResourceListAllowsOrganization(resources, organization) {
+			return ctx.Next()
 		}
 		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil))
 	}

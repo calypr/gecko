@@ -97,12 +97,12 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	gitGroup.Post("/github/webhook", handler.handleGitHubWebhookPOST)
 	gitGroup.Get("/pending", servermw.RequireAuthorization(handler.logger), handler.handleGitPendingRepositoriesGET)
 	gitGroup.Post("/pending/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitPendingRepositoriesReconcilePOST)
-	gitGroup.Get("/projects", handler.handleGitProjectsGET)
+	gitGroup.Get("/projects", servermw.RequireAuthorization(handler.logger), handler.handleGitProjectsGET)
 	gitGroup.Get("/organizations/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsStatusGET)
 	gitGroup.Post("/organizations/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationsReconcilePOST)
 	gitGroup.Post("/organizations/:orgTitle/connect", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationConnectPOST)
-	gitGroup.Get("/organizations/:orgTitle/status", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationStatusGET)
-	gitGroup.Post("/organizations/:orgTitle/reconcile", servermw.RequireAuthorization(handler.logger), handler.handleGitOrganizationReconcilePOST)
+	gitGroup.Get("/organizations/:orgTitle/status", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleGitOrganizationStatusGET)
+	gitGroup.Post("/organizations/:orgTitle/reconcile", servermw.GitOrganizationAuth(handler.logger, &middleware.ProdJWTHandler{}), handler.handleGitOrganizationReconcilePOST)
 
 	projectGitRead := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.GitProjectAuth(handler.logger, &middleware.ProdJWTHandler{}))
 	projectGitRead.Get("", handler.handleGitProjectGET)
@@ -113,6 +113,7 @@ func (handler *Handler) registerGitRoutes(app *fiber.App) {
 	projectGitRead.Get("/download/*", handler.handleGitProjectDownloadGET)
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.logger))
+	projectGitWrite.Put("/setup", handler.handleCalyprProjectSetupPUT)
 	projectGitWrite.Post("/update", handler.handleGitProjectUpdatePOST)
 	projectGitWrite.Post("/uploads/session", handler.handleGitProjectUploadSessionPOST)
 	projectGitWrite.Get("/uploads/session/:sessionID", handler.handleGitProjectUploadSessionGET)

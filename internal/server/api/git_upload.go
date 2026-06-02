@@ -47,7 +47,8 @@ func (handler *Handler) ensureMirrorReadyForUpload(ctx context.Context, authoriz
 	if _, err := os.Stat(state.MirrorPath); err == nil {
 		return nil, fmt.Errorf("open git repository at %s failed and mirror path exists", state.MirrorPath)
 	}
-	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
+	org, _, _ := strings.Cut(projectID, "/")
+	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, org, identity, "read")
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +341,8 @@ func (handler *Handler) handleGitProjectUploadSessionFinalizePOST(ctx fiber.Ctx)
 	}
 	finalizeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	commitSHA, prURL, err := handler.gitService.CreateGitHubUploadPullRequest(finalizeCtx, authorizationHeader, identity, session.BaseBranch, session.BranchName, session.PRTitle, session.PRBody, files)
+	org, _, _ := strings.Cut(projectID, "/")
+	commitSHA, prURL, err := handler.gitService.CreateGitHubUploadPullRequest(finalizeCtx, authorizationHeader, org, identity, session.BaseBranch, session.BranchName, session.PRTitle, session.PRBody, files)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
 			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"project_id": projectID, "session_id": sessionID}, nil)

@@ -149,6 +149,7 @@ func githubWriteStatusError(message string, response *github.Response, err error
 func (service *GitService) CreateGitHubUploadPullRequest(
 	ctx context.Context,
 	authorizationHeader string,
+	organization string,
 	identity GitRepositoryIdentity,
 	baseBranch string,
 	branchName string,
@@ -156,7 +157,7 @@ func (service *GitService) CreateGitHubUploadPullRequest(
 	body string,
 	files []geckodb.GitUploadSessionFile,
 ) (string, string, error) {
-	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity, "write")
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, organization, identity, "write")
 	if err != nil {
 		return "", "", err
 	}

@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	gripmiddleware "github.com/bmeg/grip-graphql/middleware"
@@ -20,6 +23,51 @@ import (
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
+
+const allowedResourcesCacheTTL = 5 * time.Minute
+
+type allowedResourcesCacheValue struct {
+	expiresAt time.Time
+	resources []string
+}
+
+var allowedResourcesCache = struct {
+	mu   sync.RWMutex
+	data map[string]allowedResourcesCacheValue
+}{
+	data: map[string]allowedResourcesCacheValue{},
+}
+
+func allowedResourcesCacheKey(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
+}
+
+func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
+	if len(allowedResources) == 0 {
+		return []string{}
+	}
+	filtered := make([]string, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		parts := strings.SplitN(projectID, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		projectParts := strings.SplitN(parts[1], "/", 2)
+		if len(projectParts) != 1 || projectParts[0] == "" {
+			continue
+		}
+		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) {
+			filtered = append(filtered, projectID)
+		}
+	}
+	sort.Strings(filtered)
+	return filtered
+}
+
+func organizationAllowedByResources(organization string, allowedResources []string) bool {
+	return git.ResourceListAllowsOrganization(allowedResources, organization)
+}
 
 func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string, appconfig.ProjectConfig, git.GitRepositoryIdentity, *httputil.ErrorResponse) {
 	organization := strings.TrimSpace(ctx.Params("orgTitle"))
@@ -82,7 +130,8 @@ func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizat
 	if _, err := os.Stat(state.MirrorPath); err == nil {
 		return state, nil
 	}
-	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
+	org, _, _ := strings.Cut(projectID, "/")
+	accessToken, err := handler.gitService.RequestInstallationToken(ctx, authorizationHeader, org, identity, "read")
 	if err != nil {
 		state.SyncState = git.GitSyncError
 		state.LastError = sql.NullString{String: err.Error(), Valid: true}
@@ -116,6 +165,7 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 		return response.Write(ctx)
 	}
 	allowedResources, _ := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	responses := make([]git.GitProjectStatusResponse, 0, len(projectIDs))
 	for _, projectID := range projectIDs {
 		parts := strings.SplitN(projectID, "/", 2)
@@ -147,11 +197,12 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 	return httputil.JSON(responses, http.StatusOK).Write(ctx)
 }
 
-func (handler *Handler) buildGitOrganizationStatus(organization string, projectIDs []string, projectStates map[string]geckodb.GitProjectState, organizationStates map[string]geckodb.GitOrganizationState, allowedResources []string) (git.GitOrganizationStatusResponse, *httputil.ErrorResponse) {
+func (handler *Handler) buildGitOrganizationStatus(ctx context.Context, authorizationHeader string, organization string, projectIDs []string, projectStates map[string]geckodb.GitProjectState, organizationStates map[string]geckodb.GitOrganizationState, allowedResources []string) (git.GitOrganizationStatusResponse, *httputil.ErrorResponse) {
 	responsePayload := git.GitOrganizationStatusResponse{
 		Organization: organization,
 		Projects:     make([]git.GitOrganizationProjectStatus, 0),
 	}
+	syfonBuckets, syfonBucketsErr := fetchSyfonBuckets(ctx, authorizationHeader)
 	orgState, hasOrgState := organizationStates[organization]
 	if hasOrgState {
 		responsePayload.AppInstalled = orgState.Installed
@@ -171,6 +222,9 @@ func (handler *Handler) buildGitOrganizationStatus(organization string, projectI
 	for _, projectID := range projectIDs {
 		parts := strings.SplitN(projectID, "/", 2)
 		if len(parts) != 2 || parts[0] != organization {
+			continue
+		}
+		if !servermw.GitProjectReadable(allowedResources, parts[0], parts[1]) {
 			continue
 		}
 		var cfg appconfig.ProjectConfig
@@ -195,9 +249,7 @@ func (handler *Handler) buildGitOrganizationStatus(organization string, projectI
 		}
 
 		installation := git.GitRepositoryInstallationStatus{}
-		configured := false
 		if responsePayload.AppInstalled && responsePayload.RepositorySelection == "all" {
-			configured = true
 			installation.Installed = true
 			installation.InstallationID = responsePayload.InstallationID
 			installation.Target = organization
@@ -205,7 +257,6 @@ func (handler *Handler) buildGitOrganizationStatus(organization string, projectI
 			installation.HTMLURL = responsePayload.HTMLURL
 			installation.RepositorySelection = responsePayload.RepositorySelection
 		} else if state.InstallationID.Valid || state.InstallationTarget.Valid {
-			configured = true
 			installation.Installed = true
 			if state.InstallationID.Valid {
 				installationID := state.InstallationID.Int64
@@ -224,6 +275,8 @@ func (handler *Handler) buildGitOrganizationStatus(organization string, projectI
 				installation.RepositorySelection = responsePayload.RepositorySelection
 			}
 		}
+		readiness := handler.deriveProjectReadiness(ctx, authorizationHeader, projectID, cfg, &installation.Installed, syfonBuckets, syfonBucketsErr)
+		configured := readiness.Config.Pass && readiness.Git.Pass && readiness.Syfon.Pass
 
 		responsePayload.Projects = append(responsePayload.Projects, git.GitOrganizationProjectStatus{
 			ProjectID:                 projectID,
@@ -231,6 +284,7 @@ func (handler *Handler) buildGitOrganizationStatus(organization string, projectI
 			ResourcePath:              git.ProgramProjectResourcePath(parts[0], parts[1]),
 			Repository:                identity,
 			Configured:                configured,
+			Readiness:                 &readiness,
 			Accessible:                servermw.GitProjectReadable(allowedResources, parts[0], parts[1]),
 			RequestAccess:             !servermw.GitProjectReadable(allowedResources, parts[0], parts[1]),
 			RequestAccessResourcePath: git.ProgramProjectResourcePath(parts[0], parts[1]),
@@ -386,7 +440,7 @@ func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organ
 			continue
 		}
 
-		repoInstallation, err := handler.gitService.RequestInstallationStatus(ctx, authorizationHeader, tracked.identity)
+		repoInstallation, err := handler.gitService.RequestInstallationStatus(ctx, authorizationHeader, organization, tracked.identity)
 		if err != nil {
 			if statusErr, ok := err.(*git.HTTPStatusError); ok {
 				if statusErr.StatusCode == http.StatusForbidden || statusErr.StatusCode == http.StatusNotFound {
@@ -423,7 +477,8 @@ func (handler *Handler) reconcileGitOrganizationState(ctx context.Context, organ
 	return nil
 }
 
-func (handler *Handler) buildGitOrganizationsSummary(projectIDs []string, allowedResources []string) (git.GitOrganizationsStatusResponse, *httputil.ErrorResponse) {
+func (handler *Handler) buildGitOrganizationsSummary(ctx context.Context, authorizationHeader string, projectIDs []string, allowedResources []string) (git.GitOrganizationsStatusResponse, *httputil.ErrorResponse) {
+	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	organizations := projectConfigOrganizations(projectIDs)
 	projectStates, err := geckodb.ListGitProjectStates(handler.db)
 	if err != nil {
@@ -439,7 +494,7 @@ func (handler *Handler) buildGitOrganizationsSummary(projectIDs []string, allowe
 	}
 	responsePayload := git.GitOrganizationsStatusResponse{Organizations: make([]git.GitOrganizationStatusResponse, 0, len(organizations))}
 	for _, organization := range organizations {
-		organizationStatus, errResponse := handler.buildGitOrganizationStatus(organization, projectIDs, projectStates, organizationStates, allowedResources)
+		organizationStatus, errResponse := handler.buildGitOrganizationStatus(ctx, authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
 		if errResponse != nil {
 			return git.GitOrganizationsStatusResponse{}, errResponse
 		}
@@ -517,7 +572,13 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	responsePayload, errResponse := handler.buildGitOrganizationStatus(organization, projectIDs, projectStates, organizationStates, allowedResources)
+	if !organizationAllowedByResources(organization, allowedResources) {
+		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -536,7 +597,8 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	responsePayload, errResponse := handler.buildGitOrganizationsSummary(projectIDs, allowedResources)
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	responsePayload, errResponse := handler.buildGitOrganizationsSummary(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -547,7 +609,26 @@ func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
 	if token == "" {
 		return nil, nil
 	}
-	return servermw.GitAllowedResources(&gripmiddleware.ProdJWTHandler{}, token, "read")
+	now := time.Now()
+	cacheKey := allowedResourcesCacheKey(token)
+	allowedResourcesCache.mu.RLock()
+	entry, ok := allowedResourcesCache.data[cacheKey]
+	allowedResourcesCache.mu.RUnlock()
+	if ok && now.Before(entry.expiresAt) {
+		return entry.resources, nil
+	}
+
+	resources, err := servermw.GitAllowedResources(&gripmiddleware.ProdJWTHandler{}, token, "read")
+	if err != nil {
+		return nil, err
+	}
+	allowedResourcesCache.mu.Lock()
+	allowedResourcesCache.data[cacheKey] = allowedResourcesCacheValue{
+		expiresAt: now.Add(allowedResourcesCacheTTL),
+		resources: resources,
+	}
+	allowedResourcesCache.mu.Unlock()
+	return resources, nil
 }
 
 func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error {
@@ -560,6 +641,16 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, nil, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	if !organizationAllowedByResources(organization, allowedResources) {
+		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -586,12 +677,12 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
+	allowedResources, errResponse = gitAllowedReadResources(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	responsePayload, errResponse := handler.buildGitOrganizationStatus(organization, projectIDs, projectStates, organizationStates, allowedResources)
+	responsePayload, errResponse := handler.buildGitOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, projectStates, organizationStates, allowedResources)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -611,6 +702,12 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	organizations := projectConfigOrganizations(projectIDs)
 	reconcileCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -619,12 +716,7 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 			return errResponse.Write(ctx)
 		}
 	}
-	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
-	if errResponse != nil {
-		errResponse.WriteLog(handler.logger)
-		return errResponse.Write(ctx)
-	}
-	responsePayload, errResponse := handler.buildGitOrganizationsSummary(projectIDs, allowedResources)
+	responsePayload, errResponse := handler.buildGitOrganizationsSummary(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}

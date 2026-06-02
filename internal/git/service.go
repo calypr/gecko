@@ -473,7 +473,7 @@ func BuildGitHubFileResponse(projectID string, ref string, path string, metadata
 	}
 }
 
-func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizationHeader string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
+func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
 	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
 	if err != nil {
 		return nil, nil, &HTTPStatusError{
@@ -482,7 +482,7 @@ func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizat
 			Message:    err.Error(),
 		}
 	}
-	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, identity, "read")
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, organization, identity, "read")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -568,7 +568,7 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		ProjectID:                 projectID,
 		Organization:              organization,
 		Project:                   project,
-		ResourcePath:              OrganizationProjectResourcePath(organization, project),
+		ResourcePath:              ProgramProjectResourcePath(organization, project),
 		RequestAccessResourcePath: ProgramProjectResourcePath(organization, project),
 		Config:                    cfg,
 		Repository:                identity,

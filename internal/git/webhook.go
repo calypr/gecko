@@ -157,11 +157,9 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 	}
 	setupSessionID := ""
 	createdByUserID := ""
-	beforeRepoIDs := map[int64]struct{}{}
 	if setupSession != nil {
 		setupSessionID = setupSession.ID
 		createdByUserID = setupSession.CreatedByUserID
-		beforeRepoIDs = geckodb.DecodeRepoIDs(setupSession.BeforeRepoIDs)
 	}
 	var currentPendingRepositories []geckodb.GitPendingRepository
 	if createdByUserID == "" {
@@ -189,9 +187,6 @@ func (service *GitService) ReconcilePendingRepositories(ctx context.Context, db 
 
 	for _, repository := range repositories {
 		currentRepoIDs[repository.ID] = struct{}{}
-		if _, existedBeforeSetup := beforeRepoIDs[repository.ID]; existedBeforeSetup {
-			continue
-		}
 		pending, err := pendingRepositoryFromGitHubRepository(installationID, repository)
 		if err != nil {
 			continue

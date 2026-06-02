@@ -113,7 +113,7 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
-	_, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
+	organization, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -125,7 +125,7 @@ func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
 	}
 	path := strings.Trim(ctx.Params("*"), "/")
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
-	metadata, contentBytes, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, identity, requestedRef, path)
+	metadata, contentBytes, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, organization, identity, requestedRef, path)
 	if err != nil {
 		statusCode := http.StatusNotFound
 		code := "not_found"
@@ -144,7 +144,7 @@ func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
-	_, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
+	organization, _, projectID, _, identity, errResponse := handler.resolveGitProject(ctx)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
@@ -156,7 +156,7 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 	}
 	path := strings.Trim(ctx.Params("*"), "/")
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
-	metadata, _, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, identity, requestedRef, path)
+	metadata, _, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, organization, identity, requestedRef, path)
 	if err != nil {
 		statusCode := http.StatusNotFound
 		code := "not_found"

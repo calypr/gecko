@@ -47,6 +47,7 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 	_, _, err := service.CreateGitHubUploadPullRequest(
 		context.Background(),
 		"Bearer user-token",
+		"Ellrott_Lab",
 		GitRepositoryIdentity{Owner: "EllrottLab", Repo: "git_drs_test"},
 		"main",
 		"feature/test",

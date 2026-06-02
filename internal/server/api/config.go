@@ -56,6 +56,14 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 	if configList == nil {
 		configList = []string{}
 	}
+	if configType == string(config.TypeProjects) {
+		allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+		if errResponse != nil {
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+		configList = filterProjectIDsByAllowedResources(configList, allowedResources)
+	}
 	return httputil.JSON(configList, http.StatusOK).Write(ctx)
 }
 
@@ -144,6 +152,41 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 	}
 
 	if projectCfg, ok := cfg.(*config.ProjectConfig); ok {
+		var pendingRepo *geckodb.GitPendingRepository
+		pendingRepoID := strings.TrimSpace(ctx.Query("pending_repo_id"))
+		if pendingRepoID != "" {
+			pending, pendingErr := geckodb.GitPendingRepositoryByID(handler.db, pendingRepoID)
+			if pendingErr != nil {
+				errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("lookup pending repository failed: %s", pendingErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID, "pending_repo_id": pendingRepoID}, nil)
+				errResponse.WriteLog(handler.logger)
+				return errResponse.Write(ctx)
+			}
+			pendingRepo = pending
+		}
+
+		if handler.gitService != nil {
+			if identity, err := git.ParseRepositoryIdentity(projectCfg.SrcRepo); err == nil {
+				state := geckodb.GitProjectState{
+					ProjectID:  configID,
+					RepoHost:   identity.Host,
+					RepoOwner:  identity.Owner,
+					RepoName:   identity.Repo,
+					MirrorPath: handler.gitService.MirrorPathForIdentity(identity),
+					SyncState:  git.GitSyncNeverSynced,
+				}
+				if pendingRepo != nil {
+					state.InstallationID = sql.NullInt64{Int64: pendingRepo.InstallationID, Valid: pendingRepo.InstallationID > 0}
+					state.InstallationTargetType = sql.NullString{String: "Organization", Valid: true}
+					state.InstallationTarget = sql.NullString{String: pendingRepo.Organization, Valid: pendingRepo.Organization != ""}
+				}
+				if upsertErr := geckodb.UpsertGitProjectState(handler.db, state); upsertErr != nil {
+					errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("upsert git project state failed: %s", upsertErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
+					errResponse.WriteLog(handler.logger)
+					return errResponse.Write(ctx)
+				}
+			}
+		}
+
 		if identity, err := git.ParseRepositoryIdentity(projectCfg.SrcRepo); err == nil {
 			if resolveErr := geckodb.ResolveGitPendingRepositoriesByRepositoryIdentity(handler.db, identity.Host, identity.Owner, identity.Repo); resolveErr != nil {
 				errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("resolve pending repository failed: %s", resolveErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
@@ -151,7 +194,6 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 				return errResponse.Write(ctx)
 			}
 		}
-		pendingRepoID := strings.TrimSpace(ctx.Query("pending_repo_id"))
 		if pendingRepoID != "" {
 			if resolveErr := geckodb.ResolveGitPendingRepositoryByID(handler.db, pendingRepoID); resolveErr != nil {
 				errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("resolve pending repository failed: %s", resolveErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID, "pending_repo_id": pendingRepoID}, nil)

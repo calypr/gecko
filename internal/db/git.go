@@ -414,6 +414,20 @@ func ListGitPendingRepositories(db *sqlx.DB) ([]GitPendingRepository, error) {
 	return records, nil
 }
 
+func GitPendingRepositoryByID(db *sqlx.DB, id string) (*GitPendingRepository, error) {
+	if db == nil || id == "" {
+		return nil, nil
+	}
+	var pending GitPendingRepository
+	if err := db.Get(&pending, gitPendingRepositorySelectSQL()+` WHERE id = $1`, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get git pending repository by id: %w", err)
+	}
+	return &pending, nil
+}
+
 func ResolveGitPendingRepositoryByID(db *sqlx.DB, id string) error {
 	if db == nil || id == "" {
 		return nil
