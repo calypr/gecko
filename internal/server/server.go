@@ -9,7 +9,7 @@ import (
 	"github.com/bmeg/grip/gripql"
 	"github.com/calypr/gecko/internal/git"
 	geckologging "github.com/calypr/gecko/internal/logging"
-	"github.com/calypr/gecko/internal/server/api"
+	httpapi "github.com/calypr/gecko/internal/server/http"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
@@ -108,7 +108,7 @@ func (server *Server) MakeRouter() *fiber.App {
 	})
 	app.Use(servermw.RequestLogger(server.Logger))
 
-	api.Register(app, api.Dependencies{
+	httpapi.Register(app, httpapi.Dependencies{
 		DB:            server.db,
 		Logger:        server.Logger,
 		JWTApp:        server.jwtApp,

@@ -23,11 +23,10 @@ const (
 )
 
 type GitServiceConfig struct {
-	DataDir             string
-	GitHubAPIBase       string
-	GitHubWebhookSecret string
-	FenceBaseURL        string
-	HTTPClient          *http.Client
+	DataDir       string
+	GitHubAPIBase string
+	FenceBaseURL  string
+	HTTPClient    *http.Client
 }
 
 type GitService struct {
@@ -67,8 +66,10 @@ type GitProjectStatusResponse struct {
 }
 
 type GitOrganizationConnectResponse struct {
-	RedirectURL    string `json:"redirect_url"`
-	SetupSessionID string `json:"setup_session_id,omitempty"`
+	Mode           string                         `json:"mode"`
+	RedirectURL    string                         `json:"redirect_url,omitempty"`
+	InstallationID *int64                         `json:"installation_id,omitempty"`
+	Repositories   []GitHubInstallationRepository `json:"repositories,omitempty"`
 }
 
 type GitRepositoryInstallationStatus struct {
@@ -80,6 +81,17 @@ type GitRepositoryInstallationStatus struct {
 	RepositorySelection string `json:"repository_selection,omitempty"`
 }
 
+type ProjectIntegrationCheck struct {
+	Pass    bool   `json:"pass"`
+	Reason  string `json:"reason,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+type ProjectIntegrationStatus struct {
+	GitHub  ProjectIntegrationCheck `json:"github"`
+	Storage ProjectIntegrationCheck `json:"storage"`
+}
+
 type GitOrganizationProjectStatus struct {
 	ProjectID                 string                          `json:"project_id"`
 	Project                   string                          `json:"project"`
@@ -87,38 +99,11 @@ type GitOrganizationProjectStatus struct {
 	Repository                GitRepositoryIdentity           `json:"repository"`
 	Configured                bool                            `json:"configured"`
 	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
+	Integrations              ProjectIntegrationStatus        `json:"integrations"`
 	Accessible                bool                            `json:"accessible"`
 	RequestAccess             bool                            `json:"request_access"`
 	RequestAccessResourcePath string                          `json:"request_access_resource_path,omitempty"`
 	Installation              GitRepositoryInstallationStatus `json:"installation"`
-}
-
-type GitPendingRepository struct {
-	ID              string `json:"id"`
-	InstallationID  int64  `json:"installation_id"`
-	SetupSessionID  string `json:"setup_session_id,omitempty"`
-	CreatedByUserID string `json:"created_by_user_id,omitempty"`
-	Organization    string `json:"organization"`
-	RepoID          int64  `json:"repo_id"`
-	RepoName        string `json:"repo_name"`
-	RepoFullName    string `json:"repo_full_name"`
-	RepoHTMLURL     string `json:"repo_html_url,omitempty"`
-	RepoCloneURL    string `json:"repo_clone_url,omitempty"`
-	RepoHost        string `json:"repo_host"`
-	RepoOwner       string `json:"repo_owner"`
-	RepoPath        string `json:"repo_path"`
-	AddedAt         string `json:"added_at"`
-}
-
-type GitPendingRepositoriesResponse struct {
-	InstallationID int64                  `json:"installation_id,omitempty"`
-	SetupSessionID string                 `json:"setup_session_id,omitempty"`
-	Pending        []GitPendingRepository `json:"pending"`
-}
-
-type GitPendingRepositoriesReconcileRequest struct {
-	InstallationID int64  `json:"installation_id"`
-	SetupSessionID string `json:"setup_session_id,omitempty"`
 }
 
 type CalyprProjectStorageIntent struct {
@@ -137,9 +122,25 @@ type CalyprProjectStorageIntent struct {
 }
 
 type CalyprProjectSetupRequest struct {
-	Config        appconfig.ProjectConfig     `json:"config"`
-	Storage       *CalyprProjectStorageIntent `json:"storage,omitempty"`
-	PendingRepoID string                      `json:"pending_repo_id,omitempty"`
+	Config  appconfig.ProjectConfig     `json:"config"`
+	Storage *CalyprProjectStorageIntent `json:"storage,omitempty"`
+}
+
+type CalyprProjectInitializeResponse struct {
+	Success      bool   `json:"success"`
+	ProjectID    string `json:"project_id"`
+	ResourcePath string `json:"resource_path"`
+}
+
+type CalyprProjectStorageRequest struct {
+	Storage *CalyprProjectStorageIntent `json:"storage"`
+}
+
+type CalyprProjectStorageResponse struct {
+	Success      bool                    `json:"success"`
+	ProjectID    string                  `json:"project_id"`
+	ResourcePath string                  `json:"resource_path"`
+	Storage      ProjectIntegrationCheck `json:"storage"`
 }
 
 type CalyprReadinessCheck struct {
@@ -161,7 +162,7 @@ type CalyprProjectSetupResponse struct {
 	Readiness    CalyprProjectReadiness `json:"readiness"`
 }
 
-type GitHubWebhookRepository struct {
+type GitHubInstallationRepository struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
@@ -170,19 +171,8 @@ type GitHubWebhookRepository struct {
 }
 
 type fenceGitHubInstallationRepositoriesResponse struct {
-	InstallationID int64                     `json:"installation_id"`
-	Repositories   []GitHubWebhookRepository `json:"repositories"`
-}
-
-type GitHubWebhookInstallation struct {
-	ID int64 `json:"id"`
-}
-
-type GitHubWebhookInstallationRepositoriesPayload struct {
-	Action              string                    `json:"action"`
-	Installation        GitHubWebhookInstallation `json:"installation"`
-	RepositoriesAdded   []GitHubWebhookRepository `json:"repositories_added"`
-	RepositoriesRemoved []GitHubWebhookRepository `json:"repositories_removed"`
+	InstallationID int64                          `json:"installation_id"`
+	Repositories   []GitHubInstallationRepository `json:"repositories"`
 }
 
 type GitOrganizationStatusResponse struct {
@@ -323,7 +313,7 @@ type GitUploadSessionResponse struct {
 	HasConflicts   bool                         `json:"has_conflicts"`
 }
 
-type githubRepositoryResponse struct {
+type GitHubRepositoryMetadata struct {
 	DefaultBranch string `json:"default_branch"`
 	HTMLURL       string `json:"html_url"`
 }

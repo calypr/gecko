@@ -8,5 +8,10 @@ node_modules
 .idea
 .DS_Store
 README.md
+.codex
+.gocache
+.gomodcache
+dist
+tmp
 *_test.go
 tests

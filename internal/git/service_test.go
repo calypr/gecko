@@ -260,10 +260,17 @@ func TestBuildGitResponsesDetectLFSPointers(t *testing.T) {
 
 func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
 	var receivedAuth string
+	var receivedBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		receivedAuth = request.Header.Get("Authorization")
 		if request.URL.Path != "/credentials/github" {
 			t.Fatalf("unexpected request path: %s", request.URL.Path)
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected request method: %s", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]any{
@@ -279,7 +286,7 @@ func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStat
 	defer server.Close()
 
 	service := NewGitService(GitServiceConfig{FenceBaseURL: server.URL, HTTPClient: server.Client()})
-	status, err := service.RequestOrganizationInstallationStatus(context.Background(), "Bearer user-token", "HTAN_INT")
+	status, err := service.RequestOrganizationInstallationStatus(context.Background(), "Bearer user-token", "HTAN_INT", "htan-int-github")
 	if err != nil {
 		t.Fatalf("request organization installation status: %v", err)
 	}
@@ -294,6 +301,15 @@ func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStat
 	}
 	if receivedAuth != "Bearer user-token" {
 		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
+	}
+	if receivedBody["action"] != "organization_installation" {
+		t.Fatalf("expected organization_installation action, got %#v", receivedBody)
+	}
+	if receivedBody["organization"] != "HTAN_INT" {
+		t.Fatalf("expected organization payload, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "htan-int-github" {
+		t.Fatalf("expected owner payload, got %#v", receivedBody)
 	}
 }
 
@@ -425,7 +441,7 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	token, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", GitRepositoryIdentity{
+	token, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", "BForePC", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
 	}, "write")
@@ -447,6 +463,9 @@ func TestRequestInstallationTokenForwardsAuthorizationAndParsesToken(t *testing.
 	if receivedBody["organization"] != "HTAN_INT" {
 		t.Fatalf("expected organization HTAN_INT, got %#v", receivedBody)
 	}
+	if receivedBody["project"] != "BForePC" {
+		t.Fatalf("expected project BForePC, got %#v", receivedBody)
+	}
 }
 
 func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
@@ -461,7 +480,7 @@ func TestRequestInstallationTokenReturnsFenceStatusErrors(t *testing.T) {
 		FenceBaseURL: server.URL,
 		HTTPClient:   server.Client(),
 	})
-	_, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", GitRepositoryIdentity{
+	_, err := service.RequestInstallationToken(context.Background(), "Bearer user-token", "HTAN_INT", "BForePC", GitRepositoryIdentity{
 		Owner: "HTAN_INT",
 		Repo:  "BForePC",
 	}, "read")
@@ -518,6 +537,9 @@ func TestRequestInstallationURLForwardsAuthorizationAndParsesInstallURL(t *testi
 	}
 	if receivedBody["owner"] != "HTAN_INT" {
 		t.Fatalf("expected owner HTAN_INT, got %q", receivedBody["owner"])
+	}
+	if receivedBody["organization"] != "HTAN_INT" {
+		t.Fatalf("expected organization HTAN_INT, got %q", receivedBody["organization"])
 	}
 	if receivedBody["action"] != "install_url" {
 		t.Fatalf("expected install_url action, got %#v", receivedBody)

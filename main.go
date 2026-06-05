@@ -40,7 +40,6 @@ func main() {
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
 	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
 	var githubAPIBaseFlag = flag.String("github-api-base-url", "", "GitHub API base URL (overrides GITHUB_API_BASE_URL env var)")
-	var githubWebhookSecretFlag = flag.String("github-webhook-secret", "", "GitHub webhook secret (overrides GITHUB_WEBHOOK_SECRET env var)")
 	var fenceBaseURLFlag = flag.String("fence-base-url", "", "Fence base URL for GitHub App token exchange (overrides FENCE_BASE_URL env var)")
 	var gitDataDirFlag = flag.String("git-data-dir", "", "Directory for local git mirrors (overrides GIT_DATA_DIR env var)")
 	flag.Parse()
@@ -73,10 +72,9 @@ func main() {
 		logger.Println("Successfully connected to PostgreSQL database.")
 		serverBuilder = serverBuilder.WithDB(db)
 		gitService := git.NewGitService(git.GitServiceConfig{
-			GitHubAPIBase:       firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL")),
-			GitHubWebhookSecret: firstNonEmpty(*githubWebhookSecretFlag, os.Getenv("GITHUB_WEBHOOK_SECRET")),
-			FenceBaseURL:        firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL")),
-			DataDir:             firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR")),
+			GitHubAPIBase: firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL")),
+			FenceBaseURL:  firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL")),
+			DataDir:       firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR")),
 		})
 		serverBuilder = serverBuilder.WithGitService(gitService)
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -146,15 +145,6 @@ func TestConfigAuthMiddleware_MethodNotAllowed(t *testing.T) {
 	assert.Contains(t, body, "Unsupported HTTP method")
 }
 
-func TestConfigAuthMiddleware_AppsPage_PublicGET(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Use("/config/apps_page/:configId", func(c fiber.Ctx) error { c.Locals("configType", "apps_page"); return c.Next() })
-	app.Get("/config/apps_page/:configId", servermw.ConfigAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	resp, _ := runFiber(app, httptest.NewRequest(http.MethodGet, "/config/apps_page/default", nil), t)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
 func TestConfigAuthMiddleware_Nav_PublicGET(t *testing.T) {
 	srv := setupServer()
 	app := fiber.New()
@@ -182,92 +172,6 @@ func TestBaseConfigsAuthMiddleware_InvalidJWTHandler(t *testing.T) {
 	resp, body := runFiber(app, req, t)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	assert.Contains(t, body, "Invalid JWT handler configuration")
-}
-
-func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	resp, body := runFiber(app, httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil), t)
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	assert.Contains(t, body, "Authorization token not provided")
-}
-
-func TestAppCardAuthMiddleware_GET_Success(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/TEST/projects/PROJECT"}}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, _ := runFiber(app, req, t)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestAppCardAuthMiddleware_GET_Denied(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/other/projects/wrong"}}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, body, "User is not allowed to read on resource path")
-}
-
-func TestAppCardAuthMiddleware_POST_MissingPermsInBody(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Post("/config/apps_page/appcard", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(`{"title":"Test"}`))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Contains(t, body, "Missing or empty projectId")
-}
-
-func TestAppCardAuthMiddleware_POST_Success(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Post("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/TEST/projects/PROJECT"}}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard/TEST-PROJECT", bytes.NewBufferString(`{"title":"Explore TEST","perms":"TEST-PROJECT"}`))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	resp, _ := runFiber(app, req, t)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Post("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/other/projects/wrong"}}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard/TEST-PROJECT", bytes.NewBufferString(`{"title":"Explore TEST","perms":"TEST-PROJECT"}`))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, body, "User is not allowed to create on resource path")
-}
-
-func TestAppCardAuthMiddleware_DELETE_Success(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Delete("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/TEST/projects/PROJECT"}}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodDelete, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, _ := runFiber(app, req, t)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestAppCardAuthMiddleware_UnsupportedMethod(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Patch("/config/apps_page/appcard/:projectId", servermw.AppCardAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodPatch, "/config/apps_page/appcard/something", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
-	assert.Contains(t, body, "Unsupported HTTP method")
 }
 
 func TestConfigAuthMiddleware_Project_PublicGET(t *testing.T) {

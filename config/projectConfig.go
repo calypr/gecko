@@ -15,7 +15,6 @@ type ProjectConfig struct {
 	OrgTitle     string `json:"org_title"`
 	Description  string `json:"description"`
 	ProjectTitle string `json:"project_title"`
-	IconName     string `json:"icon_name"`
 }
 
 var ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
@@ -23,6 +22,14 @@ var ValidateProjectRepository = func(_ context.Context, raw string) (string, err
 }
 
 func (p *ProjectConfig) Validate() error {
+	return p.validate(true)
+}
+
+func (p *ProjectConfig) ValidateInitialization() error {
+	return p.validate(false)
+}
+
+func (p *ProjectConfig) validate(requireRepository bool) error {
 	if p == nil {
 		return fmt.Errorf("project config is required")
 	}
@@ -33,7 +40,6 @@ func (p *ProjectConfig) Validate() error {
 	p.OrgTitle = strings.TrimSpace(p.OrgTitle)
 	p.Description = strings.TrimSpace(p.Description)
 	p.ProjectTitle = strings.TrimSpace(p.ProjectTitle)
-	p.IconName = strings.TrimSpace(p.IconName)
 
 	requiredFields := []struct {
 		name  string
@@ -41,11 +47,15 @@ func (p *ProjectConfig) Validate() error {
 	}{
 		{name: "title", value: p.Title},
 		{name: "contact_email", value: p.ContactEmail},
-		{name: "src_repo", value: p.SrcRepo},
 		{name: "org_title", value: p.OrgTitle},
 		{name: "description", value: p.Description},
 		{name: "project_title", value: p.ProjectTitle},
-		{name: "icon_name", value: p.IconName},
+	}
+	if requireRepository {
+		requiredFields = append(requiredFields, struct {
+			name  string
+			value string
+		}{name: "src_repo", value: p.SrcRepo})
 	}
 	for _, field := range requiredFields {
 		if field.value == "" {
@@ -57,11 +67,13 @@ func (p *ProjectConfig) Validate() error {
 		return fmt.Errorf("contact_email must be a valid email address: %w", err)
 	}
 
-	normalized, err := ValidateProjectRepository(context.Background(), p.SrcRepo)
-	if err != nil {
-		return err
+	if strings.TrimSpace(p.SrcRepo) != "" {
+		normalized, err := ValidateProjectRepository(context.Background(), p.SrcRepo)
+		if err != nil {
+			return err
+		}
+		p.SrcRepo = normalized
 	}
-	p.SrcRepo = normalized
 	return nil
 }
 

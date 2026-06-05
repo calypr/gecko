@@ -23,7 +23,6 @@ func TestProjectConfigValidateNormalizesAndValidates(t *testing.T) {
 		OrgTitle:     " Org ",
 		Description:  " Desc ",
 		ProjectTitle: " Project ",
-		IconName:     " flask ",
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -45,7 +44,6 @@ func TestProjectConfigValidateRejectsInvalidEmail(t *testing.T) {
 		OrgTitle:     "Org",
 		Description:  "Desc",
 		ProjectTitle: "Project",
-		IconName:     "flask",
 	}
 
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "contact_email") {

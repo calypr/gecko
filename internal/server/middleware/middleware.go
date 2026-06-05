@@ -127,7 +127,7 @@ func snapshotAllows(raw any, method, service string) bool {
 		}
 		entryMethod, _ := record["method"].(string)
 		entryService, _ := record["service"].(string)
-		if entryMethod != method {
+		if entryMethod != method && entryMethod != "*" {
 			continue
 		}
 		if entryService == "*" || service == "*" || entryService == service {
@@ -208,11 +208,7 @@ func ResolveConfigParams(ctx fiber.Ctx) (string, string) {
 		configType = string(config.TypeExplorer)
 	}
 	if configID == "" {
-		if configType == string(config.TypeAppsPage) {
-			configID = config.AppsPageConfigID
-		} else {
-			configID = config.DefaultConfigID
-		}
+		configID = config.DefaultConfigID
 	}
 
 	return configType, configID
@@ -341,6 +337,20 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
 		if !allowed {
+			anyList, listErr := authzHandler.GetAllowedResources(authorizationHeader, method, "*")
+			if listErr != nil {
+				if serverErr, ok := listErr.(*AccessError); ok {
+					return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+				}
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, listErr.Error(), http.StatusForbidden, nil, nil))
+			}
+			resources, conversionErr := convertAnyToStringSlice(anyList)
+			if conversionErr != nil {
+				return writeError(ctx, logger, conversionErr)
+			}
+			allowed = resourceListAllowsProjectAdminAction(resources, organization, project)
+		}
+		if !allowed {
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeForbidden, fmt.Sprintf("User does not have required %s permission on resource %s", method, resourcePath), http.StatusForbidden, map[string]any{
 				"resource":     resourcePath,
 				"method":       method,
@@ -352,26 +362,18 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 	}
 }
 
-func AppCardAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
-		method := ctx.Method()
-		var permMethod string
-		switch method {
-		case fiber.MethodGet:
-			permMethod = "read"
-		case fiber.MethodPost, fiber.MethodDelete:
-			permMethod = "create"
-		default:
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, fmt.Sprintf("Unsupported HTTP method %s", method), http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
-		}
+func resourceListAllowsProjectAdminAction(resources []string, organization string, project string) bool {
+	projectResource := git.ProgramProjectResourcePath(organization, project)
+	projectCollectionResource := fmt.Sprintf("/programs/%s/projects", organization)
+	organizationResource := fmt.Sprintf("/programs/%s", organization)
 
-		projectID := ctx.Params("projectId")
-		if projectID == "" {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeMissingProjectID, "Missing or empty projectId", http.StatusBadRequest, nil, nil))
+	for _, resource := range resources {
+		switch resource {
+		case "*", "/", "/programs", organizationResource, projectCollectionResource, projectResource:
+			return true
 		}
-		ctx.Locals("projectId", projectID)
-		return GeneralAuth(logger, authzHandler, permMethod, "*")(ctx)
 	}
+	return false
 }
 
 func RequireAuthorization(logger arborist.Logger) fiber.Handler {
@@ -455,10 +457,6 @@ func convertAnyToStringSlice(anySlice []any) ([]string, *httputil.ErrorResponse)
 		stringSlice = append(stringSlice, str)
 	}
 	return stringSlice, nil
-}
-
-func normalizeGitResourcePath(resource string) string {
-	return git.NormalizeResourcePath(resource)
 }
 
 func GitAllowedResources(jwtHandler ResourceAccessHandler, token string, permission string) ([]string, *httputil.ErrorResponse) {

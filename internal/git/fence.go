@@ -90,6 +90,7 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	var payload fenceGitHubInstallURLResponse
 	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":        "install_url",
+		"organization":  owner,
 		"owner":         owner,
 		"redirect_path": redirectPath,
 	}, &payload); err != nil {
@@ -106,11 +107,12 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	return installURL, nil
 }
 
-func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string) (GitRepositoryInstallationStatus, error) {
+func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string, owner string) (GitRepositoryInstallationStatus, error) {
 	var payload fenceGitHubInstallationStatusResponse
 	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
-		"action": "organization_installation",
-		"owner":  organization,
+		"action":       "organization_installation",
+		"organization": organization,
+		"owner":        owner,
 	}, &payload); err != nil {
 		return GitRepositoryInstallationStatus{}, err
 	}
@@ -124,8 +126,15 @@ func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Con
 	}, nil
 }
 
-func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubWebhookRepository, error) {
-	return service.listInstallationRepositoriesFromFence(ctx, authorizationHeader, installationID)
+func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubInstallationRepository, error) {
+	var payload fenceGitHubInstallationRepositoriesResponse
+	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+		"action":          "installation_repositories",
+		"installation_id": installationID,
+	}, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Repositories, nil
 }
 
 func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
@@ -148,7 +157,7 @@ func (service *GitService) RequestInstallationStatus(ctx context.Context, author
 	}, nil
 }
 
-func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity, access string) (string, error) {
+func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity GitRepositoryIdentity, access string) (string, error) {
 	requestedAccess := strings.TrimSpace(access)
 	if requestedAccess == "" {
 		requestedAccess = "read"
@@ -159,6 +168,7 @@ func (service *GitService) RequestInstallationToken(ctx context.Context, authori
 		"owner":        identity.Owner,
 		"repo":         identity.Repo,
 		"organization": organization,
+		"project":      strings.TrimSpace(project),
 		"access":       requestedAccess,
 	}, &payload); err != nil {
 		return "", err

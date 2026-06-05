@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -607,6 +608,37 @@ func ListGitProjectStates(db *sqlx.DB) (map[string]GitProjectState, error) {
 		indexed[state.ProjectID] = state
 	}
 	return indexed, nil
+}
+
+func DeleteGitProjectArtifacts(db *sqlx.DB, projectID string) error {
+	if db == nil || strings.TrimSpace(projectID) == "" {
+		return nil
+	}
+	tx, err := db.Beginx()
+	if err != nil {
+		return fmt.Errorf("begin delete git project artifacts transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.Exec(`
+		DELETE FROM config_schema.git_upload_session_file
+		WHERE session_id IN (
+			SELECT id FROM config_schema.git_upload_session WHERE project_id = $1
+		)
+	`, projectID); err != nil {
+		return fmt.Errorf("delete git upload session files for %s: %w", projectID, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM config_schema.git_upload_session WHERE project_id = $1`, projectID); err != nil {
+		return fmt.Errorf("delete git upload sessions for %s: %w", projectID, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM config_schema.git_project_state WHERE project_id = $1`, projectID); err != nil {
+		return fmt.Errorf("delete git project state for %s: %w", projectID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete git project artifacts transaction: %w", err)
+	}
+	return nil
 }
 
 func GitOrganizationStateByOrganization(db *sqlx.DB, organization string) (*GitOrganizationState, error) {

@@ -88,7 +88,7 @@ func ValidateAuthorizationHeader(raw string) (string, error) {
 	return token, nil
 }
 
-func (service *GitService) fetchRepositoryMetadata(ctx context.Context, accessToken string, identity GitRepositoryIdentity) (*githubRepositoryResponse, error) {
+func (service *GitService) fetchRepositoryMetadata(ctx context.Context, accessToken string, identity GitRepositoryIdentity) (*GitHubRepositoryMetadata, error) {
 	client, err := service.githubClient(accessToken)
 	if err != nil {
 		return nil, err
@@ -102,7 +102,11 @@ func (service *GitService) fetchRepositoryMetadata(ctx context.Context, accessTo
 	if htmlURL == "" {
 		htmlURL = identity.URL
 	}
-	return &githubRepositoryResponse{DefaultBranch: defaultBranch, HTMLURL: htmlURL}, nil
+	return &GitHubRepositoryMetadata{DefaultBranch: defaultBranch, HTMLURL: htmlURL}, nil
+}
+
+func (service *GitService) FetchRepositoryMetadata(ctx context.Context, accessToken string, identity GitRepositoryIdentity) (*GitHubRepositoryMetadata, error) {
+	return service.fetchRepositoryMetadata(ctx, accessToken, identity)
 }
 
 func (service *GitService) githubClient(accessToken string) (*github.Client, error) {
@@ -473,7 +477,7 @@ func BuildGitHubFileResponse(projectID string, ref string, path string, metadata
 	}
 }
 
-func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
+func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizationHeader string, organization string, project string, identity GitRepositoryIdentity, ref string, path string) (*github.RepositoryContent, []byte, error) {
 	authorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
 	if err != nil {
 		return nil, nil, &HTTPStatusError{
@@ -482,7 +486,7 @@ func (service *GitService) GetGitHubFileMetadata(ctx context.Context, authorizat
 			Message:    err.Error(),
 		}
 	}
-	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, organization, identity, "read")
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, organization, project, identity, "read")
 	if err != nil {
 		return nil, nil, err
 	}
