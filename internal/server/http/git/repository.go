@@ -10,6 +10,7 @@ import (
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -117,7 +118,7 @@ func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
@@ -148,7 +149,7 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)

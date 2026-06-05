@@ -43,7 +43,7 @@ func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []
 }
 
 func organizationAllowedByResources(organization string, allowedResources []string) bool {
-	return git.ResourceListAllowsOrganization(allowedResources, organization)
+	return servermw.ResourceListAllowsOrganization(allowedResources, organization)
 }
 
 func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string, appconfig.ProjectConfig, git.GitRepositoryIdentity, *httputil.ErrorResponse) {
@@ -357,7 +357,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)
@@ -400,7 +400,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 }
 
 func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error {
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError("missing_authorization", tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)

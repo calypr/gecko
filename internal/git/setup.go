@@ -1,4 +1,4 @@
-package setup
+package git
 
 import (
 	"bytes"
@@ -12,28 +12,29 @@ import (
 
 	"github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
-	"github.com/calypr/gecko/internal/git"
-	gitapp "github.com/calypr/gecko/internal/git/app"
+	"github.com/calypr/gecko/internal/integrations/syfon"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
 )
 
-type Service struct {
-	db         *sqlx.DB
-	gitService *git.GitService
-	storage    gitapp.StorageManager
+type SetupService struct {
+	db           *sqlx.DB
+	gitService   *GitService
+	storage      *syfon.Manager
+	accessChecks *servermw.FenceUserAccessHandler
 }
 
-func NewService(db *sqlx.DB, gitService *git.GitService, storage gitapp.StorageManager) *Service {
-	return &Service{
-		db:         db,
-		gitService: gitService,
-		storage:    storage,
+func NewSetupService(db *sqlx.DB, gitService *GitService, storage *syfon.Manager, accessChecks *servermw.FenceUserAccessHandler) *SetupService {
+	return &SetupService{
+		db:           db,
+		gitService:   gitService,
+		storage:      storage,
+		accessChecks: accessChecks,
 	}
 }
 
-func (service *Service) InitializeProject(ctx context.Context, authorizationHeader, organization, project string, request git.CalyprProjectSetupRequest) (*git.CalyprProjectInitializeResponse, error) {
+func (service *SetupService) InitializeProject(ctx context.Context, authorizationHeader, organization, project string, request CalyprProjectSetupRequest) (*CalyprProjectInitializeResponse, error) {
 	projectID := strings.TrimSpace(organization) + "/" + strings.TrimSpace(project)
 	request.Config.OrgTitle = organization
 	if strings.TrimSpace(request.Config.ProjectTitle) == "" {
@@ -43,12 +44,12 @@ func (service *Service) InitializeProject(ctx context.Context, authorizationHead
 		request.Config.Title = project
 	}
 	if err := request.Config.ValidateInitialization(); err != nil {
-		return nil, gitapp.NewError(gitapp.ErrorKindValidation, http.StatusBadRequest, fmt.Sprintf("body data validation failed: %s", err), map[string]any{"project_id": projectID})
+		return nil, NewError(ErrorKindValidation, http.StatusBadRequest, fmt.Sprintf("body data validation failed: %s", err), map[string]any{"project_id": projectID})
 	}
 
-	createdResourcePaths, err := ensureProjectOwnershipResources(ctx, authorizationHeader, organization, project)
+	createdResourcePaths, err := service.ensureProjectOwnershipResources(ctx, authorizationHeader, organization, project)
 	if err != nil {
-		return nil, gitapp.WrapError(gitapp.ErrorKindForbidden, http.StatusForbidden, "failed to ensure arborist ownership resources", err, map[string]any{"project_id": projectID})
+		return nil, WrapError(ErrorKindForbidden, http.StatusForbidden, "failed to ensure arborist ownership resources", err, map[string]any{"project_id": projectID})
 	}
 
 	if request.Storage != nil {
@@ -66,19 +67,19 @@ func (service *Service) InitializeProject(ctx context.Context, authorizationHead
 		if len(createdResourcePaths) > 0 {
 			bestEffortDeleteAuthzResources(ctx, authorizationHeader, createdResourcePaths)
 		}
-		return nil, gitapp.WrapError(gitapp.ErrorKindDatabase, http.StatusInternalServerError, "configPut failed", err, map[string]any{"config_type": string(config.TypeProjects), "config_id": projectID})
+		return nil, WrapError(ErrorKindDatabase, http.StatusInternalServerError, "configPut failed", err, map[string]any{"config_type": string(config.TypeProjects), "config_id": projectID})
 	}
 
-	return &git.CalyprProjectInitializeResponse{
+	return &CalyprProjectInitializeResponse{
 		Success:      true,
 		ProjectID:    projectID,
-		ResourcePath: git.ProgramProjectResourcePath(organization, project),
+		ResourcePath: ProgramProjectResourcePath(organization, project),
 	}, nil
 }
 
-func (service *Service) PopulateStorage(ctx context.Context, authorizationHeader, organization, project string, request git.CalyprProjectStorageRequest) (*git.CalyprProjectStorageResponse, error) {
+func (service *SetupService) PopulateStorage(ctx context.Context, authorizationHeader, organization, project string, request CalyprProjectStorageRequest) (*CalyprProjectStorageResponse, error) {
 	if request.Storage == nil {
-		return nil, gitapp.NewError(gitapp.ErrorKindValidation, http.StatusBadRequest, "storage configuration is required", map[string]any{"organization": organization, "project": project})
+		return nil, NewError(ErrorKindValidation, http.StatusBadRequest, "storage configuration is required", map[string]any{"organization": organization, "project": project})
 	}
 	request.Storage.Organization = organization
 	request.Storage.ProjectID = project
@@ -89,33 +90,33 @@ func (service *Service) PopulateStorage(ctx context.Context, authorizationHeader
 	if err != nil {
 		return nil, err
 	}
-	return &git.CalyprProjectStorageResponse{
+	return &CalyprProjectStorageResponse{
 		Success:      true,
 		ProjectID:    organization + "/" + project,
-		ResourcePath: git.ProgramProjectResourcePath(organization, project),
+		ResourcePath: ProgramProjectResourcePath(organization, project),
 		Storage:      storageStatus,
 	}, nil
 }
 
-func (service *Service) PopulateStorageIntent(ctx context.Context, authorizationHeader string, intent *git.CalyprProjectStorageIntent) error {
+func (service *SetupService) PopulateStorageIntent(ctx context.Context, authorizationHeader string, intent *CalyprProjectStorageIntent) error {
 	if intent == nil {
 		return nil
 	}
 	storageConfig := storageConfigFromIntent(intent)
 	if err := service.storage.PutBucket(ctx, authorizationHeader, storageConfig); err != nil {
-		return gitapp.WrapError(gitapp.ErrorKindIntegration, http.StatusBadGateway, "failed to configure syfon bucket", err, map[string]any{"project_id": strings.TrimSpace(intent.Organization) + "/" + strings.TrimSpace(intent.ProjectID)})
+		return WrapError(ErrorKindIntegration, http.StatusBadGateway, "failed to configure syfon bucket", err, map[string]any{"project_id": strings.TrimSpace(intent.Organization) + "/" + strings.TrimSpace(intent.ProjectID)})
 	}
 	if err := service.storage.AddScope(ctx, authorizationHeader, storageConfig); err != nil {
-		return gitapp.WrapError(gitapp.ErrorKindIntegration, http.StatusBadGateway, "failed to configure syfon scope", err, map[string]any{"project_id": strings.TrimSpace(intent.Organization) + "/" + strings.TrimSpace(intent.ProjectID)})
+		return WrapError(ErrorKindIntegration, http.StatusBadGateway, "failed to configure syfon scope", err, map[string]any{"project_id": strings.TrimSpace(intent.Organization) + "/" + strings.TrimSpace(intent.ProjectID)})
 	}
 	return nil
 }
 
-func storageConfigFromIntent(intent *git.CalyprProjectStorageIntent) gitapp.StorageConfig {
+func storageConfigFromIntent(intent *CalyprProjectStorageIntent) StorageConfig {
 	if intent == nil {
-		return gitapp.StorageConfig{}
+		return StorageConfig{}
 	}
-	return gitapp.StorageConfig{
+	return StorageConfig{
 		Bucket:              strings.TrimSpace(intent.Bucket),
 		Provider:            strings.TrimSpace(intent.Provider),
 		Endpoint:            strings.TrimSpace(intent.Endpoint),
@@ -131,27 +132,27 @@ func storageConfigFromIntent(intent *git.CalyprProjectStorageIntent) gitapp.Stor
 	}
 }
 
-func (service *Service) StorageCheck(ctx context.Context, authorizationHeader, organization, project string) (git.ProjectIntegrationCheck, error) {
+func (service *SetupService) StorageCheck(ctx context.Context, authorizationHeader, organization, project string) (ProjectIntegrationCheck, error) {
 	buckets, err := service.storage.ListBuckets(ctx, authorizationHeader)
 	if err != nil {
-		return git.ProjectIntegrationCheck{
+		return ProjectIntegrationCheck{
 			Pass:    false,
 			Reason:  "missing_storage_scope",
 			Details: err.Error(),
 		}, nil
 	}
-	return deriveStorageIntegrationCheck(buckets, organization, project), nil
+	return deriveStorageSetupCheck(buckets, organization, project), nil
 }
 
-func (service *Service) CleanupProjectStorage(ctx context.Context, authorizationHeader, organization, project string) error {
+func (service *SetupService) CleanupProjectStorage(ctx context.Context, authorizationHeader, organization, project string) error {
 	if err := service.storage.CleanupProject(ctx, authorizationHeader, organization, project); err != nil {
-		return gitapp.WrapError(gitapp.ErrorKindIntegration, http.StatusBadGateway, "failed to delete syfon project state", err, map[string]any{"project_id": organization + "/" + project})
+		return WrapError(ErrorKindIntegration, http.StatusBadGateway, "failed to delete syfon project state", err, map[string]any{"project_id": organization + "/" + project})
 	}
 	return nil
 }
 
-func deriveStorageIntegrationCheck(buckets map[string]gitapp.StorageBucket, organization string, project string) git.ProjectIntegrationCheck {
-	check := git.ProjectIntegrationCheck{
+func deriveStorageSetupCheck(buckets map[string]StorageBucket, organization string, project string) ProjectIntegrationCheck {
+	check := ProjectIntegrationCheck{
 		Pass:   false,
 		Reason: "missing_storage_scope",
 	}
@@ -179,7 +180,7 @@ type arboristOwnedDescendantRequest struct {
 }
 
 func fenceIssuerBaseURL(authorizationHeader string) (string, error) {
-	token := git.CleanAccessToken(authorizationHeader)
+	token := servermw.CleanAccessToken(authorizationHeader)
 	if token == "" {
 		return "", fmt.Errorf("authorization header is required")
 	}
@@ -267,14 +268,13 @@ func bestEffortDeleteAuthzResources(ctx context.Context, authorizationHeader str
 	}
 }
 
-func ensureProjectOwnershipResources(ctx context.Context, authorizationHeader, organization, project string) ([]string, error) {
-	authzHandler := servermw.NewFenceUserAccessHandler(nil)
+func (service *SetupService) ensureProjectOwnershipResources(ctx context.Context, authorizationHeader, organization, project string) ([]string, error) {
 	created := []string{}
-	projectResource := git.ProgramProjectResourcePath(organization, project)
+	projectResource := ProgramProjectResourcePath(organization, project)
 	orgProjectsResource := fmt.Sprintf("/programs/%s/projects", organization)
 	orgResource := fmt.Sprintf("/programs/%s", organization)
 
-	projectReadable, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "read", "*", projectResource)
+	projectReadable, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "read", "*", projectResource)
 	if err != nil {
 		return nil, err
 	}
@@ -282,11 +282,11 @@ func ensureProjectOwnershipResources(ctx context.Context, authorizationHeader, o
 		return created, nil
 	}
 
-	orgCanCreateProject, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
+	orgCanCreateProject, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
 	if err != nil {
 		return nil, err
 	}
-	orgManageOwners, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "manage-owners", "arborist", orgResource)
+	orgManageOwners, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "manage-owners", "arborist", orgResource)
 	if err != nil {
 		return nil, err
 	}

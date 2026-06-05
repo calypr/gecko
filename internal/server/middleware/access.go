@@ -1,4 +1,4 @@
-package git
+package middleware
 
 import (
 	"fmt"
@@ -47,7 +47,7 @@ func ResourcePathOrganization(resource string) (string, bool) {
 		return "", false
 	}
 	switch parts[1] {
-	case "programs", "organization":
+	case "programs":
 		if parts[2] != "" {
 			return parts[2], true
 		}

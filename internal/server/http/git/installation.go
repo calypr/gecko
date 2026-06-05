@@ -12,6 +12,7 @@ import (
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -22,7 +23,7 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)
@@ -73,7 +74,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)
@@ -132,7 +133,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	if state == nil {
 		state = &geckodb.GitProjectState{ProjectID: projectID, RepoHost: identity.Host, RepoOwner: identity.Owner, RepoName: identity.Repo, MirrorPath: handler.gitService.MirrorPathForIdentity(identity), SyncState: git.GitSyncNeverSynced}
 	}
-	authorizationHeader, tokenErr := git.ValidateAuthorizationHeader(ctx.Get("Authorization"))
+	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
 		response := httputil.NewError(apierror.TypeMissingAuthorization, tokenErr.Error(), http.StatusUnauthorized, nil, nil)
 		response.WriteLog(handler.logger)

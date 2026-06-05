@@ -1,7 +1,6 @@
 package git
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +8,9 @@ import (
 
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/integrations/fence"
+	gitapi "github.com/calypr/gecko/internal/integrations/github"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -27,19 +29,19 @@ type GitServiceConfig struct {
 	GitHubAPIBase string
 	FenceBaseURL  string
 	HTTPClient    *http.Client
+	FenceClient   *fence.Client
+	GitHubClient  *gitapi.Client
 }
 
 type GitService struct {
-	config GitServiceConfig
-	client *http.Client
+	config    GitServiceConfig
+	client    *http.Client
+	fenceAPI  *fence.Client
+	githubAPI *gitapi.Client
 }
 
-type GitRepositoryIdentity struct {
-	Host  string `json:"host"`
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
-	URL   string `json:"url"`
-}
+// GitRepositoryIdentity is an alias for domain.GitRepositoryIdentity.
+type GitRepositoryIdentity = domain.GitRepositoryIdentity
 
 type GitProjectStatusResponse struct {
 	ProjectID                       string                  `json:"project_id"`
@@ -72,14 +74,9 @@ type GitOrganizationConnectResponse struct {
 	Repositories   []GitHubInstallationRepository `json:"repositories,omitempty"`
 }
 
-type GitRepositoryInstallationStatus struct {
-	Installed           bool   `json:"installed"`
-	InstallationID      *int64 `json:"installation_id,omitempty"`
-	Target              string `json:"target,omitempty"`
-	TargetType          string `json:"target_type,omitempty"`
-	HTMLURL             string `json:"html_url,omitempty"`
-	RepositorySelection string `json:"repository_selection,omitempty"`
-}
+// GitRepositoryInstallationStatus is an alias for domain.GitRepositoryInstallationStatus.
+type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
+
 
 type ProjectIntegrationCheck struct {
 	Pass    bool   `json:"pass"`
@@ -163,18 +160,10 @@ type CalyprProjectSetupResponse struct {
 	Readiness    CalyprProjectReadiness `json:"readiness"`
 }
 
-type GitHubInstallationRepository struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	HTMLURL  string `json:"html_url"`
-	CloneURL string `json:"clone_url"`
-}
+// GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
+type GitHubInstallationRepository = domain.GitHubInstallationRepository
 
-type fenceGitHubInstallationRepositoriesResponse struct {
-	InstallationID int64                          `json:"installation_id"`
-	Repositories   []GitHubInstallationRepository `json:"repositories"`
-}
+
 
 type GitOrganizationStatusResponse struct {
 	Organization        string                         `json:"organization"`
@@ -318,60 +307,13 @@ type GitUploadSessionResponse struct {
 	HasConflicts   bool                         `json:"has_conflicts"`
 }
 
-type GitHubRepositoryMetadata struct {
-	DefaultBranch string `json:"default_branch"`
-	HTMLURL       string `json:"html_url"`
-}
+// GitHubRepositoryMetadata is an alias for domain.GitHubRepositoryMetadata.
+type GitHubRepositoryMetadata = domain.GitHubRepositoryMetadata
 
-type fenceGitHubTokenResponse struct {
-	Token      string                `json:"token"`
-	ExpiresAt  string                `json:"expires_at"`
-	Repository GitRepositoryIdentity `json:"repository"`
-}
 
-type fenceGitHubInstallURLResponse struct {
-	InstallURL string `json:"install_url"`
-	Owner      string `json:"owner"`
-}
+// HTTPStatusError is an alias for domain.HTTPStatusError.
+type HTTPStatusError = domain.HTTPStatusError
 
-type fenceGitHubInstallationStatusResponse struct {
-	Installed           bool   `json:"installed"`
-	InstallationID      *int64 `json:"installation_id"`
-	Target              string `json:"target"`
-	TargetType          string `json:"target_type"`
-	HTMLURL             string `json:"html_url"`
-	RepositorySelection string `json:"repository_selection"`
-}
-
-type HTTPStatusError struct {
-	StatusCode int
-	Code       string
-	Message    string
-}
-
-func (err *HTTPStatusError) Error() string {
-	if err == nil {
-		return ""
-	}
-	if err.Message != "" {
-		return err.Message
-	}
-	return http.StatusText(err.StatusCode)
-}
-
-func decodeFenceErrorResponse(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return ""
-	}
-	if message, ok := payload["message"].(string); ok {
-		return message
-	}
-	return ""
-}
 
 func NewGitService(config GitServiceConfig) *GitService {
 	if config.GitHubAPIBase == "" {
@@ -381,7 +323,12 @@ func NewGitService(config GitServiceConfig) *GitService {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &GitService{config: config, client: client}
+	return &GitService{
+		config:    config,
+		client:    client,
+		fenceAPI:  config.FenceClient,
+		githubAPI: config.GitHubClient,
+	}
 }
 
 func (service *GitService) Init(db *sqlx.DB) error {
@@ -396,3 +343,37 @@ func (service *GitService) Init(db *sqlx.DB) error {
 	}
 	return geckodb.EnsureGitProjectStateTable(db)
 }
+
+func ParseRepositoryIdentity(raw string) (GitRepositoryIdentity, error) {
+	normalized, err := appconfig.NormalizeProjectRepositoryURL(raw)
+	if err != nil {
+		return GitRepositoryIdentity{}, err
+	}
+	parts := strings.Split(normalized, "/")
+	if len(parts) != 3 {
+		return GitRepositoryIdentity{}, fmt.Errorf("expected normalized host/owner/repo path, got %q", normalized)
+	}
+	return GitRepositoryIdentity{
+		Host:  parts[0],
+		Owner: parts[1],
+		Repo:  parts[2],
+		URL:   fmt.Sprintf("https://%s/%s/%s", parts[0], parts[1], parts[2]),
+	}, nil
+}
+
+func sanitizePathPart(value string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
+	return replacer.Replace(value)
+}
+
+// StorageBucket is an alias for domain.StorageBucket.
+type StorageBucket = domain.StorageBucket
+
+// StorageConfig is an alias for domain.StorageConfig.
+type StorageConfig = domain.StorageConfig
+
+
+func ProgramProjectResourcePath(organization, project string) string {
+	return fmt.Sprintf("/programs/%s/projects/%s", organization, project)
+}
+

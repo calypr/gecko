@@ -8,7 +8,6 @@ import (
 
 	"github.com/bmeg/grip/gripql"
 	"github.com/calypr/gecko/apierror"
-	"github.com/calypr/gecko/internal/authz"
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -29,7 +28,7 @@ func (handler *Handler) registerDirectoryHandlers(app fiber.Router, authMiddlewa
 // @Failure 500 {object} ErrorResponse "Server error"
 // @Router /dir [get]
 func (handler *Handler) handleListProjects(ctx fiber.Ctx) error {
-	projs, errResponse := authz.ProjectsFromToken(ctx, servermw.NewFenceUserAccessHandler(nil), "read", "*")
+	projs, errResponse := servermw.GetProjectsFromToken(ctx, servermw.NewFenceUserAccessHandler(nil), "read", "*")
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)

@@ -1,4 +1,4 @@
-package git
+package middleware
 
 import "testing"
 
@@ -15,7 +15,7 @@ func TestResourceListAllowsProjectMatchesProgramResource(t *testing.T) {
 	}
 }
 
-func TestResourceListAllowsOrganizationMatchesProgramAndLegacyResources(t *testing.T) {
+func TestResourceListAllowsOrganizationMatchesProgramResources(t *testing.T) {
 	resources := []string{
 		"/programs/Ellrott_Lab/projects",
 		"/programs/Ellrott_Lab/projects/git_drs_test",
@@ -25,8 +25,8 @@ func TestResourceListAllowsOrganizationMatchesProgramAndLegacyResources(t *testi
 	if !ResourceListAllowsOrganization(resources, "Ellrott_Lab") {
 		t.Fatal("expected program-scoped organization access to be allowed")
 	}
-	if !ResourceListAllowsOrganization(resources, "HTAN_INT") {
-		t.Fatal("expected legacy organization access to be allowed")
+	if ResourceListAllowsOrganization(resources, "HTAN_INT") {
+		t.Fatal("expected legacy organization access to be denied")
 	}
 	if ResourceListAllowsOrganization(resources, "gdc_mirror") {
 		t.Fatal("expected unrelated organization access to be denied")

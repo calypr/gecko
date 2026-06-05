@@ -16,7 +16,10 @@ import (
 	"github.com/uc-cdis/go-authutils/authutils"
 
 	"github.com/calypr/gecko/internal/git"
+	integrationfence "github.com/calypr/gecko/internal/integrations/fence"
+	integrationgithub "github.com/calypr/gecko/internal/integrations/github"
 	server "github.com/calypr/gecko/internal/server"
+	"github.com/calypr/gecko/internal/thumbnail"
 )
 
 // @title Gecko API
@@ -71,12 +74,18 @@ func main() {
 	} else {
 		logger.Println("Successfully connected to PostgreSQL database.")
 		serverBuilder = serverBuilder.WithDB(db)
+		githubAPIBase := firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL"))
+		fenceBaseURL := firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL"))
+		gitDataDir := firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR"))
 		gitService := git.NewGitService(git.GitServiceConfig{
-			GitHubAPIBase: firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL")),
-			FenceBaseURL:  firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL")),
-			DataDir:       firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR")),
+			GitHubAPIBase: githubAPIBase,
+			FenceBaseURL:  fenceBaseURL,
+			DataDir:       gitDataDir,
+			FenceClient:   integrationfence.NewClient(nil, integrationfence.Config{BaseURL: fenceBaseURL}),
+			GitHubClient:  integrationgithub.NewClient(nil, integrationgithub.Config{APIBase: githubAPIBase}),
 		})
 		serverBuilder = serverBuilder.WithGitService(gitService)
+		serverBuilder = serverBuilder.WithThumbnailStore(thumbnail.NewFilesystemStore(gitDataDir))
 	}
 
 	if qdrantHost != "" && qdrantPort != 0 {

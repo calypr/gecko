@@ -11,6 +11,7 @@ import (
 	geckologging "github.com/calypr/gecko/internal/logging"
 	httpapi "github.com/calypr/gecko/internal/server/http"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
+	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 	"github.com/qdrant/go-client/qdrant"
@@ -18,14 +19,15 @@ import (
 )
 
 type Server struct {
-	db            *sqlx.DB
-	jwtApp        arborist.JWTDecoder
-	Logger        *geckologging.Handler
-	stmts         *arborist.CachedStmts
-	qdrantClient  *qdrant.Client
-	gripqlClient  *gripql.Client
-	gripGraphName string
-	gitService    *git.GitService
+	db             *sqlx.DB
+	jwtApp         arborist.JWTDecoder
+	Logger         *geckologging.Handler
+	stmts          *arborist.CachedStmts
+	qdrantClient   *qdrant.Client
+	gripqlClient   *gripql.Client
+	gripGraphName  string
+	gitService     *git.GitService
+	thumbnailStore thumbnail.Manager
 }
 
 func NewServer() *Server { return &Server{} }
@@ -59,6 +61,11 @@ func (server *Server) WithGripqlClient(client *gripql.Client, gripGraphName stri
 
 func (server *Server) WithGitService(service *git.GitService) *Server {
 	server.gitService = service
+	return server
+}
+
+func (server *Server) WithThumbnailStore(store thumbnail.Manager) *Server {
+	server.thumbnailStore = store
 	return server
 }
 
@@ -109,13 +116,14 @@ func (server *Server) MakeRouter() *fiber.App {
 	app.Use(servermw.RequestLogger(server.Logger))
 
 	httpapi.Register(app, httpapi.Dependencies{
-		DB:            server.db,
-		Logger:        server.Logger,
-		JWTApp:        server.jwtApp,
-		QdrantClient:  server.qdrantClient,
-		GripqlClient:  server.gripqlClient,
-		GripGraphName: server.gripGraphName,
-		GitService:    server.gitService,
+		DB:             server.db,
+		Logger:         server.Logger,
+		JWTApp:         server.jwtApp,
+		QdrantClient:   server.qdrantClient,
+		GripqlClient:   server.gripqlClient,
+		GripGraphName:  server.gripGraphName,
+		GitService:     server.gitService,
+		ThumbnailStore: server.thumbnailStore,
 	})
 	return app
 }

@@ -6,7 +6,6 @@ import (
 
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/git"
-	gitapp "github.com/calypr/gecko/internal/git/app"
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -14,24 +13,24 @@ import (
 
 func writeAppError(ctx fiber.Ctx, logger any, err error) error {
 	_ = logger
-	if appErr, ok := err.(*gitapp.Error); ok {
+	if appErr, ok := err.(*git.Error); ok {
 		statusCode := appErr.StatusCode
 		if statusCode == 0 {
 			statusCode = http.StatusInternalServerError
 		}
 		errorType := apierror.Type("internal_error")
 		switch appErr.Kind {
-		case gitapp.ErrorKindValidation:
+		case git.ErrorKindValidation:
 			errorType = apierror.TypeValidationFailed
-		case gitapp.ErrorKindForbidden:
+		case git.ErrorKindForbidden:
 			errorType = apierror.TypeForbidden
-		case gitapp.ErrorKindIntegration:
+		case git.ErrorKindIntegration:
 			errorType = apierror.Type("integration_error")
-		case gitapp.ErrorKindNotFound:
+		case git.ErrorKindNotFound:
 			errorType = apierror.TypeNotFound
-		case gitapp.ErrorKindDatabase:
+		case git.ErrorKindDatabase:
 			errorType = apierror.TypeDatabaseError
-		case gitapp.ErrorKindUnauthorized:
+		case git.ErrorKindUnauthorized:
 			errorType = apierror.TypeMissingAuthorization
 		}
 		return httputil.NewError(errorType, appErr.Error(), statusCode, appErr.Details, nil).Write(ctx)
@@ -64,7 +63,7 @@ func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []
 		if len(projectParts) != 1 || projectParts[0] == "" {
 			continue
 		}
-		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) || git.ResourceListAllowsProject(allowedResources, parts[0], projectParts[0]) {
+		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) || servermw.ResourceListAllowsProject(allowedResources, parts[0], projectParts[0]) {
 			filtered = append(filtered, projectID)
 		}
 	}

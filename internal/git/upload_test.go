@@ -1,4 +1,4 @@
-package git
+package git_test
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/git"
+	integrationfence "github.com/calypr/gecko/internal/integrations/fence"
 )
 
 func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
@@ -38,10 +40,11 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := NewGitService(GitServiceConfig{
+	service := git.NewGitService(git.GitServiceConfig{
 		FenceBaseURL:  server.URL,
 		GitHubAPIBase: server.URL + "/api/v3",
 		HTTPClient:    server.Client(),
+		FenceClient:   integrationfence.NewClient(server.Client(), integrationfence.Config{BaseURL: server.URL}),
 	})
 
 	_, _, err := service.CreateGitHubUploadPullRequest(
@@ -49,7 +52,7 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 		"Bearer user-token",
 		"Ellrott_Lab",
 		"test",
-		GitRepositoryIdentity{Owner: "EllrottLab", Repo: "git_drs_test"},
+		git.GitRepositoryIdentity{Owner: "EllrottLab", Repo: "git_drs_test"},
 		"main",
 		"feature/test",
 		"title",
@@ -63,7 +66,7 @@ func TestCreateGitHubUploadPullRequest_PropagatesGitHub403(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	statusErr, ok := err.(*HTTPStatusError)
+	statusErr, ok := err.(*git.HTTPStatusError)
 	if !ok {
 		t.Fatalf("expected HTTPStatusError, got %T: %v", err, err)
 	}

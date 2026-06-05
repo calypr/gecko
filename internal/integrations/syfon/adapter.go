@@ -8,7 +8,7 @@ import (
 	"path"
 	"strings"
 
-	gitapp "github.com/calypr/gecko/internal/git/app"
+	"github.com/calypr/gecko/internal/git/domain"
 	"github.com/calypr/syfon/apigen/client/bucketapi"
 	syfonservices "github.com/calypr/syfon/client/services"
 )
@@ -20,7 +20,7 @@ type Manager struct {
 	client  *http.Client
 }
 
-func NewManager(baseURL string, client *http.Client) gitapp.StorageManager {
+func NewManager(baseURL string, client *http.Client) *Manager {
 	httpClient := client
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -31,7 +31,7 @@ func NewManager(baseURL string, client *http.Client) gitapp.StorageManager {
 	}
 }
 
-func (manager *Manager) ListBuckets(ctx context.Context, authorizationHeader string) (map[string]gitapp.StorageBucket, error) {
+func (manager *Manager) ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error) {
 	service, err := manager.bucketsService(authorizationHeader)
 	if err != nil {
 		return nil, err
@@ -40,9 +40,9 @@ func (manager *Manager) ListBuckets(ctx context.Context, authorizationHeader str
 	if err != nil {
 		return nil, fmt.Errorf("request syfon bucket list: %w", err)
 	}
-	buckets := make(map[string]gitapp.StorageBucket, len(response.S3BUCKETS))
+	buckets := make(map[string]domain.StorageBucket, len(response.S3BUCKETS))
 	for name, metadata := range response.S3BUCKETS {
-		bucket := gitapp.StorageBucket{Bucket: name}
+		bucket := domain.StorageBucket{Bucket: name}
 		if metadata.Provider != nil {
 			bucket.Provider = strings.TrimSpace(*metadata.Provider)
 		}
@@ -62,7 +62,7 @@ func (manager *Manager) ListBuckets(ctx context.Context, authorizationHeader str
 	return buckets, nil
 }
 
-func (manager *Manager) PutBucket(ctx context.Context, authorizationHeader string, config gitapp.StorageConfig) error {
+func (manager *Manager) PutBucket(ctx context.Context, authorizationHeader string, config domain.StorageConfig) error {
 	service, err := manager.bucketsService(authorizationHeader)
 	if err != nil {
 		return err
@@ -96,7 +96,7 @@ func (manager *Manager) PutBucket(ctx context.Context, authorizationHeader strin
 	return nil
 }
 
-func (manager *Manager) AddScope(ctx context.Context, authorizationHeader string, config gitapp.StorageConfig) error {
+func (manager *Manager) AddScope(ctx context.Context, authorizationHeader string, config domain.StorageConfig) error {
 	service, err := manager.bucketsService(authorizationHeader)
 	if err != nil {
 		return err
@@ -182,7 +182,7 @@ func (manager *Manager) dataAPIBaseURL() (string, error) {
 	return baseURL + "/data", nil
 }
 
-func (manager *Manager) scopePath(config gitapp.StorageConfig) string {
+func (manager *Manager) scopePath(config domain.StorageConfig) string {
 	if explicitPath := strings.TrimSpace(config.Path); explicitPath != "" {
 		return explicitPath
 	}

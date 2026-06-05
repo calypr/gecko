@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
-	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -44,9 +43,9 @@ func (handler *Handler) handleGitProjectThumbnailGET(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	path, contentType, err := handler.gitService.ProjectThumbnailPath(organization, project)
+	path, contentType, err := handler.thumbnailStore.GetPath(organization, project)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, thumbnail.ErrNoThumbnail) {
 			response := httputil.NewError("not_found", fmt.Sprintf("no thumbnail found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
@@ -72,8 +71,8 @@ func (handler *Handler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	if fileHeader.Size > int64(git.MaxProjectThumbnailBytes()) {
-		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", git.MaxProjectThumbnailBytes()), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
+	if fileHeader.Size > int64(thumbnail.MaxProjectThumbnailBytes) {
+		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", thumbnail.MaxProjectThumbnailBytes), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -85,28 +84,28 @@ func (handler *Handler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(io.LimitReader(file, int64(git.MaxProjectThumbnailBytes())+1))
+	data, err := io.ReadAll(io.LimitReader(file, int64(thumbnail.MaxProjectThumbnailBytes)+1))
 	if err != nil {
 		response := httputil.NewError("invalid_request", fmt.Sprintf("failed to read thumbnail upload: %s", err), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	if len(data) > git.MaxProjectThumbnailBytes() {
-		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", git.MaxProjectThumbnailBytes()), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
+	if len(data) > thumbnail.MaxProjectThumbnailBytes {
+		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", thumbnail.MaxProjectThumbnailBytes), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
 
-	_, contentType, err := handler.gitService.SaveProjectThumbnail(organization, project, data)
+	_, contentType, err := handler.thumbnailStore.Save(organization, project, data)
 	if err != nil {
 		response := httputil.NewError(
 			"validation_failed",
 			fmt.Sprintf(
 				"failed to save project thumbnail: %s. Allowed formats: PNG or JPG. Allowed dimensions: %dpx to %dpx. Maximum size: %d bytes",
 				err,
-				git.MinProjectThumbnailPixels(),
-				git.MaxProjectThumbnailPixels(),
-				git.MaxProjectThumbnailBytes(),
+				thumbnail.MinProjectThumbnailPixels,
+				thumbnail.MaxProjectThumbnailPixels,
+				thumbnail.MaxProjectThumbnailBytes,
 			),
 			http.StatusBadRequest,
 			map[string]any{"project_id": projectID},
@@ -123,8 +122,8 @@ func (handler *Handler) handleGitProjectThumbnailDELETE(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	err := handler.gitService.DeleteProjectThumbnail(organization, project)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	err := handler.thumbnailStore.Delete(organization, project)
+	if err != nil && !errors.Is(err, thumbnail.ErrNoThumbnail) {
 		response := httputil.NewError("integration_error", fmt.Sprintf("failed to delete project thumbnail: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)

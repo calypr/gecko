@@ -1,4 +1,4 @@
-package git
+package fence
 
 import (
 	"bytes"
@@ -8,19 +8,59 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/calypr/gecko/internal/git/domain"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
-func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authorizationHeader string, requestPayload map[string]any, responsePayload any) error {
-	if strings.TrimSpace(service.config.FenceBaseURL) == "" {
-		return &HTTPStatusError{
+type Config struct {
+	BaseURL string
+}
+
+type Client struct {
+	client *http.Client
+	config Config
+}
+
+func NewClient(client *http.Client, config Config) *Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &Client{client: client, config: config}
+}
+
+type fenceGitHubInstallURLResponse struct {
+	InstallURL string `json:"install_url"`
+}
+
+type fenceGitHubInstallationStatusResponse struct {
+	Installed           bool   `json:"installed"`
+	InstallationID      *int64 `json:"installation_id"`
+	Target              string `json:"target"`
+	TargetType          string `json:"target_type"`
+	HTMLURL             string `json:"html_url"`
+	RepositorySelection string `json:"repository_selection"`
+}
+
+type fenceGitHubInstallationRepositoriesResponse struct {
+	Repositories []domain.GitHubInstallationRepository `json:"repositories"`
+}
+
+type fenceGitHubTokenResponse struct {
+	Token string `json:"token"`
+}
+
+func (c *Client) requestFenceGitHubBroker(ctx context.Context, authorizationHeader string, requestPayload map[string]any, responsePayload any) error {
+	if strings.TrimSpace(c.config.BaseURL) == "" {
+		return &domain.HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
 			Message:    "Fence base URL is not configured for GitHub App broker requests",
 		}
 	}
-	validAuthorizationHeader, err := ValidateAuthorizationHeader(authorizationHeader)
+	validAuthorizationHeader, err := servermw.ValidateAuthorizationHeader(authorizationHeader)
 	if err != nil {
-		return &HTTPStatusError{
+		return &domain.HTTPStatusError{
 			StatusCode: http.StatusUnauthorized,
 			Code:       "missing_authorization",
 			Message:    err.Error(),
@@ -33,7 +73,7 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		strings.TrimRight(service.config.FenceBaseURL, "/")+"/credentials/github",
+		strings.TrimRight(c.config.BaseURL, "/")+"/credentials/github",
 		bytes.NewReader(requestBody),
 	)
 	if err != nil {
@@ -42,9 +82,9 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 	req.Header.Set("Authorization", validAuthorizationHeader)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := service.client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
-		return &HTTPStatusError{
+		return &domain.HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
 			Message:    fmt.Sprintf("Fence github broker request failed: %s", err),
@@ -70,14 +110,14 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 		case http.StatusNotFound:
 			code = "not_found"
 		}
-		return &HTTPStatusError{
+		return &domain.HTTPStatusError{
 			StatusCode: resp.StatusCode,
 			Code:       code,
 			Message:    message,
 		}
 	}
 	if err := json.Unmarshal(body, responsePayload); err != nil {
-		return &HTTPStatusError{
+		return &domain.HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
 			Message:    fmt.Sprintf("invalid Fence github broker response: %s", err),
@@ -86,9 +126,9 @@ func (service *GitService) requestFenceGitHubBroker(ctx context.Context, authori
 	return nil
 }
 
-func (service *GitService) RequestInstallationURL(ctx context.Context, authorizationHeader string, owner string, redirectPath string) (string, error) {
+func (c *Client) RequestInstallationURL(ctx context.Context, authorizationHeader string, owner string, redirectPath string) (string, error) {
 	var payload fenceGitHubInstallURLResponse
-	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":        "install_url",
 		"organization":  owner,
 		"owner":         owner,
@@ -98,7 +138,7 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	}
 	installURL := strings.TrimSpace(payload.InstallURL)
 	if installURL == "" {
-		return "", &HTTPStatusError{
+		return "", &domain.HTTPStatusError{
 			StatusCode: http.StatusBadGateway,
 			Code:       "integration_error",
 			Message:    "Fence github install URL response did not include install_url",
@@ -107,16 +147,16 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	return installURL, nil
 }
 
-func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string, owner string) (GitRepositoryInstallationStatus, error) {
+func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string, owner string) (domain.GitRepositoryInstallationStatus, error) {
 	var payload fenceGitHubInstallationStatusResponse
-	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":       "organization_installation",
 		"organization": organization,
 		"owner":        owner,
 	}, &payload); err != nil {
-		return GitRepositoryInstallationStatus{}, err
+		return domain.GitRepositoryInstallationStatus{}, err
 	}
-	return GitRepositoryInstallationStatus{
+	return domain.GitRepositoryInstallationStatus{
 		Installed:           payload.Installed,
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
@@ -126,9 +166,9 @@ func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Con
 	}, nil
 }
 
-func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubInstallationRepository, error) {
+func (c *Client) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]domain.GitHubInstallationRepository, error) {
 	var payload fenceGitHubInstallationRepositoriesResponse
-	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":          "installation_repositories",
 		"installation_id": installationID,
 	}, &payload); err != nil {
@@ -137,17 +177,17 @@ func (service *GitService) ListInstallationRepositories(ctx context.Context, aut
 	return payload.Repositories, nil
 }
 
-func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
+func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity domain.GitRepositoryIdentity) (domain.GitRepositoryInstallationStatus, error) {
 	var payload fenceGitHubInstallationStatusResponse
-	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":       "repository_installation",
 		"owner":        identity.Owner,
 		"repo":         identity.Repo,
 		"organization": organization,
 	}, &payload); err != nil {
-		return GitRepositoryInstallationStatus{}, err
+		return domain.GitRepositoryInstallationStatus{}, err
 	}
-	return GitRepositoryInstallationStatus{
+	return domain.GitRepositoryInstallationStatus{
 		Installed:           payload.Installed,
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
@@ -157,13 +197,13 @@ func (service *GitService) RequestInstallationStatus(ctx context.Context, author
 	}, nil
 }
 
-func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity GitRepositoryIdentity, access string) (string, error) {
+func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
 	requestedAccess := strings.TrimSpace(access)
 	if requestedAccess == "" {
 		requestedAccess = "read"
 	}
 	var payload fenceGitHubTokenResponse
-	if err := service.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
+	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":       "installation_token",
 		"owner":        identity.Owner,
 		"repo":         identity.Repo,
@@ -173,5 +213,19 @@ func (service *GitService) RequestInstallationToken(ctx context.Context, authori
 	}, &payload); err != nil {
 		return "", err
 	}
-	return ValidateAccessToken(payload.Token)
+	return servermw.ValidateAccessToken(payload.Token)
+}
+
+func decodeFenceErrorResponse(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	if message, ok := payload["message"].(string); ok {
+		return message
+	}
+	return ""
 }
