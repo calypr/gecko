@@ -32,6 +32,13 @@ type ResourceAccessHandler interface {
 	CheckResourceServiceAccess(token, method, service, resourcePath string) (bool, error)
 }
 
+type ResourceAccessRecord struct {
+	Method  string
+	Service string
+}
+
+type ResourceAccessSnapshot map[string][]ResourceAccessRecord
+
 type FenceUserAccessHandler struct {
 	client *http.Client
 }
@@ -61,6 +68,20 @@ func (h *FenceUserAccessHandler) CheckResourceServiceAccess(token, method, servi
 }
 
 func (h *FenceUserAccessHandler) GetAllowedResources(token, method, service string) ([]any, error) {
+	snapshot, err := h.GetResourceAccess(token)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]any, 0, len(snapshot))
+	for resource := range snapshot {
+		if ResourceAccessAllows(snapshot, resource, method, service) {
+			out = append(out, resource)
+		}
+	}
+	return out, nil
+}
+
+func (h *FenceUserAccessHandler) GetResourceAccess(token string) (ResourceAccessSnapshot, error) {
 	endpoint, err := fenceUserEndpoint(token)
 	if err != nil {
 		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
@@ -98,6 +119,10 @@ func (h *FenceUserAccessHandler) GetAllowedResources(token, method, service stri
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, &AccessError{StatusCode: http.StatusBadGateway, Message: fmt.Sprintf("invalid authorization snapshot response: %s", err)}
 	}
+	return parseResourceAccessSnapshot(payload)
+}
+
+func parseResourceAccessSnapshot(payload map[string]any) (ResourceAccessSnapshot, error) {
 	resourceAccess, ok := payload["authz"].(map[string]any)
 	if !ok || len(resourceAccess) == 0 {
 		resourceAccess, ok = payload["project_access"].(map[string]any)
@@ -106,13 +131,28 @@ func (h *FenceUserAccessHandler) GetAllowedResources(token, method, service stri
 		}
 	}
 
-	out := make([]any, 0, len(resourceAccess))
+	snapshot := make(ResourceAccessSnapshot, len(resourceAccess))
 	for resource, raw := range resourceAccess {
-		if snapshotAllows(raw, method, service) {
-			out = append(out, resource)
+		entries, ok := raw.([]any)
+		if !ok {
+			continue
 		}
+		records := make([]ResourceAccessRecord, 0, len(entries))
+		for _, entry := range entries {
+			record, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			method, _ := record["method"].(string)
+			service, _ := record["service"].(string)
+			records = append(records, ResourceAccessRecord{
+				Method:  method,
+				Service: service,
+			})
+		}
+		snapshot[resource] = records
 	}
-	return out, nil
+	return snapshot, nil
 }
 
 func snapshotAllows(raw any, method, service string) bool {
@@ -131,6 +171,19 @@ func snapshotAllows(raw any, method, service string) bool {
 			continue
 		}
 		if entryService == "*" || service == "*" || entryService == service {
+			return true
+		}
+	}
+	return false
+}
+
+func ResourceAccessAllows(snapshot ResourceAccessSnapshot, resourcePath, method, service string) bool {
+	entries := snapshot[resourcePath]
+	for _, entry := range entries {
+		if entry.Method != method && entry.Method != "*" {
+			continue
+		}
+		if entry.Service == "*" || service == "*" || entry.Service == service {
 			return true
 		}
 	}

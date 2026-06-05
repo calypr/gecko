@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/calypr/gecko/apierror"
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
@@ -234,21 +235,23 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	allowedResources := statusAccess.readableResources
 	if !organizationAllowedByResources(organization, allowedResources) {
 		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
 	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
 		return writeAppError(ctx, handler.logger, err)
 	}
+	applyOrganizationStatusCapabilities(&responsePayload, statusAccess.snapshot)
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
 }
 
@@ -259,15 +262,19 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
+	allowedResources := statusAccess.readableResources
 	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
 		return writeAppError(ctx, handler.logger, err)
+	}
+	for i := range responsePayload.Organizations {
+		applyOrganizationStatusCapabilities(&responsePayload.Organizations[i], statusAccess.snapshot)
 	}
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
 }
@@ -283,6 +290,66 @@ func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
 	return resources, nil
 }
 
+type gitStatusAccess struct {
+	readableResources []string
+	snapshot          servermw.ResourceAccessSnapshot
+}
+
+func gitStatusAccessSnapshot(token string) (*gitStatusAccess, *httputil.ErrorResponse) {
+	if token == "" {
+		return &gitStatusAccess{}, nil
+	}
+	authzHandler := servermw.NewFenceUserAccessHandler(nil)
+	snapshot, err := authzHandler.GetResourceAccess(token)
+	if err != nil {
+		if serverErr, ok := err.(*servermw.AccessError); ok {
+			return nil, httputil.NewError(gitStatusServiceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
+		}
+		return nil, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil)
+	}
+	readableResources := make([]string, 0, len(snapshot))
+	for resourcePath := range snapshot {
+		if servermw.ResourceAccessAllows(snapshot, resourcePath, "read", "*") {
+			readableResources = append(readableResources, resourcePath)
+		}
+	}
+	sort.Strings(readableResources)
+	return &gitStatusAccess{
+		readableResources: readableResources,
+		snapshot:          snapshot,
+	}, nil
+}
+
+func gitStatusServiceErrorType(code int) apierror.Type {
+	switch code {
+	case http.StatusUnauthorized:
+		return apierror.TypeUnauthorized
+	case http.StatusForbidden:
+		return apierror.TypeForbidden
+	case http.StatusNotFound:
+		return apierror.TypeNotFound
+	case http.StatusMethodNotAllowed:
+		return apierror.TypeMethodNotAllowed
+	default:
+		return apierror.TypeAuthorizationServiceError
+	}
+}
+
+func applyOrganizationStatusCapabilities(response *git.GitOrganizationStatusResponse, snapshot servermw.ResourceAccessSnapshot) {
+	if response == nil {
+		return
+	}
+	response.CanAccessSettings = true
+	orgResource := fmt.Sprintf("/programs/%s", response.Organization)
+	orgProjectsResource := fmt.Sprintf("/programs/%s/projects", response.Organization)
+	response.CanCreateProjects = servermw.ResourceAccessAllows(snapshot, orgProjectsResource, "create-descendant", "arborist")
+	response.CanManagePeople = servermw.ResourceAccessAllows(snapshot, orgResource, "manage-owners", "arborist")
+	response.CanDeleteOrg = response.CanManagePeople || servermw.ResourceAccessAllows(snapshot, orgResource, "delete", "*")
+	for i := range response.Projects {
+		response.Projects[i].CanManageSettings = servermw.ResourceAccessAllows(snapshot, response.Projects[i].ResourcePath, "update", "*")
+	}
+}
+
 func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error {
 	organization := strings.TrimSpace(ctx.Params("orgTitle"))
 	if organization == "" {
@@ -296,11 +363,12 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	allowedResources := statusAccess.readableResources
 	if !organizationAllowedByResources(organization, allowedResources) {
 		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
 		response.WriteLog(handler.logger)
@@ -317,15 +385,17 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 	if err := handler.projectSync.ReconcileOrganization(reconcileCtx, organization, authorizationHeader, projectIDs); err != nil {
 		return writeAppError(ctx, handler.logger, err)
 	}
-	allowedResources, errResponse = gitAllowedReadResources(authorizationHeader)
+	statusAccess, errResponse = gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	allowedResources = statusAccess.readableResources
 	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
 		return writeAppError(ctx, handler.logger, err)
 	}
+	applyOrganizationStatusCapabilities(&responsePayload, statusAccess.snapshot)
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
 }
 
@@ -342,11 +412,12 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := gitAllowedReadResources(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	allowedResources := statusAccess.readableResources
 	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	reconcileCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -356,6 +427,9 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
 		return writeAppError(ctx, handler.logger, err)
+	}
+	for i := range responsePayload.Organizations {
+		applyOrganizationStatusCapabilities(&responsePayload.Organizations[i], statusAccess.snapshot)
 	}
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
 }

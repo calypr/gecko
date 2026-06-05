@@ -101,6 +101,7 @@ type GitOrganizationProjectStatus struct {
 	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
 	Integrations              ProjectIntegrationStatus        `json:"integrations"`
 	Accessible                bool                            `json:"accessible"`
+	CanManageSettings         bool                            `json:"can_manage_settings"`
 	RequestAccess             bool                            `json:"request_access"`
 	RequestAccessResourcePath string                          `json:"request_access_resource_path,omitempty"`
 	Installation              GitRepositoryInstallationStatus `json:"installation"`
@@ -179,6 +180,10 @@ type GitOrganizationStatusResponse struct {
 	Organization        string                         `json:"organization"`
 	Connected           bool                           `json:"connected"`
 	AppInstalled        bool                           `json:"app_installed"`
+	CanAccessSettings   bool                           `json:"can_access_settings"`
+	CanCreateProjects   bool                           `json:"can_create_projects"`
+	CanManagePeople     bool                           `json:"can_manage_people"`
+	CanDeleteOrg        bool                           `json:"can_delete_org"`
 	InstallationID      *int64                         `json:"installation_id,omitempty"`
 	HTMLURL             string                         `json:"html_url,omitempty"`
 	RepositorySelection string                         `json:"repository_selection,omitempty"`
