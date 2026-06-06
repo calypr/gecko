@@ -108,7 +108,8 @@ jobs:
           -port 8080 \
           -qdrant-api-key "your_qdrant_api_key" \
           -qdrant-host localhost \
-          -qdrant-port 6334 &
+          -qdrant-port 6334 \
+          -git-data-dir /tmp/gecko-git &
 
         # Wait for application to be ready
         echo "Waiting for application to be ready..."
