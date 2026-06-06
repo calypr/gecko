@@ -153,6 +153,49 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 	return service.fenceAPI.RequestInstallationURL(ctx, authorizationHeader, owner, redirectPath)
 }
 
+func (service *GitService) ResolveTargetAndRepositoryIDs(ctx context.Context, authorizationHeader string, organization string, project string, identity GitRepositoryIdentity) (int64, int64, error) {
+	var accessToken string
+	var err error
+	if service.fenceAPI != nil && organization != "" && project != "" && identity.Owner != "" && identity.Repo != "" {
+		accessToken, err = service.RequestInstallationToken(ctx, authorizationHeader, organization, project, identity, "read")
+		if err != nil {
+			accessToken = ""
+		}
+	}
+
+	var client *github.Client
+	if accessToken != "" {
+		client, err = service.githubClient(accessToken)
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		options := []github.ClientOptionsFunc{
+			github.WithHTTPClient(service.client),
+		}
+		if strings.TrimRight(service.config.GitHubAPIBase, "/") != "https://api.github.com" {
+			apiBase := strings.TrimRight(service.config.GitHubAPIBase, "/") + "/"
+			options = append(options, github.WithEnterpriseURLs(apiBase, apiBase))
+		}
+		client, err = github.NewClient(options...)
+		if err != nil {
+			return 0, 0, fmt.Errorf("create public github client: %w", err)
+		}
+	}
+
+	repo, _, err := client.Repositories.Get(ctx, identity.Owner, identity.Repo)
+	if err != nil {
+		return 0, 0, fmt.Errorf("github repository lookup failed for %s/%s: %w", identity.Owner, identity.Repo, err)
+	}
+
+	if repo.GetOwner() == nil {
+		return 0, 0, fmt.Errorf("github repository %s/%s has no owner details", identity.Owner, identity.Repo)
+	}
+
+	return repo.GetOwner().GetID(), repo.GetID(), nil
+}
+
+
 func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string, owner string) (GitRepositoryInstallationStatus, error) {
 	if service.fenceAPI == nil {
 		return GitRepositoryInstallationStatus{}, fmt.Errorf("fence client is not initialized")

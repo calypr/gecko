@@ -3,17 +3,20 @@ package git
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/calypr/gecko/apierror"
+	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/go-github/v87/github"
 )
 
 func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) error {
@@ -30,7 +33,9 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		return response.Write(ctx)
 	}
 	type initConnectRequest struct {
-		RedirectPath string `json:"redirect_path"`
+		RedirectPath       string `json:"redirect_path"`
+		Project            string `json:"project"`
+		RepositoryFullName string `json:"repository_full_name"`
 	}
 	requestBody := initConnectRequest{}
 	if len(ctx.Body()) > 0 {
@@ -61,6 +66,141 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+
+	if strings.TrimSpace(requestBody.RepositoryFullName) == "" {
+		response := httputil.NewError(apierror.Type("invalid_request"), "repository_full_name is required", http.StatusBadRequest, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+
+	repoURL := requestBody.RepositoryFullName
+	if !strings.HasPrefix(repoURL, "http://") && !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "git@") {
+		repoURL = "https://github.com/" + repoURL
+	}
+
+	identity, parseErr := git.ParseRepositoryIdentity(repoURL)
+	if parseErr != nil {
+		response := httputil.NewError(apierror.Type("invalid_request"), fmt.Sprintf("invalid repository_full_name %q: %s", requestBody.RepositoryFullName, parseErr), http.StatusBadRequest, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+
+	// If the organization already has the GitHub App installed, check if this repo is already allowed
+	orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, organization)
+	if orgState != nil && orgState.Installed && orgState.InstallationID.Valid {
+		allowedRepos, err := handler.gitService.ListInstallationRepositories(
+			connectCtx,
+			authorizationHeader,
+			orgState.InstallationID.Int64,
+		)
+		if err == nil {
+			repoIsAllowed := false
+			for _, r := range allowedRepos {
+				if strings.EqualFold(r.FullName, identity.Owner+"/"+identity.Repo) {
+					repoIsAllowed = true
+					break
+				}
+			}
+			if repoIsAllowed {
+				// Update project config src_repo
+				projectID := organization + "/" + requestBody.Project
+				var projectCfg appconfig.ProjectConfig
+				if getErr := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &projectCfg); getErr == nil {
+					projectCfg.SrcRepo = identity.URL
+					if putErr := geckodb.ConfigPUTGeneric(handler.db, projectID, string(appconfig.TypeProjects), &projectCfg); putErr != nil {
+						handler.logger.Warning(fmt.Sprintf("failed to update project config src_repo for %s: %v", projectID, putErr))
+					}
+				}
+
+				// Reset the git project state
+				projectState, getErr := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+				if getErr == nil && projectState != nil {
+					projectState.RepoHost = identity.Host
+					projectState.RepoOwner = identity.Owner
+					projectState.RepoName = identity.Repo
+					projectState.InstallationID = orgState.InstallationID
+					projectState.InstallationTarget = orgState.InstallationTarget
+					projectState.InstallationTargetType = orgState.InstallationTargetType
+					projectState.SyncState = git.GitSyncNeverSynced
+					projectState.LastError = sql.NullString{}
+					if upsertErr := geckodb.UpsertGitProjectState(handler.db, *projectState); upsertErr != nil {
+						handler.logger.Warning(fmt.Sprintf("failed to reset git project state for %s: %v", projectID, upsertErr))
+					}
+				}
+
+				return httputil.JSON(git.GitOrganizationConnectResponse{
+					Mode: "connected",
+				}, http.StatusOK).Write(ctx)
+			}
+		}
+	}
+
+	targetID, repoID, resolveErr := handler.gitService.ResolveTargetAndRepositoryIDs(
+		connectCtx,
+		authorizationHeader,
+		organization,
+		requestBody.Project,
+		identity,
+	)
+	if resolveErr != nil {
+		var githubErr *github.ErrorResponse
+		if errors.As(resolveErr, &githubErr) && githubErr.Response != nil {
+			if githubErr.Response.StatusCode == http.StatusNotFound {
+				response := httputil.NewError(apierror.Type("invalid_request"), fmt.Sprintf("GitHub repository %q does not exist or you do not have permission to access it", requestBody.RepositoryFullName), http.StatusBadRequest, map[string]any{"organization": organization, "repository": requestBody.RepositoryFullName}, nil)
+				response.WriteLog(handler.logger)
+				return response.Write(ctx)
+			}
+		}
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to resolve target and repository IDs: %s", resolveErr), http.StatusBadGateway, map[string]any{"organization": organization, "repository": requestBody.RepositoryFullName}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+
+	// Update the project configuration src_repo in the database
+	projectID := organization + "/" + requestBody.Project
+	var projectCfg appconfig.ProjectConfig
+	if getErr := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &projectCfg); getErr == nil {
+		projectCfg.SrcRepo = identity.URL
+		if putErr := geckodb.ConfigPUTGeneric(handler.db, projectID, string(appconfig.TypeProjects), &projectCfg); putErr != nil {
+			handler.logger.Warning(fmt.Sprintf("failed to update project config src_repo for %s: %v", projectID, putErr))
+		}
+	}
+
+	// Reset the git project state to use the new repository coordinates and clear stale installation states
+	projectState, getErr := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+	if getErr == nil && projectState != nil {
+		projectState.RepoHost = identity.Host
+		projectState.RepoOwner = identity.Owner
+		projectState.RepoName = identity.Repo
+		projectState.InstallationID = sql.NullInt64{}
+		projectState.InstallationTarget = sql.NullString{}
+		projectState.InstallationTargetType = sql.NullString{}
+		projectState.SyncState = git.GitSyncNeverSynced
+		projectState.LastError = sql.NullString{}
+		if upsertErr := geckodb.UpsertGitProjectState(handler.db, *projectState); upsertErr != nil {
+			handler.logger.Warning(fmt.Sprintf("failed to reset git project state for %s: %v", projectID, upsertErr))
+		}
+	}
+
+	hasNew := strings.Contains(redirectURL, "/installations/new")
+	hasSelectTarget := strings.Contains(redirectURL, "/installations/select_target")
+	if !hasNew && !hasSelectTarget {
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("Fence returned an unrecognized redirect URL: %s", redirectURL), http.StatusBadGateway, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+
+	if hasNew {
+		redirectURL = strings.Replace(redirectURL, "/installations/new", "/installations/new/permissions", 1)
+	} else {
+		redirectURL = strings.Replace(redirectURL, "/installations/select_target", "/installations/new/permissions", 1)
+	}
+	separator := "?"
+	if strings.Contains(redirectURL, "?") {
+		separator = "&"
+	}
+	redirectURL = fmt.Sprintf("%s%ssuggested_target_id=%d&repository_ids[]=%d", redirectURL, separator, targetID, repoID)
+
 	return httputil.JSON(git.GitOrganizationConnectResponse{
 		Mode:        "redirect",
 		RedirectURL: redirectURL,
@@ -118,6 +258,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		Repositories:   repositories,
 	}, http.StatusOK).Write(ctx)
 }
+
 
 func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	organization, project, projectID, cfg, identity, errResponse := handler.resolveGitProject(ctx)
