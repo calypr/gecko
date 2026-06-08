@@ -1,22 +1,38 @@
-FROM golang:1.24.2-alpine AS build-deps
-RUN apk add make git bash build-base libc-dev binutils-gold curl postgresql-client
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26.3-alpine3.22 AS builder
+RUN apk add --no-cache git ca-certificates tzdata
 
 ENV CGO_ENABLED=0
-ENV GOOS=linux
-ENV GOARCH=amd64
-ENV GOPATH=/go
-ENV PATH="/go/bin:${PATH}"
 
-WORKDIR $GOPATH/src/github.com/calypr/gecko/
+WORKDIR /src
 
-COPY go.mod .
-COPY go.sum .
-RUN go mod download
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 COPY . .
 
-RUN GITCOMMIT=$(git rev-parse HEAD) \
-    GITVERSION=$(git describe --always --tags) \
-    && go build \
-    -ldflags="-X 'github.com/calypr/gecko/gecko/version.GitCommit=${GITCOMMIT}' -X 'github.com/calypr/gecko/gecko/version.GitVersion=${GITVERSION}'" \
-    -o bin/gecko
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build \
+      -trimpath \
+      -ldflags="-s -w" \
+      -o /out/gecko
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S gecko && \
+    adduser -S -G gecko -h /app gecko
+
+WORKDIR /app
+
+COPY --from=builder /out/gecko /app/gecko
+COPY --from=builder /src/docs/swagger.json /app/docs/swagger.json
+
+USER gecko
+EXPOSE 8080
+ENTRYPOINT ["/app/gecko"]

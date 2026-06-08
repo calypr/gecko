@@ -6,7 +6,7 @@ brew services start postgresql
 # Wait for PostgreSQL to start (adjust sleep time if needed)
 sleep 5
 
-psql postgres <<EOF
+psql postgres <<EOFSQL
 
 ALTER USER postgres WITH PASSWORD 'your_strong_password';
 
@@ -16,14 +16,14 @@ GRANT ALL PRIVILEGES ON DATABASE testdb TO postgres;
 
 \c testdb;
 
-DO \$$ BEGIN
+DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'config_schema') THEN
         CREATE SCHEMA config_schema;
     END IF;
-END \$$;
+END $$;
 
 CREATE OR REPLACE FUNCTION create_config_table(schema_name TEXT, table_name TEXT)
-RETURNS void AS \$$
+RETURNS void AS $$
 BEGIN
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.%I (
@@ -32,11 +32,11 @@ BEGIN
         );
     ', schema_name, table_name);
 END;
-\$\$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
-DO \$$
+DO $$
 DECLARE
-    config_tables TEXT[] := ARRAY['explorer', 'nav', 'file_summary', 'apps_page'];
+    config_tables TEXT[] := ARRAY['explorer', 'nav', 'file_summary', 'project', 'projects'];
     table_name TEXT;
 BEGIN
     FOREACH table_name IN ARRAY config_tables
@@ -45,9 +45,24 @@ BEGIN
         RAISE NOTICE 'Table %.% created successfully.', 'config_schema', table_name;
     END LOOP;
 END
-\$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS config_schema.git_project_state (
+    project_id TEXT PRIMARY KEY,
+    repo_host TEXT NOT NULL,
+    repo_owner TEXT NOT NULL,
+    repo_name TEXT NOT NULL,
+    installation_id BIGINT NULL,
+    installation_target_type TEXT NULL,
+    installation_target TEXT NULL,
+    mirror_path TEXT NOT NULL,
+    sync_state TEXT NOT NULL DEFAULT 'never_synced',
+    default_branch TEXT NULL,
+    last_refreshed_at TIMESTAMPTZ NULL,
+    last_error TEXT NULL
+);
 
 DROP FUNCTION create_config_table(TEXT, TEXT);
 \q
-EOF
+EOFSQL
 echo "Database initialization complete."

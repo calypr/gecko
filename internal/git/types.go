@@ -1,0 +1,379 @@
+package git
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	appconfig "github.com/calypr/gecko/config"
+	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/integrations/fence"
+	gitapi "github.com/calypr/gecko/internal/integrations/github"
+	"github.com/jmoiron/sqlx"
+)
+
+const (
+	GitSyncNeverSynced = "never_synced"
+	GitSyncReady       = "ready"
+	GitSyncUpdating    = "updating"
+	GitSyncError       = "error"
+
+	GitInstallationNotConnected = "not_connected"
+	GitInstallationConnected    = "connected"
+)
+
+type GitServiceConfig struct {
+	DataDir       string
+	GitHubAPIBase string
+	FenceBaseURL  string
+	HTTPClient    *http.Client
+	FenceClient   *fence.Client
+	GitHubClient  *gitapi.Client
+}
+
+type GitService struct {
+	config    GitServiceConfig
+	client    *http.Client
+	fenceAPI  *fence.Client
+	githubAPI *gitapi.Client
+}
+
+// GitRepositoryIdentity is an alias for domain.GitRepositoryIdentity.
+type GitRepositoryIdentity = domain.GitRepositoryIdentity
+
+type GitProjectStatusResponse struct {
+	ProjectID                       string                  `json:"project_id"`
+	Organization                    string                  `json:"organization"`
+	Project                         string                  `json:"project"`
+	ResourcePath                    string                  `json:"resource_path"`
+	Accessible                      bool                    `json:"accessible"`
+	RequestAccess                   bool                    `json:"request_access"`
+	RequestAccessResourcePath       string                  `json:"request_access_resource_path,omitempty"`
+	Config                          appconfig.ProjectConfig `json:"config"`
+	Repository                      GitRepositoryIdentity   `json:"repository"`
+	InstallationState               string                  `json:"installation_state"`
+	InstallationID                  *int64                  `json:"installation_id,omitempty"`
+	InstallationTarget              string                  `json:"installation_target,omitempty"`
+	InstallationTargetType          string                  `json:"installation_target_type,omitempty"`
+	OrganizationAppInstalled        bool                    `json:"organization_app_installed"`
+	OrganizationHTMLURL             string                  `json:"organization_html_url,omitempty"`
+	OrganizationRepositorySelection string                  `json:"organization_repository_selection,omitempty"`
+	SyncState                       string                  `json:"sync_state"`
+	DefaultBranch                   string                  `json:"default_branch,omitempty"`
+	LastRefreshedAt                 *time.Time              `json:"last_refreshed_at,omitempty"`
+	LastError                       string                  `json:"last_error,omitempty"`
+	MirrorReady                     bool                    `json:"mirror_ready"`
+}
+
+type GitOrganizationConnectResponse struct {
+	Mode           string                         `json:"mode"`
+	RedirectURL    string                         `json:"redirect_url,omitempty"`
+	InstallationID *int64                         `json:"installation_id,omitempty"`
+	Repositories   []GitHubInstallationRepository `json:"repositories,omitempty"`
+}
+
+// GitRepositoryInstallationStatus is an alias for domain.GitRepositoryInstallationStatus.
+type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
+
+
+type ProjectIntegrationCheck struct {
+	Pass    bool   `json:"pass"`
+	Reason  string `json:"reason,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+type ProjectIntegrationStatus struct {
+	GitHub  ProjectIntegrationCheck `json:"github"`
+	Storage ProjectIntegrationCheck `json:"storage"`
+}
+
+type GitOrganizationProjectStatus struct {
+	ProjectID                 string                          `json:"project_id"`
+	Project                   string                          `json:"project"`
+	ResourcePath              string                          `json:"resource_path"`
+	Repository                GitRepositoryIdentity           `json:"repository"`
+	Configured                bool                            `json:"configured"`
+	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
+	Integrations              ProjectIntegrationStatus        `json:"integrations"`
+	Accessible                bool                            `json:"accessible"`
+	CanManageSettings         bool                            `json:"can_manage_settings"`
+	RequestAccess             bool                            `json:"request_access"`
+	RequestAccessResourcePath string                          `json:"request_access_resource_path,omitempty"`
+	Installation              GitRepositoryInstallationStatus `json:"installation"`
+}
+
+type CalyprProjectStorageIntent struct {
+	Bucket              string `json:"bucket"`
+	Provider            string `json:"provider"`
+	Endpoint            string `json:"endpoint"`
+	Region              string `json:"region"`
+	AccessKey           string `json:"access_key"`
+	SecretKey           string `json:"secret_key"`
+	Organization        string `json:"organization"`
+	ProjectID           string `json:"project_id"`
+	Path                string `json:"path,omitempty"`
+	PathPrefix          string `json:"path_prefix,omitempty"`
+	OrganizationSubPath string `json:"organization_sub_path,omitempty"`
+	ProjectSubPath      string `json:"project_sub_path,omitempty"`
+}
+
+type CalyprProjectSetupRequest struct {
+	Config  appconfig.ProjectConfig     `json:"config"`
+	Storage *CalyprProjectStorageIntent `json:"storage,omitempty"`
+}
+
+type CalyprProjectInitializeResponse struct {
+	Success      bool   `json:"success"`
+	ProjectID    string `json:"project_id"`
+	ResourcePath string `json:"resource_path"`
+}
+
+type CalyprProjectStorageRequest struct {
+	Storage *CalyprProjectStorageIntent `json:"storage"`
+}
+
+type CalyprProjectStorageResponse struct {
+	Success      bool                    `json:"success"`
+	ProjectID    string                  `json:"project_id"`
+	ResourcePath string                  `json:"resource_path"`
+	Storage      ProjectIntegrationCheck `json:"storage"`
+}
+
+type CalyprReadinessCheck struct {
+	Pass    bool   `json:"pass"`
+	Reason  string `json:"reason,omitempty"`
+	Details string `json:"details,omitempty"`
+}
+
+type CalyprProjectReadiness struct {
+	Git    CalyprReadinessCheck `json:"git"`
+	Syfon  CalyprReadinessCheck `json:"syfon"`
+	Config CalyprReadinessCheck `json:"config"`
+}
+
+type CalyprProjectSetupResponse struct {
+	ProjectID    string                 `json:"project_id"`
+	ResourcePath string                 `json:"resource_path"`
+	Configured   bool                   `json:"configured"`
+	Readiness    CalyprProjectReadiness `json:"readiness"`
+}
+
+// GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
+type GitHubInstallationRepository = domain.GitHubInstallationRepository
+
+
+
+type GitOrganizationStatusResponse struct {
+	Organization        string                         `json:"organization"`
+	Connected           bool                           `json:"connected"`
+	AppInstalled        bool                           `json:"app_installed"`
+	CanAccessSettings   bool                           `json:"can_access_settings"`
+	CanCreateProjects   bool                           `json:"can_create_projects"`
+	CanManagePeople     bool                           `json:"can_manage_people"`
+	CanDeleteOrg        bool                           `json:"can_delete_org"`
+	InstallationID      *int64                         `json:"installation_id,omitempty"`
+	HTMLURL             string                         `json:"html_url,omitempty"`
+	RepositorySelection string                         `json:"repository_selection,omitempty"`
+	ConfigurationState  string                         `json:"configuration_state"`
+	ConnectedProjects   int                            `json:"connected_projects"`
+	ConfiguredProjects  int                            `json:"configured_projects"`
+	TotalProjects       int                            `json:"total_projects"`
+	Projects            []GitOrganizationProjectStatus `json:"projects"`
+}
+
+type GitOrganizationsStatusResponse struct {
+	Connected              bool                            `json:"connected"`
+	AppInstalled           bool                            `json:"app_installed"`
+	ConnectedOrganizations int                             `json:"connected_organizations"`
+	InstalledOrganizations int                             `json:"installed_organizations"`
+	TotalOrganizations     int                             `json:"total_organizations"`
+	ConnectedProjects      int                             `json:"connected_projects"`
+	ConfiguredProjects     int                             `json:"configured_projects"`
+	TotalProjects          int                             `json:"total_projects"`
+	ConfigurationState     string                          `json:"configuration_state"`
+	Organizations          []GitOrganizationStatusResponse `json:"organizations"`
+}
+
+type GitProjectRefreshResponse struct {
+	Success        bool   `json:"success"`
+	ProjectID      string `json:"project_id"`
+	SyncState      string `json:"sync_state"`
+	DefaultBranch  string `json:"default_branch,omitempty"`
+	LastFetchedRef string `json:"last_fetched_ref,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+type GitRef struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Hash    string `json:"hash"`
+	Default bool   `json:"default"`
+}
+
+type GitProjectRefsResponse struct {
+	ProjectID     string   `json:"project_id"`
+	DefaultBranch string   `json:"default_branch,omitempty"`
+	Refs          []GitRef `json:"refs"`
+}
+
+type GitTreeEntry struct {
+	Name           string             `json:"name"`
+	Path           string             `json:"path"`
+	Type           string             `json:"type"`
+	Hash           string             `json:"hash"`
+	Size           int64              `json:"size,omitempty"`
+	LastModifiedAt *time.Time         `json:"last_modified_at,omitempty"`
+	LFSPointer     *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
+}
+
+type GitProjectTreeResponse struct {
+	ProjectID string         `json:"project_id"`
+	Ref       string         `json:"ref"`
+	Path      string         `json:"path"`
+	Entries   []GitTreeEntry `json:"entries"`
+}
+
+type GitProjectFileResponse struct {
+	ProjectID   string             `json:"project_id"`
+	Ref         string             `json:"ref"`
+	Path        string             `json:"path"`
+	Name        string             `json:"name"`
+	Hash        string             `json:"hash"`
+	Size        int64              `json:"size"`
+	HTMLURL     string             `json:"html_url,omitempty"`
+	DownloadURL string             `json:"download_url,omitempty"`
+	LFSPointer  *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
+}
+
+type GitLFSPointerInfo struct {
+	Version string `json:"version"`
+	OID     string `json:"oid"`
+	Size    int64  `json:"size"`
+}
+
+type GitUploadSessionFileManifest struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+type GitUploadSessionCreateRequest struct {
+	BaseBranch   string                         `json:"base_branch"`
+	TargetSubdir string                         `json:"target_subdirectory"`
+	Files        []GitUploadSessionFileManifest `json:"files"`
+}
+
+type GitUploadSessionFileAttachment struct {
+	FileName    string `json:"file_name"`
+	TargetPath  string `json:"target_path"`
+	Checksum    string `json:"checksum"`
+	DRSObjectID string `json:"drs_object_id"`
+	Size        int64  `json:"size"`
+}
+
+type GitUploadSessionAttachFilesRequest struct {
+	Files []GitUploadSessionFileAttachment `json:"files"`
+}
+
+type GitUploadSessionFinalizeRequest struct {
+	PRTitle string `json:"pr_title"`
+	PRBody  string `json:"pr_body"`
+}
+
+type GitUploadSessionFileStatus struct {
+	FileName    string `json:"file_name"`
+	TargetPath  string `json:"target_path"`
+	Size        int64  `json:"size"`
+	Checksum    string `json:"checksum,omitempty"`
+	DRSObjectID string `json:"drs_object_id,omitempty"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+	Collision   bool   `json:"collision"`
+}
+
+type GitUploadSessionResponse struct {
+	SessionID      string                       `json:"session_id"`
+	ProjectID      string                       `json:"project_id"`
+	BaseBranch     string                       `json:"base_branch"`
+	TargetSubdir   string                       `json:"target_subdirectory,omitempty"`
+	BranchName     string                       `json:"branch_name"`
+	PRTitle        string                       `json:"pr_title"`
+	PRBody         string                       `json:"pr_body"`
+	Status         string                       `json:"status"`
+	PullRequestURL string                       `json:"pull_request_url,omitempty"`
+	CommitSHA      string                       `json:"commit_sha,omitempty"`
+	Files          []GitUploadSessionFileStatus `json:"files"`
+	HasConflicts   bool                         `json:"has_conflicts"`
+}
+
+// GitHubRepositoryMetadata is an alias for domain.GitHubRepositoryMetadata.
+type GitHubRepositoryMetadata = domain.GitHubRepositoryMetadata
+
+
+// HTTPStatusError is an alias for domain.HTTPStatusError.
+type HTTPStatusError = domain.HTTPStatusError
+
+
+func NewGitService(config GitServiceConfig) *GitService {
+	if config.GitHubAPIBase == "" {
+		config.GitHubAPIBase = "https://api.github.com"
+	}
+	client := config.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	return &GitService{
+		config:    config,
+		client:    client,
+		fenceAPI:  config.FenceClient,
+		githubAPI: config.GitHubClient,
+	}
+}
+
+func (service *GitService) Init(db *sqlx.DB) error {
+	if strings.TrimSpace(service.config.DataDir) == "" {
+		return fmt.Errorf("git data dir is required; set GIT_DATA_DIR or --git-data-dir")
+	}
+	if err := service.EnsureDataDir(); err != nil {
+		return err
+	}
+	if db == nil {
+		return nil
+	}
+	return geckodb.EnsureGitProjectStateTable(db)
+}
+
+func ParseRepositoryIdentity(raw string) (GitRepositoryIdentity, error) {
+	normalized, err := appconfig.NormalizeProjectRepositoryURL(raw)
+	if err != nil {
+		return GitRepositoryIdentity{}, err
+	}
+	parts := strings.Split(normalized, "/")
+	if len(parts) != 3 {
+		return GitRepositoryIdentity{}, fmt.Errorf("expected normalized host/owner/repo path, got %q", normalized)
+	}
+	return GitRepositoryIdentity{
+		Host:  parts[0],
+		Owner: parts[1],
+		Repo:  parts[2],
+		URL:   fmt.Sprintf("https://%s/%s/%s", parts[0], parts[1], parts[2]),
+	}, nil
+}
+
+func sanitizePathPart(value string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
+	return replacer.Replace(value)
+}
+
+// StorageBucket is an alias for domain.StorageBucket.
+type StorageBucket = domain.StorageBucket
+
+// StorageConfig is an alias for domain.StorageConfig.
+type StorageConfig = domain.StorageConfig
+
+
+func ProgramProjectResourcePath(organization, project string) string {
+	return fmt.Sprintf("/programs/%s/projects/%s", organization, project)
+}
+

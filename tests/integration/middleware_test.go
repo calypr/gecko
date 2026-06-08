@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +10,10 @@ import (
 	"testing"
 
 	"github.com/bmeg/grip-graphql/middleware"
-	"github.com/calypr/gecko/gecko"
-	"github.com/kataras/iris/v12"
+	geckologging "github.com/calypr/gecko/internal/logging"
+	server "github.com/calypr/gecko/internal/server"
+	servermw "github.com/calypr/gecko/internal/server/middleware"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -43,383 +45,140 @@ func (m *MockJWTHandler) CheckResourceServiceAccess(token, resource, service, me
 	return false, nil
 }
 
-func setupServer() *gecko.Server {
-	return &gecko.Server{
-		Logger: &gecko.LogHandler{Logger: log.New(os.Stdout, "", log.Ldate|log.Ltime)},
+func setupServer() *server.Server {
+	return &server.Server{Logger: &geckologging.Handler{Logger: log.New(os.Stdout, "", log.Ldate|log.Ltime)}}
+}
+
+func runFiber(app *fiber.App, req *http.Request, t *testing.T) (*http.Response, string) {
+	t.Helper()
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+	if err != nil {
+		t.Fatalf("fiber test request failed: %v", err)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	return resp, string(body)
 }
 
 func TestGeneralAuthMware_NoAuthorization(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu-test")
-
-	mware(ctx)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	resp, body := runFiber(app, httptest.NewRequest(http.MethodGet, "/ohsu-test", nil), t)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Contains(t, body, "Authorization token not provided")
 }
 
 func TestGeneralAuthMware_BadProjectID(t *testing.T) {
-	mockJWT := &MockJWTHandler{AllowedResources: []string{"/programs/ohsu/projects/test"}}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/ohsu/projects/test"}}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/ohsu", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu") // missing '-'
-
-	mware(ctx)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Failed to parse request body")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, body, "Failed to parse request body")
 }
 
 func TestGeneralAuthMware_GetAllowedResourcesNonServerError(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		Err: fmt.Errorf("generic error"),
-	}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{Err: fmt.Errorf("generic error")}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/ohsu-test", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu-test")
-
-	mware(ctx)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
-	assert.Contains(t, rec.Body.String(), "expecting error to be serverError type")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, body, "expecting error to be serverError type")
 }
 
 func TestGeneralAuthMware_GetAllowedResourcesServerError(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		Err: &middleware.ServerError{
-			Message:    "token expired",
-			StatusCode: http.StatusUnauthorized,
-		},
-	}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{Err: &middleware.ServerError{Message: "token expired", StatusCode: http.StatusUnauthorized}}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/ohsu-test", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu-test")
-
-	mware(ctx)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "token expired")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Contains(t, body, "token expired")
 }
 
 type MockJWTHandlerBadAny struct{}
 
 func (m *MockJWTHandlerBadAny) GetAllowedResources(token string, method, service string) ([]any, error) {
-	return []any{123}, nil // triggers convertAnyToStringSlice error
+	return []any{123}, nil
 }
-
 func (m *MockJWTHandlerBadAny) CheckResourceServiceAccess(token, resource, service, method string) (bool, error) {
 	return true, nil
 }
 
-// Then in your test:
 func TestGeneralAuthMware_ConvertAnyToStringSliceError(t *testing.T) {
-	mockJWT := &MockJWTHandlerBadAny{}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandlerBadAny{}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/ohsu-test", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu-test")
-
-	mware(ctx)
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Element 123 is not a string")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, body, "Element 123 is not a string")
 }
 
 func TestGeneralAuthMware_ParseAccessDenied(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/other/projects/test"},
-	}
 	srv := setupServer()
-	mware := srv.GeneralAuthMware(mockJWT, "read", "*")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	app := fiber.New()
+	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/other/projects/test"}}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodGet, "/ohsu-test", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "ohsu-test")
-
-	mware(ctx)
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Contains(t, rec.Body.String(), "User is not allowed to read on resource path")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Contains(t, body, "User is not allowed to read on resource path")
 }
 
 func TestConfigAuthMiddleware_MethodNotAllowed(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
-	cfgMware := srv.ConfigAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodPatch, "/configs/cbds-XYZ?configType=explorer", nil)
+	app := fiber.New()
+	app.Use("/config/explorer/:configId", func(c fiber.Ctx) error { c.Locals("configType", "explorer"); return c.Next() })
+	app.Patch("/config/explorer/:configId", servermw.ConfigAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	req := httptest.NewRequest(http.MethodPatch, "/config/explorer/ohsu-test", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("configId", "ohsu-test")
-	ctx.Params().Set("configType", "explorer")
-
-	cfgMware(ctx)
-	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Unsupported HTTP method")
-}
-
-func TestConfigAuthMiddleware_AppsPage_PublicGET(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
-	srv := setupServer()
-	cfgMware := srv.ConfigAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/default", nil)
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("configType", "apps_page")
-	ctx.Params().Set("configId", "default")
-
-	cfgMware(ctx)
-	assert.False(t, ctx.IsStopped(), "GET for apps_page should be public")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	assert.Contains(t, body, "Unsupported HTTP method")
 }
 
 func TestConfigAuthMiddleware_Nav_PublicGET(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
-	cfgMware := srv.ConfigAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodGet, "/config/nav/default", nil)
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("configType", "nav")
-	ctx.Params().Set("configId", "default")
-
-	cfgMware(ctx)
-	assert.False(t, ctx.IsStopped(), "GET for nav should be public")
+	app := fiber.New()
+	app.Use("/config/nav/:configId", func(c fiber.Ctx) error { c.Locals("configType", "nav"); return c.Next() })
+	app.Get("/config/nav/:configId", servermw.ConfigAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	resp, _ := runFiber(app, httptest.NewRequest(http.MethodGet, "/config/nav/default", nil), t)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestBaseConfigsAuthMiddleware_NoAuthorization(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
-	mware := srv.BaseConfigsAuthMiddleware(mockJWT, "read", "*", "/programs")
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-
-	mware(ctx)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
+	app := fiber.New()
+	app.Get("/", servermw.BaseConfigsAuth(srv.Logger, &MockJWTHandler{}, "read", "*", "/programs"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	resp, body := runFiber(app, httptest.NewRequest(http.MethodGet, "/", nil), t)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Contains(t, body, "Authorization token not provided")
 }
 
 func TestBaseConfigsAuthMiddleware_InvalidJWTHandler(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
 	srv := setupServer()
-	mware := srv.BaseConfigsAuthMiddleware(mockJWT, "read", "*", "/programs")
-
+	app := fiber.New()
+	app.Get("/", servermw.BaseConfigsAuth(srv.Logger, &MockJWTHandler{}, "read", "*", "/programs"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-
-	mware(ctx)
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Invalid JWT handler configuration")
+	resp, body := runFiber(app, req, t)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Contains(t, body, "Invalid JWT handler configuration")
 }
 
-// TestAppCardAuthMiddleware_NoAuthorization
-func TestAppCardAuthMiddleware_NoAuthorization(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
+func TestConfigAuthMiddleware_Project_PublicGET(t *testing.T) {
 	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT") // would be set by path in real route
-
-	mware(ctx)
-
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Authorization token not provided")
-}
-
-// TestAppCardAuthMiddleware_GET_Success
-func TestAppCardAuthMiddleware_GET_Success(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
-	}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT")
-
-	mware(ctx)
-
-	assert.False(t, ctx.IsStopped(), "Middleware should allow request to continue")
-	assert.Equal(t, http.StatusOK, rec.Code) // Middleware let it through, handler (default) returns 200
-}
-
-// TestAppCardAuthMiddleware_GET_Denied
-func TestAppCardAuthMiddleware_GET_Denied(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/other/projects/wrong"},
-	}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodGet, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT")
-
-	mware(ctx)
-
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Contains(t, rec.Body.String(), "User is not allowed to read on resource path")
-}
-
-// TestAppCardAuthMiddleware_POST_MissingPermsInBody
-func TestAppCardAuthMiddleware_POST_MissingPermsInBody(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	body := `{"title": "Test", "description": "desc", "icon": "/icon.svg", "href": "/link"}` // missing perms
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-
-	mware(ctx)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Missing or empty projectId")
-}
-
-// TestAppCardAuthMiddleware_POST_Success
-func TestAppCardAuthMiddleware_POST_Success(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
-	}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	body := `{
-		"title": "Explore TEST",
-		"description": "Explore data",
-		"icon": "/icons/binoculars.svg",
-		"href": "/Explorer/TEST-PROJECT",
-		"perms": "TEST-PROJECT"
-	}`
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT")
-
-	mware(ctx)
-
-	assert.False(t, ctx.IsStopped())
-	assert.Equal(t, http.StatusOK, rec.Code) // Middleware let it through, handler (default) returns 200
-}
-
-// TestAppCardAuthMiddleware_POST_Denied
-func TestAppCardAuthMiddleware_POST_Denied(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/other/projects/wrong"},
-	}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	body := `{
-		"title": "Explore TEST",
-		"perms": "TEST-PROJECT"
-	}`
-	req := httptest.NewRequest(http.MethodPost, "/config/apps_page/appcard", bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer dummy")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT")
-
-	mware(ctx)
-
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Contains(t, rec.Body.String(), "User is not allowed to create on resource path")
-}
-
-// TestAppCardAuthMiddleware_DELETE_Success
-func TestAppCardAuthMiddleware_DELETE_Success(t *testing.T) {
-	mockJWT := &MockJWTHandler{
-		AllowedResources: []string{"/programs/TEST/projects/PROJECT"},
-	}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodDelete, "/config/apps_page/appcard/TEST-PROJECT", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-	ctx.Params().Set("projectId", "TEST-PROJECT")
-
-	mware(ctx)
-
-	assert.False(t, ctx.IsStopped())
-}
-
-// TestAppCardAuthMiddleware_UnsupportedMethod
-func TestAppCardAuthMiddleware_UnsupportedMethod(t *testing.T) {
-	mockJWT := &MockJWTHandler{}
-	srv := setupServer()
-	mware := srv.AppCardAuthMiddleware(mockJWT)
-
-	req := httptest.NewRequest(http.MethodPatch, "/config/apps_page/appcard/something", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	rec := httptest.NewRecorder()
-	app := iris.New()
-	ctx := app.ContextPool.Acquire(rec, req)
-
-	mware(ctx)
-
-	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Unsupported HTTP method")
+	app := fiber.New()
+	app.Use("/config/project/:configId", func(c fiber.Ctx) error { c.Locals("configType", "project"); return c.Next() })
+	app.Get("/config/project/:configId", servermw.ConfigAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	resp, _ := runFiber(app, httptest.NewRequest(http.MethodGet, "/config/project/default", nil), t)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

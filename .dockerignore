@@ -1,0 +1,17 @@
+.git
+.github
+bin
+coverage.out
+node_modules
+.tmp
+.vscode
+.idea
+.DS_Store
+README.md
+.codex
+.gocache
+.gomodcache
+dist
+tmp
+*_test.go
+tests

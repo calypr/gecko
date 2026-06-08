@@ -19,7 +19,8 @@ func makeRequest(method, url string, payload []byte) *http.Request {
 }
 
 func TestHealthCheck(t *testing.T) {
-	resp, err := http.DefaultClient.Do(makeRequest("GET", "http://localhost:8080/health", nil))
+	baseURL := requireIntegrationServer(t)
+	resp, err := http.DefaultClient.Do(makeRequest("GET", baseURL+"/health", nil))
 	assert.NoError(t, err)
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
