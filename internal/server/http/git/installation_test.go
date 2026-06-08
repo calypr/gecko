@@ -199,6 +199,69 @@ func TestGitOrganizationInitConnectFallsBackToPlainRedirectWhenRepositoryLookupF
 	}
 }
 
+func TestGitOrganizationInitConnectFallsBackToOwnerTargetWhenRepositoryLookupFails(t *testing.T) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"install_url": "https://github.com/apps/calypr-github/installations/select_target?state=%2Fgit%2FTEST",
+		})
+	}))
+	defer fenceServer.Close()
+
+	githubTransport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch {
+		case request.URL.Host == "api.github.com" && request.URL.Path == "/repos/EllrottLab/git_drs_test":
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"message":"Not Found"}`)),
+			}, nil
+		case request.URL.Host == "api.github.com" && request.URL.Path == "/orgs/EllrottLab":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":123}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected github request: %s %s", request.Method, request.URL.String())
+			return nil, nil
+		}
+	})
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, githubTransport)
+	defer cleanup()
+
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/init-connect", handler.handleGitOrganizationInitConnectPOST)
+	body := bytes.NewBufferString(`{"repository_full_name":"EllrottLab/git_drs_test"}`)
+	req := httptest.NewRequest(http.MethodPost, "/git/organizations/TEST/init-connect", body)
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
+	}
+	var payload gitservice.GitOrganizationConnectResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(payload.RedirectURL, "/installations/new/permissions") {
+		t.Fatalf("expected permissions redirect, got %q", payload.RedirectURL)
+	}
+	if !strings.Contains(payload.RedirectURL, "suggested_target_id=123") {
+		t.Fatalf("expected owner-target redirect optimization, got %q", payload.RedirectURL)
+	}
+	if strings.Contains(payload.RedirectURL, "repository_ids[]=") {
+		t.Fatalf("did not expect repository preselection when repo lookup fails, got %q", payload.RedirectURL)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 	var receivedBody map[string]any
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

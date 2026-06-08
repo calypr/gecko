@@ -76,8 +76,14 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		targetID, repoID, resolveErr := handler.gitService.ResolveTargetAndRepositoryIDs(connectCtx, identity)
 		if resolveErr != nil {
 			handler.logger.Warning(fmt.Sprintf("skipping GitHub install redirect optimization for %s/%s: %v", identity.Owner, identity.Repo, resolveErr))
+			targetID, targetErr := handler.gitService.ResolveTargetID(connectCtx, identity.Owner)
+			if targetErr != nil {
+				handler.logger.Warning(fmt.Sprintf("skipping GitHub owner-target redirect optimization for %s: %v", identity.Owner, targetErr))
+			} else {
+				redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, nil)
+			}
 		} else {
-			redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, repoID)
+			redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, &repoID)
 		}
 	}
 
@@ -237,7 +243,7 @@ func parseRequestedRepositoryIdentity(repositoryFullName string) (git.GitReposit
 	return git.ParseRepositoryIdentity(repoURL)
 }
 
-func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID int64) string {
+func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID *int64) string {
 	hasNew := strings.Contains(redirectURL, "/installations/new")
 	hasSelectTarget := strings.Contains(redirectURL, "/installations/select_target")
 	if !hasNew && !hasSelectTarget {
@@ -252,7 +258,11 @@ func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID 
 	if strings.Contains(redirectURL, "?") {
 		separator = "&"
 	}
-	return fmt.Sprintf("%s%ssuggested_target_id=%d&repository_ids[]=%d", redirectURL, separator, targetID, repoID)
+	redirectURL = fmt.Sprintf("%s%ssuggested_target_id=%d", redirectURL, separator, targetID)
+	if repoID == nil {
+		return redirectURL
+	}
+	return fmt.Sprintf("%s&repository_ids[]=%d", redirectURL, *repoID)
 }
 
 func (handler *Handler) loadProjectConfig(ctx context.Context, projectID string) (appconfig.ProjectConfig, *httputil.ErrorResponse) {

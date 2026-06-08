@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,16 +155,9 @@ func (service *GitService) RequestInstallationURL(ctx context.Context, authoriza
 }
 
 func (service *GitService) ResolveTargetAndRepositoryIDs(ctx context.Context, identity GitRepositoryIdentity) (int64, int64, error) {
-	options := []github.ClientOptionsFunc{
-		github.WithHTTPClient(service.client),
-	}
-	if strings.TrimRight(service.config.GitHubAPIBase, "/") != "https://api.github.com" {
-		apiBase := strings.TrimRight(service.config.GitHubAPIBase, "/") + "/"
-		options = append(options, github.WithEnterpriseURLs(apiBase, apiBase))
-	}
-	client, err := github.NewClient(options...)
+	client, err := service.publicGitHubClient()
 	if err != nil {
-		return 0, 0, fmt.Errorf("create public github client: %w", err)
+		return 0, 0, err
 	}
 
 	repo, _, err := client.Repositories.Get(ctx, identity.Owner, identity.Repo)
@@ -176,6 +170,42 @@ func (service *GitService) ResolveTargetAndRepositoryIDs(ctx context.Context, id
 	}
 
 	return repo.GetOwner().GetID(), repo.GetID(), nil
+}
+
+func (service *GitService) ResolveTargetID(ctx context.Context, owner string) (int64, error) {
+	client, err := service.publicGitHubClient()
+	if err != nil {
+		return 0, err
+	}
+
+	organization, organizationResponse, organizationErr := client.Organizations.Get(ctx, owner)
+	if organizationErr == nil && organization != nil {
+		return organization.GetID(), nil
+	}
+	if organizationResponse != nil && organizationResponse.StatusCode != http.StatusNotFound {
+		return 0, fmt.Errorf("github organization lookup failed for %s: %w", owner, organizationErr)
+	}
+
+	user, _, userErr := client.Users.Get(ctx, owner)
+	if userErr != nil {
+		return 0, fmt.Errorf("github owner lookup failed for %s: %w", owner, userErr)
+	}
+	return user.GetID(), nil
+}
+
+func (service *GitService) publicGitHubClient() (*github.Client, error) {
+	options := []github.ClientOptionsFunc{
+		github.WithHTTPClient(service.client),
+	}
+	if strings.TrimRight(service.config.GitHubAPIBase, "/") != "https://api.github.com" {
+		apiBase := strings.TrimRight(service.config.GitHubAPIBase, "/") + "/"
+		options = append(options, github.WithEnterpriseURLs(apiBase, apiBase))
+	}
+	client, err := github.NewClient(options...)
+	if err != nil {
+		return nil, fmt.Errorf("create public github client: %w", err)
+	}
+	return client, nil
 }
 
 func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Context, authorizationHeader string, organization string, owner string) (GitRepositoryInstallationStatus, error) {
