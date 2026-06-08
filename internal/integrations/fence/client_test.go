@@ -65,6 +65,31 @@ func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStat
 	}
 }
 
+func TestRequestOrganizationInstallationStatusStripsEmptyRepositoryIDsFromHTMLURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installed":            true,
+			"organization":         "EllrottLab",
+			"installation_id":      42,
+			"target":               "EllrottLab",
+			"target_type":          "Organization",
+			"html_url":             "https://github.com/organizations/EllrottLab/settings/installations/42?repository_ids=",
+			"repository_selection": "selected",
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.Client(), Config{BaseURL: server.URL})
+	status, err := client.RequestOrganizationInstallationStatus(context.Background(), "Bearer user-token", "TEST", "EllrottLab")
+	if err != nil {
+		t.Fatalf("request organization installation status: %v", err)
+	}
+	if status.HTMLURL != "https://github.com/organizations/EllrottLab/settings/installations/42" {
+		t.Fatalf("unexpected html url: %q", status.HTMLURL)
+	}
+}
+
 func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
 	var receivedAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

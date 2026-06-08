@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/calypr/gecko/internal/git/domain"
@@ -161,7 +162,7 @@ func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, auth
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
+		HTMLURL:             normalizeInstallationHTMLURL(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
 }
@@ -192,9 +193,38 @@ func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHea
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
+		HTMLURL:             normalizeInstallationHTMLURL(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
+}
+
+func normalizeInstallationHTMLURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	values := parsed.Query()
+	repositoryIDs, hasRepositoryIDs := values["repository_ids"]
+	if !hasRepositoryIDs {
+		return trimmed
+	}
+	hasNonEmptyRepositoryID := false
+	for _, repositoryID := range repositoryIDs {
+		if strings.TrimSpace(repositoryID) != "" {
+			hasNonEmptyRepositoryID = true
+			break
+		}
+	}
+	if hasNonEmptyRepositoryID {
+		return trimmed
+	}
+	values.Del("repository_ids")
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
 }
 
 func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
