@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/calypr/gecko/internal/git/domain"
-	"github.com/calypr/gecko/internal/giturl"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
@@ -162,7 +161,7 @@ func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, auth
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             giturl.NormalizeInstallationHTMLURL(payload.HTMLURL),
+		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
 }
@@ -193,7 +192,7 @@ func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHea
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             giturl.NormalizeInstallationHTMLURL(payload.HTMLURL),
+		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
 }

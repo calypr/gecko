@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/calypr/gecko/internal/giturl"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -26,7 +25,6 @@ func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB,
 		}
 		return nil, err
 	}
-	normalizeGitOrganizationStateHTMLURL(&state)
 	return &state, nil
 }
 
@@ -34,7 +32,6 @@ func UpsertGitOrganizationState(db *sqlx.DB, state GitOrganizationState) error {
 	if db == nil {
 		return nil
 	}
-	normalizeGitOrganizationStateHTMLURL(&state)
 	_, err := db.NamedExec(`
 		INSERT INTO config_schema.git_organization_state (
 			organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error
@@ -69,20 +66,7 @@ func ListGitOrganizationStates(db *sqlx.DB) (map[string]GitOrganizationState, er
 	}
 	indexed := make(map[string]GitOrganizationState, len(states))
 	for _, state := range states {
-		normalizeGitOrganizationStateHTMLURL(&state)
 		indexed[state.Organization] = state
 	}
 	return indexed, nil
-}
-
-func normalizeGitOrganizationStateHTMLURL(state *GitOrganizationState) {
-	if state == nil || !state.HTMLURL.Valid {
-		return
-	}
-	normalized := giturl.NormalizeInstallationHTMLURL(state.HTMLURL.String)
-	if normalized == "" {
-		state.HTMLURL = sql.NullString{}
-		return
-	}
-	state.HTMLURL = sql.NullString{String: normalized, Valid: true}
 }

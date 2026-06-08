@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,27 +169,6 @@ func (service *GitService) ResolveTargetAndRepositoryIDs(ctx context.Context, id
 	}
 
 	return repo.GetOwner().GetID(), repo.GetID(), nil
-}
-
-func (service *GitService) ResolveTargetID(ctx context.Context, owner string) (int64, error) {
-	client, err := service.publicGitHubClient()
-	if err != nil {
-		return 0, err
-	}
-
-	organization, organizationResponse, organizationErr := client.Organizations.Get(ctx, owner)
-	if organizationErr == nil && organization != nil {
-		return organization.GetID(), nil
-	}
-	if organizationResponse != nil && organizationResponse.StatusCode != http.StatusNotFound {
-		return 0, fmt.Errorf("github organization lookup failed for %s: %w", owner, organizationErr)
-	}
-
-	user, _, userErr := client.Users.Get(ctx, owner)
-	if userErr != nil {
-		return 0, fmt.Errorf("github owner lookup failed for %s: %w", owner, userErr)
-	}
-	return user.GetID(), nil
 }
 
 func (service *GitService) publicGitHubClient() (*github.Client, error) {

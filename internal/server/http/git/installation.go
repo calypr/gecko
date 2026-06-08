@@ -76,14 +76,11 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		targetID, repoID, resolveErr := handler.gitService.ResolveTargetAndRepositoryIDs(connectCtx, identity)
 		if resolveErr != nil {
 			handler.logger.Warning(fmt.Sprintf("skipping GitHub install redirect optimization for %s/%s: %v", identity.Owner, identity.Repo, resolveErr))
-			targetID, targetErr := handler.gitService.ResolveTargetID(connectCtx, identity.Owner)
-			if targetErr != nil {
-				handler.logger.Warning(fmt.Sprintf("skipping GitHub owner-target redirect optimization for %s: %v", identity.Owner, targetErr))
-			} else {
-				redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, nil)
+			if settingsURL, ok := handler.organizationInstallationSettingsURL(connectCtx, authorizationHeader, organization, identity.Owner); ok {
+				redirectURL = settingsURL
 			}
 		} else {
-			redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, &repoID)
+			redirectURL = decorateInstallationRedirectURL(redirectURL, targetID, repoID)
 		}
 	}
 
@@ -91,6 +88,25 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 		Mode:        "redirect",
 		RedirectURL: redirectURL,
 	}, http.StatusOK).Write(ctx)
+}
+
+func (handler *Handler) organizationInstallationSettingsURL(ctx context.Context, authorizationHeader string, organization string, owner string) (string, bool) {
+	installation, err := handler.gitService.RequestOrganizationInstallationStatus(ctx, authorizationHeader, organization, owner)
+	if err != nil {
+		handler.logger.Warning(fmt.Sprintf("failed to load GitHub organization installation for %s: %v", owner, err))
+		return "", false
+	}
+	if !installation.Installed {
+		return "", false
+	}
+	if installation.InstallationID == nil || *installation.InstallationID <= 0 {
+		return "", false
+	}
+	owner = strings.TrimSpace(owner)
+	if owner == "" {
+		return "", false
+	}
+	return fmt.Sprintf("https://github.com/organizations/%s/settings/installations/%d", owner, *installation.InstallationID), true
 }
 
 func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
@@ -243,7 +259,7 @@ func parseRequestedRepositoryIdentity(repositoryFullName string) (git.GitReposit
 	return git.ParseRepositoryIdentity(repoURL)
 }
 
-func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID *int64) string {
+func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID int64) string {
 	hasNew := strings.Contains(redirectURL, "/installations/new")
 	hasSelectTarget := strings.Contains(redirectURL, "/installations/select_target")
 	if !hasNew && !hasSelectTarget {
@@ -259,10 +275,7 @@ func decorateInstallationRedirectURL(redirectURL string, targetID int64, repoID 
 		separator = "&"
 	}
 	redirectURL = fmt.Sprintf("%s%ssuggested_target_id=%d", redirectURL, separator, targetID)
-	if repoID == nil {
-		return redirectURL
-	}
-	return fmt.Sprintf("%s&repository_ids[]=%d", redirectURL, *repoID)
+	return fmt.Sprintf("%s&repository_ids[]=%d", redirectURL, repoID)
 }
 
 func (handler *Handler) loadProjectConfig(ctx context.Context, projectID string) (appconfig.ProjectConfig, *httputil.ErrorResponse) {
