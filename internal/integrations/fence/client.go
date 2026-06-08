@@ -208,23 +208,26 @@ func normalizeInstallationHTMLURL(raw string) string {
 		return trimmed
 	}
 	values := parsed.Query()
-	repositoryIDs, hasRepositoryIDs := values["repository_ids"]
-	if !hasRepositoryIDs {
-		return trimmed
+	if !stripEmptyRepositoryIDs(values, "repository_ids") {
+		stripEmptyRepositoryIDs(values, "repository_ids[]")
 	}
-	hasNonEmptyRepositoryID := false
-	for _, repositoryID := range repositoryIDs {
-		if strings.TrimSpace(repositoryID) != "" {
-			hasNonEmptyRepositoryID = true
-			break
-		}
-	}
-	if hasNonEmptyRepositoryID {
-		return trimmed
-	}
-	values.Del("repository_ids")
 	parsed.RawQuery = values.Encode()
 	return parsed.String()
+}
+
+func stripEmptyRepositoryIDs(values url.Values, key string) bool {
+	repositoryIDs, hasRepositoryIDs := values[key]
+	if !hasRepositoryIDs {
+		return false
+	}
+	for _, repositoryID := range repositoryIDs {
+		normalizedID := strings.TrimSpace(repositoryID)
+		if normalizedID != "" && normalizedID != "[]" {
+			return true
+		}
+	}
+	values.Del(key)
+	return true
 }
 
 func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
