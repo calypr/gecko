@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/giturl"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
@@ -162,7 +162,7 @@ func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, auth
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             normalizeInstallationHTMLURL(payload.HTMLURL),
+		HTMLURL:             giturl.NormalizeInstallationHTMLURL(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
 }
@@ -193,41 +193,9 @@ func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHea
 		InstallationID:      payload.InstallationID,
 		Target:              strings.TrimSpace(payload.Target),
 		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             normalizeInstallationHTMLURL(payload.HTMLURL),
+		HTMLURL:             giturl.NormalizeInstallationHTMLURL(payload.HTMLURL),
 		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
 	}, nil
-}
-
-func normalizeInstallationHTMLURL(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return trimmed
-	}
-	values := parsed.Query()
-	if !stripEmptyRepositoryIDs(values, "repository_ids") {
-		stripEmptyRepositoryIDs(values, "repository_ids[]")
-	}
-	parsed.RawQuery = values.Encode()
-	return parsed.String()
-}
-
-func stripEmptyRepositoryIDs(values url.Values, key string) bool {
-	repositoryIDs, hasRepositoryIDs := values[key]
-	if !hasRepositoryIDs {
-		return false
-	}
-	for _, repositoryID := range repositoryIDs {
-		normalizedID := strings.TrimSpace(repositoryID)
-		if normalizedID != "" && normalizedID != "[]" {
-			return true
-		}
-	}
-	values.Del(key)
-	return true
 }
 
 func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
