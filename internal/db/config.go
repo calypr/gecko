@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -37,10 +38,17 @@ func ConfigListByType(db *sqlx.DB, configType string) ([]string, error) {
 // DocumentByIDAndTable fetches the Document struct (ID, Name, Content) by name (configId) from a specific table (configType).
 // Returns nil, nil if no rows are found.
 func DocumentByIDAndTable(db *sqlx.DB, configId string, configType string) (*Document, error) {
+	return DocumentByIDAndTableContext(context.Background(), db, configId, configType)
+}
+
+func DocumentByIDAndTableContext(ctx context.Context, db *sqlx.DB, configId string, configType string) (*Document, error) {
+	if db == nil {
+		return nil, nil
+	}
 	stmt := fmt.Sprintf("SELECT name, content FROM %s.%s WHERE name=$1", ConfigSchema, configType)
 	doc := &Document{}
 
-	err := db.Get(doc, stmt, configId)
+	err := db.GetContext(ctx, doc, stmt, configId)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil // Standard 404 case (config ID not found)
@@ -64,7 +72,11 @@ func DocumentByIDAndTable(db *sqlx.DB, configId string, configType string) (*Doc
 // ConfigGETGeneric fetches a document and unmarshals its JSON content into the 'target' struct.
 // 'target' must be a pointer to the configuration struct (e.g., *config.AppsPageConfig).
 func ConfigGETGeneric(db *sqlx.DB, configId string, configType string, target any) error {
-	doc, err := DocumentByIDAndTable(db, configId, configType)
+	return ConfigGETGenericContext(context.Background(), db, configId, configType, target)
+}
+
+func ConfigGETGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string, target any) error {
+	doc, err := DocumentByIDAndTableContext(ctx, db, configId, configType)
 	if err != nil {
 		return err
 	}
@@ -80,6 +92,28 @@ func ConfigGETGeneric(db *sqlx.DB, configId string, configType string, target an
 
 // ConfigPUTGeneric marshals 'data' (any Go struct) and performs an INSERT or UPDATE (upsert) in the specified table.
 func ConfigPUTGeneric(db *sqlx.DB, configId string, configType string, data any) error {
+	return ConfigPUTGenericContext(context.Background(), db, configId, configType, data)
+}
+
+func ConfigPUTGenericTx(tx *sqlx.Tx, configId string, configType string, data any) error {
+	return ConfigPUTGenericTxContext(context.Background(), tx, configId, configType, data)
+}
+
+func ConfigPUTGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string, data any) error {
+	if db == nil {
+		return nil
+	}
+	return configPutGenericContext(ctx, db.ExecContext, configId, configType, data)
+}
+
+func ConfigPUTGenericTxContext(ctx context.Context, tx *sqlx.Tx, configId string, configType string, data any) error {
+	if tx == nil {
+		return nil
+	}
+	return configPutGenericContext(ctx, tx.ExecContext, configId, configType, data)
+}
+
+func configPutGenericContext(ctx context.Context, execFn func(context.Context, string, ...any) (sql.Result, error), configId string, configType string, data any) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("error marshalling data for %s: %w", configId, err)
@@ -94,7 +128,7 @@ func ConfigPUTGeneric(db *sqlx.DB, configId string, configType string, data any)
 	`, ConfigSchema, configType)
 
 	// $1 is 'configId', $2 is 'jsonData'
-	_, err = db.Exec(stmt, configId, jsonData)
+	_, err = execFn(ctx, stmt, configId, jsonData)
 	if err != nil {
 		return fmt.Errorf("error executing PUT for %s in table %s: %w", configId, configType, err)
 	}

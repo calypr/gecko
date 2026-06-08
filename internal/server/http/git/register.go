@@ -34,6 +34,7 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	projectGitWrite.Put("/storage", handler.handleCalyprProjectStoragePUT)
 	projectGitWrite.Put("/thumbnail", handler.handleGitProjectThumbnailPUT)
 	projectGitWrite.Delete("/thumbnail", handler.handleGitProjectThumbnailDELETE)
+	projectGitWrite.Post("/edit-connect", handler.handleGitProjectEditConnectPOST)
 	projectGitWrite.Post("/update", handler.handleGitProjectUpdatePOST)
 	projectGitWrite.Post("/uploads/session", handler.handleGitProjectUploadSessionPOST)
 	projectGitWrite.Get("/uploads/session/:sessionID", handler.handleGitProjectUploadSessionGET)

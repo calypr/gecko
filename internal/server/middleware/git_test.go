@@ -143,11 +143,11 @@ func TestRequireAuthorizationRejectsMissingHeader(t *testing.T) {
 func TestRequireAuthorizationAllowsBearerHeader(t *testing.T) {
 	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
 	app := fiber.New()
-	app.Post("/git/projects/:orgTitle/:projectTitle/connect", RequireAuthorization(logger), func(ctx fiber.Ctx) error {
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", RequireAuthorization(logger), func(ctx fiber.Ctx) error {
 		return ctx.SendStatus(fiber.StatusOK)
 	})
 
-	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/connect", nil)
+	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/edit-connect", nil)
 	req.Header.Set("Authorization", "Bearer test")
 	resp, err := app.Test(req)
 	if err != nil {

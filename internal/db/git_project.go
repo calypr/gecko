@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -120,11 +121,15 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 }
 
 func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState, error) {
+	return GitProjectStateByProjectIDContext(context.Background(), db, projectID)
+}
+
+func GitProjectStateByProjectIDContext(ctx context.Context, db *sqlx.DB, projectID string) (*GitProjectState, error) {
 	if db == nil {
 		return nil, nil
 	}
 	var state GitProjectState
-	err := db.Get(&state, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state WHERE project_id = $1`, projectID)
+	err := db.GetContext(ctx, &state, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state WHERE project_id = $1`, projectID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -135,10 +140,29 @@ func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState
 }
 
 func UpsertGitProjectState(db *sqlx.DB, state GitProjectState) error {
+	return UpsertGitProjectStateContext(context.Background(), db, state)
+}
+
+func UpsertGitProjectStateTx(tx *sqlx.Tx, state GitProjectState) error {
+	return UpsertGitProjectStateTxContext(context.Background(), tx, state)
+}
+
+func UpsertGitProjectStateContext(ctx context.Context, db *sqlx.DB, state GitProjectState) error {
 	if db == nil {
 		return nil
 	}
-	_, err := db.NamedExec(`
+	return upsertGitProjectStateContext(ctx, db.NamedExecContext, state)
+}
+
+func UpsertGitProjectStateTxContext(ctx context.Context, tx *sqlx.Tx, state GitProjectState) error {
+	if tx == nil {
+		return nil
+	}
+	return upsertGitProjectStateContext(ctx, tx.NamedExecContext, state)
+}
+
+func upsertGitProjectStateContext(ctx context.Context, namedExecFn func(context.Context, string, any) (sql.Result, error), state GitProjectState) error {
+	_, err := namedExecFn(ctx, `
 		INSERT INTO config_schema.git_project_state (
 			project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error
 		) VALUES (

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,11 +10,15 @@ import (
 )
 
 func GitOrganizationStateByOrganization(db *sqlx.DB, organization string) (*GitOrganizationState, error) {
+	return GitOrganizationStateByOrganizationContext(context.Background(), db, organization)
+}
+
+func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB, organization string) (*GitOrganizationState, error) {
 	if db == nil {
 		return nil, nil
 	}
 	var state GitOrganizationState
-	err := db.Get(&state, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state WHERE organization = $1`, organization)
+	err := db.GetContext(ctx, &state, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state WHERE organization = $1`, organization)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
