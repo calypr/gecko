@@ -442,6 +442,68 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	}
 }
 
+func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fenceServer.Close()
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	projectCfg := appconfig.ProjectConfig{
+		Title:        "proj-a",
+		OrgTitle:     "TEST",
+		ProjectTitle: "proj-a",
+		SrcRepo:      "https://github.com/EllrottLab/git_drs_test",
+	}
+	projectContent, err := json.Marshal(projectCfg)
+	if err != nil {
+		t.Fatalf("marshal project config: %v", err)
+	}
+	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects WHERE name=\$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "content"}).AddRow("TEST/proj-a", projectContent))
+	updatedCfg := projectCfg
+	updatedCfg.SrcRepo = ""
+	updatedContent, err := json.Marshal(&updatedCfg)
+	if err != nil {
+		t.Fatalf("marshal updated project config: %v", err)
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO config_schema\.projects`).
+		WithArgs("TEST/proj-a", updatedContent).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`DELETE FROM config_schema\.git_project_state WHERE project_id = \$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", handler.handleGitProjectEditConnectPOST)
+	body := bytes.NewBufferString(`{"repository_full_name":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/git/projects/TEST/proj-a/edit-connect", body)
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
+	}
+	var payload gitservice.GitOrganizationConnectResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Mode != "disconnected" {
+		t.Fatalf("expected disconnected mode, got %+v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *testing.T) {
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.WriteHeader(http.StatusInternalServerError)

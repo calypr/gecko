@@ -179,11 +179,6 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 			return errResponse.Write(ctx)
 		}
 	}
-	if strings.TrimSpace(requestBody.RepositoryFullName) == "" {
-		response := httputil.NewError(apierror.Type("invalid_request"), "repository_full_name is required", http.StatusBadRequest, map[string]any{"organization": organization, "project": project}, nil)
-		response.WriteLog(handler.logger)
-		return response.Write(ctx)
-	}
 	projectID := organization + "/" + project
 	authorizationHeader, tokenErr := servermw.ValidateAuthorizationHeader(ctx.Get("Authorization"))
 	if tokenErr != nil {
@@ -197,6 +192,14 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
+	}
+	if strings.TrimSpace(requestBody.RepositoryFullName) == "" {
+		if err := handler.unbindProjectRepository(connectCtx, projectID, projectCfg); err != nil {
+			response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to clear project repository binding: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+		return httputil.JSON(git.GitOrganizationConnectResponse{Mode: "disconnected"}, http.StatusOK).Write(ctx)
 	}
 	orgState, errResponse := handler.loadConnectedOrganizationState(connectCtx, organization, project)
 	if errResponse != nil {
@@ -354,6 +357,29 @@ func (handler *Handler) bindProjectRepository(ctx context.Context, projectID str
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit project repository bind transaction: %w", err)
+	}
+	return nil
+}
+
+func (handler *Handler) unbindProjectRepository(ctx context.Context, projectID string, projectCfg appconfig.ProjectConfig) error {
+	projectCfg.SrcRepo = ""
+
+	tx, err := handler.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin project repository unbind transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if err := geckodb.ConfigPUTGenericTxContext(ctx, tx, projectID, string(appconfig.TypeProjects), &projectCfg); err != nil {
+		return fmt.Errorf("update project config: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM config_schema.git_project_state WHERE project_id = $1`, projectID); err != nil {
+		return fmt.Errorf("delete project git state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit project repository unbind transaction: %w", err)
 	}
 	return nil
 }
