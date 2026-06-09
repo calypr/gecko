@@ -22,6 +22,9 @@ const (
 
 	GitInstallationNotConnected = "not_connected"
 	GitInstallationConnected    = "connected"
+
+	GitWorkflowStageAwaitingGitHubConnect = "awaiting_github_connect"
+	GitWorkflowStageGitHubConnected       = "github_connected"
 )
 
 type GitServiceConfig struct {
@@ -53,6 +56,7 @@ type GitProjectStatusResponse struct {
 	RequestAccessResourcePath       string                  `json:"request_access_resource_path,omitempty"`
 	Config                          appconfig.ProjectConfig `json:"config"`
 	Repository                      GitRepositoryIdentity   `json:"repository"`
+	WorkflowStage                   string                  `json:"workflow_stage,omitempty"`
 	InstallationState               string                  `json:"installation_state"`
 	InstallationID                  *int64                  `json:"installation_id,omitempty"`
 	InstallationTarget              string                  `json:"installation_target,omitempty"`
@@ -77,7 +81,6 @@ type GitOrganizationConnectResponse struct {
 // GitRepositoryInstallationStatus is an alias for domain.GitRepositoryInstallationStatus.
 type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
 
-
 type ProjectIntegrationCheck struct {
 	Pass    bool   `json:"pass"`
 	Reason  string `json:"reason,omitempty"`
@@ -94,6 +97,7 @@ type GitOrganizationProjectStatus struct {
 	Project                   string                          `json:"project"`
 	ResourcePath              string                          `json:"resource_path"`
 	Repository                GitRepositoryIdentity           `json:"repository"`
+	WorkflowStage             string                          `json:"workflow_stage,omitempty"`
 	Configured                bool                            `json:"configured"`
 	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
 	Integrations              ProjectIntegrationStatus        `json:"integrations"`
@@ -162,8 +166,6 @@ type CalyprProjectSetupResponse struct {
 
 // GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
 type GitHubInstallationRepository = domain.GitHubInstallationRepository
-
-
 
 type GitOrganizationStatusResponse struct {
 	Organization        string                         `json:"organization"`
@@ -310,10 +312,8 @@ type GitUploadSessionResponse struct {
 // GitHubRepositoryMetadata is an alias for domain.GitHubRepositoryMetadata.
 type GitHubRepositoryMetadata = domain.GitHubRepositoryMetadata
 
-
 // HTTPStatusError is an alias for domain.HTTPStatusError.
 type HTTPStatusError = domain.HTTPStatusError
-
 
 func NewGitService(config GitServiceConfig) *GitService {
 	if config.GitHubAPIBase == "" {
@@ -372,8 +372,6 @@ type StorageBucket = domain.StorageBucket
 // StorageConfig is an alias for domain.StorageConfig.
 type StorageConfig = domain.StorageConfig
 
-
 func ProgramProjectResourcePath(organization, project string) string {
 	return fmt.Sprintf("/programs/%s/projects/%s", organization, project)
 }
-

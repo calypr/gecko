@@ -66,6 +66,14 @@ func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string
 		response.WriteLog(handler.logger)
 		return "", "", "", appconfig.ProjectConfig{}, git.GitRepositoryIdentity{}, response
 	}
+	if strings.TrimSpace(cfg.SrcRepo) == "" {
+		response := httputil.NewError("conflict", fmt.Sprintf("GitHub connection has not been completed for %s", projectID), http.StatusConflict, map[string]any{
+			"project_id":     projectID,
+			"workflow_stage": git.GitWorkflowStageAwaitingGitHubConnect,
+		}, nil)
+		response.WriteLog(handler.logger)
+		return "", "", "", appconfig.ProjectConfig{}, git.GitRepositoryIdentity{}, response
+	}
 	identity, err := git.ParseRepositoryIdentity(cfg.SrcRepo)
 	if err != nil {
 		response := httputil.NewError("validation_failed", fmt.Sprintf("invalid src_repo for %s: %s", projectID, err), http.StatusBadRequest, map[string]any{"project_id": projectID, "src_repo": cfg.SrcRepo}, nil)

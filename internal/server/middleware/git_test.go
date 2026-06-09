@@ -158,6 +158,114 @@ func TestRequireAuthorizationAllowsBearerHeader(t *testing.T) {
 	}
 }
 
+func TestGitProjectMutationAuthAllowsExactProjectResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", GitProjectMutationAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a/projects/proj-a"}}, "update"), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/edit-connect", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectMutationAuthRejectsDifferentProjectResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", GitProjectMutationAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a/projects/other"}}, "update"), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/edit-connect", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectMutationAuthAllowsAdminWildcardResource(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", GitProjectMutationAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"*"}}, "update"), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("POST", "/git/projects/org-a/proj-a/edit-connect", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectSetupAuthAllowsOrgProjectCreate(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Put("/git/projects/:orgTitle/:projectTitle/setup", GitProjectSetupAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a/projects"}}), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("PUT", "/git/projects/org-a/proj-a/setup", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectSetupAuthAllowsOrgManageOwners(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Put("/git/projects/:orgTitle/:projectTitle/setup", GitProjectSetupAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/org-a"}}), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("PUT", "/git/projects/org-a/proj-a/setup", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGitProjectSetupAuthRejectsMissingProjectAndOrgAccess(t *testing.T) {
+	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
+	app := fiber.New()
+	app.Put("/git/projects/:orgTitle/:projectTitle/setup", GitProjectSetupAuth(logger, fakeJWTAllowedResourceHandler{resources: []any{"/programs/other"}}), func(ctx fiber.Ctx) error {
+		return ctx.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest("PUT", "/git/projects/org-a/proj-a/setup", nil)
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected app.Test error: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
 func TestParseResourceAccessSnapshotPrefersAuthzBlock(t *testing.T) {
 	snapshot, err := parseResourceAccessSnapshot(map[string]any{
 		"authz": map[string]any{

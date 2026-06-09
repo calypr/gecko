@@ -75,6 +75,10 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 }
 
 func (service *GitService) StatusFromState(projectID string, organization string, project string, cfg appconfig.ProjectConfig, identity GitRepositoryIdentity, state *geckodb.GitProjectState, orgState *geckodb.GitOrganizationState) GitProjectStatusResponse {
+	workflowStage := ""
+	if strings.TrimSpace(cfg.SrcRepo) == "" {
+		workflowStage = GitWorkflowStageAwaitingGitHubConnect
+	}
 	response := GitProjectStatusResponse{
 		ProjectID:                 projectID,
 		Organization:              organization,
@@ -83,6 +87,7 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		RequestAccessResourcePath: ProgramProjectResourcePath(organization, project),
 		Config:                    cfg,
 		Repository:                identity,
+		WorkflowStage:             workflowStage,
 		InstallationState:         GitInstallationNotConnected,
 		SyncState:                 GitSyncNeverSynced,
 	}
@@ -96,10 +101,15 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		}
 	}
 	if state == nil {
+		if response.WorkflowStage == "" && response.OrganizationAppInstalled && response.OrganizationRepositorySelection == "all" {
+			response.WorkflowStage = GitWorkflowStageGitHubConnected
+			response.InstallationState = GitInstallationConnected
+		}
 		return response
 	}
 	if state.InstallationID.Valid || state.InstallationTarget.Valid {
 		response.InstallationState = GitInstallationConnected
+		response.WorkflowStage = GitWorkflowStageGitHubConnected
 	}
 	if state.InstallationID.Valid {
 		installationID := state.InstallationID.Int64

@@ -441,3 +441,59 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
+
+func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *testing.T) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fenceServer.Close()
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	projectCfg := appconfig.ProjectConfig{
+		Title:        "proj-a",
+		OrgTitle:     "TEST",
+		ProjectTitle: "proj-a",
+		Description:  "setup only",
+		ContactEmail: "test@example.org",
+		SrcRepo:      "",
+	}
+	projectContent, err := json.Marshal(projectCfg)
+	if err != nil {
+		t.Fatalf("marshal project config: %v", err)
+	}
+	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects WHERE name=\$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "content"}).AddRow("TEST/proj-a", projectContent))
+
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/update", handler.handleGitProjectUpdatePOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/projects/TEST/proj-a/update", nil)
+	req.Header.Set("Authorization", "Bearer test")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)
+	}
+	var payload struct {
+		Error struct {
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(payload.Error.Message, "GitHub connection has not been completed") {
+		t.Fatalf("unexpected error message: %q", payload.Error.Message)
+	}
+	if got := payload.Error.Details["workflow_stage"]; got != gitservice.GitWorkflowStageAwaitingGitHubConnect {
+		t.Fatalf("expected workflow stage %q, got %#v", gitservice.GitWorkflowStageAwaitingGitHubConnect, got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
