@@ -1,4 +1,4 @@
-Grounded in PR #4: Gecko now asks Fence for GitHub installation tokens and stores only repository/installation/sync state, not GitHub private keys or tokens.   
+> Grounded in PR #4: Gecko now asks Fence for GitHub installation tokens and stores only repository/installation/sync state, not GitHub private keys or tokens.
 
 # Gecko GitHub Key and Token Architecture
 
@@ -90,7 +90,7 @@ sequenceDiagram
     G->>A: Check user access to /programs/{org}/projects/{project}
     A-->>G: Allowed / denied
 
-    G->>F: POST /credentials/github<br/>action=request_installation_token<br/>org, project, repo, access=read/write
+    G->>F: POST /credentials/github<br/>action=installation_token<br/>organization, project, owner, repo, access=read/write
     F->>GH: Authenticate as GitHub App
     F->>GH: Request installation access token
     GH-->>F: Short-lived installation token
@@ -236,7 +236,7 @@ Gecko should not persist:
 
 The only durable GitHub-related values Gecko should store are identifiers and derived state such as installation ID, repository identity, mirror path, default branch, sync status, commit SHA, and PR URL.
 
-## Security Model
+## Security Model (High-level)
 
 ```mermaid
 flowchart TD
@@ -264,9 +264,7 @@ Authorization and GitHub access are separate concerns:
 * Fence decides whether that authorized caller may receive GitHub installation access.
 * GitHub installation permissions decide what repository actions the token can perform.
 
-Replace the **Security Model** section with this expanded version:
-
-## Security Model
+## Security Model (Expanded)
 
 ```mermaid
 sequenceDiagram
@@ -286,7 +284,7 @@ sequenceDiagram
     alt User is not authorized
         G-->>U: 403 Forbidden
     else User is authorized
-        G->>F: POST /credentials/github<br/>action=request_installation_token<br/>organization, project, repo, access=read/write
+        G->>F: POST /credentials/github<br/>action=installation_token<br/>organization, project, owner, repo, access=read/write
         F->>GH: Authenticate as GitHub App<br/>using GitHub App private key
         F->>GH: POST /app/installations/{installation_id}/access_tokens
         GH-->>F: Short-lived installation access token
