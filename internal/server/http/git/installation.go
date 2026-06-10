@@ -124,6 +124,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	}
 	type connectRequest struct {
 		InstallationID *int64 `json:"installation_id"`
+		GitHubOwner    string `json:"github_owner"`
 	}
 	requestBody := connectRequest{}
 	if len(ctx.Body()) > 0 {
@@ -137,11 +138,19 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	githubOwner := strings.TrimSpace(requestBody.GitHubOwner)
+	if githubOwner == "" {
+		response := httputil.NewError(apierror.Type("invalid_request"), "github_owner is required", http.StatusBadRequest, map[string]any{"organization": organization}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	repositories, err := handler.gitService.ListInstallationRepositories(
 		connectCtx,
 		authorizationHeader,
+		organization,
+		githubOwner,
 		*requestBody.InstallationID,
 	)
 	if err != nil {
@@ -206,7 +215,11 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	repositories, errResponse := handler.listConnectedInstallationRepositories(connectCtx, authorizationHeader, organization, project, orgState.InstallationID.Int64)
+	owner := organization
+	if orgState.InstallationTarget.Valid {
+		owner = strings.TrimSpace(orgState.InstallationTarget.String)
+	}
+	repositories, errResponse := handler.listConnectedInstallationRepositories(connectCtx, authorizationHeader, organization, project, owner, orgState.InstallationID.Int64)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -307,8 +320,8 @@ func (handler *Handler) loadConnectedOrganizationState(ctx context.Context, orga
 	return orgState, nil
 }
 
-func (handler *Handler) listConnectedInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, project string, installationID int64) ([]git.GitHubInstallationRepository, *httputil.ErrorResponse) {
-	repositories, err := handler.gitService.ListInstallationRepositories(ctx, authorizationHeader, installationID)
+func (handler *Handler) listConnectedInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, project string, owner string, installationID int64) ([]git.GitHubInstallationRepository, *httputil.ErrorResponse) {
+	repositories, err := handler.gitService.ListInstallationRepositories(ctx, authorizationHeader, organization, owner, installationID)
 	if err != nil {
 		if statusErr, ok := err.(*git.HTTPStatusError); ok {
 			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "project": project, "installation_id": installationID}, nil)

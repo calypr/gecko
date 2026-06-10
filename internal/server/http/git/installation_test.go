@@ -337,10 +337,16 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
 	}
-	if receivedBody["action"] != "installation_repositories" {
-		t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
-	}
-	var payload gitservice.GitOrganizationConnectResponse
+		if receivedBody["action"] != "installation_repositories" {
+			t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
+		}
+		if receivedBody["organization"] != "TEST" {
+			t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
+		}
+		if receivedBody["owner"] != "EllrottLab" {
+			t.Fatalf("expected owner in fence request body, got %#v", receivedBody)
+		}
+		var payload gitservice.GitOrganizationConnectResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -349,6 +355,67 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGitOrganizationConnectRequiresGitHubOwner(t *testing.T) {
+	handler, _, cleanup := newGitHandlerTestServer(t, nil, nil)
+	defer cleanup()
+
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", handler.handleGitOrganizationConnectPOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/organizations/TEST/connect", bytes.NewBufferString(`{"installation_id":42}`))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, payload)
+	}
+}
+
+func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
+	var receivedBody map[string]any
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode fence request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installation_id": 42,
+			"repositories": []map[string]any{{
+				"id":        101,
+				"name":      "git_drs_test",
+				"full_name": "EllrottLab/git_drs_test",
+				"html_url":  "https://github.com/EllrottLab/git_drs_test",
+				"clone_url": "https://github.com/EllrottLab/git_drs_test.git",
+			}},
+		})
+	}))
+	defer fenceServer.Close()
+
+	handler, _, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", handler.handleGitOrganizationConnectPOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/organizations/TEST/connect", bytes.NewBufferString(`{"installation_id":42,"github_owner":"EllrottLab"}`))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
+	}
+	if receivedBody["organization"] != "TEST" {
+		t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "EllrottLab" {
+		t.Fatalf("expected github owner in fence request body, got %#v", receivedBody)
 	}
 }
 

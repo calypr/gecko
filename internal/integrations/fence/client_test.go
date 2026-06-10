@@ -139,7 +139,7 @@ func TestListInstallationRepositoriesForwardsAuthorizationAndParsesRepositories(
 	defer server.Close()
 
 	client := NewClient(server.Client(), Config{BaseURL: server.URL})
-	repositories, err := client.ListInstallationRepositories(context.Background(), "Bearer user-token", 42)
+	repositories, err := client.ListInstallationRepositories(context.Background(), "Bearer user-token", "Ellrott_Lab", "EllrottLab", 42)
 	if err != nil {
 		t.Fatalf("list installation repositories: %v", err)
 	}
@@ -151,6 +151,12 @@ func TestListInstallationRepositoriesForwardsAuthorizationAndParsesRepositories(
 	}
 	if receivedBody["installation_id"] != float64(42) {
 		t.Fatalf("expected installation id in request body, got %#v", receivedBody)
+	}
+	if receivedBody["organization"] != "Ellrott_Lab" {
+		t.Fatalf("expected organization in request body, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "EllrottLab" {
+		t.Fatalf("expected owner in request body, got %#v", receivedBody)
 	}
 	if len(repositories) != 1 {
 		t.Fatalf("expected one repository, got %+v", repositories)

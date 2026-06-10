@@ -203,11 +203,11 @@ func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Con
 	return service.fenceAPI.RequestOrganizationInstallationStatus(ctx, authorizationHeader, organization, owner)
 }
 
-func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubInstallationRepository, error) {
+func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, owner string, installationID int64) ([]GitHubInstallationRepository, error) {
 	if service.fenceAPI == nil {
 		return nil, fmt.Errorf("fence client is not initialized")
 	}
-	return service.fenceAPI.ListInstallationRepositories(ctx, authorizationHeader, installationID)
+	return service.fenceAPI.ListInstallationRepositories(ctx, authorizationHeader, organization, owner, installationID)
 }
 
 func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
