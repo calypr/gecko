@@ -146,6 +146,32 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	}
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	installation, err := handler.gitService.RequestOrganizationInstallationStatus(
+		connectCtx,
+		authorizationHeader,
+		organization,
+		githubOwner,
+	)
+	if err != nil {
+		if statusErr, ok := err.(*git.HTTPStatusError); ok {
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "github_owner": githubOwner}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to load GitHub organization installation status: %s", err), http.StatusBadGateway, map[string]any{"organization": organization, "github_owner": githubOwner}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	if !installation.Installed || installation.InstallationID == nil || *installation.InstallationID <= 0 {
+		response := httputil.NewError(apierror.Type("conflict"), "organization is not connected to the GitHub App", http.StatusConflict, map[string]any{"organization": organization, "github_owner": githubOwner}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	if err := handler.persistConnectedOrganizationState(organization, githubOwner, installation); err != nil {
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist organization git state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization, "github_owner": githubOwner}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	repositories, err := handler.gitService.ListInstallationRepositories(
 		connectCtx,
 		authorizationHeader,
@@ -168,6 +194,42 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		InstallationID: requestBody.InstallationID,
 		Repositories:   repositories,
 	}, http.StatusOK).Write(ctx)
+}
+
+func (handler *Handler) persistConnectedOrganizationState(organization string, githubOwner string, installation git.GitRepositoryInstallationStatus) error {
+	now := time.Now().UTC()
+	state := geckodb.GitOrganizationState{
+		Organization: organization,
+		Installed:    installation.Installed,
+		UpdatedAt:    now,
+		LastSeenAt:   sql.NullTime{Time: now, Valid: true},
+		ConfiguredAt: sql.NullTime{Time: now, Valid: installation.Installed},
+		LastError:    sql.NullString{},
+	}
+	if installation.InstallationID != nil && *installation.InstallationID > 0 {
+		state.InstallationID = sql.NullInt64{Int64: *installation.InstallationID, Valid: true}
+	}
+	target := strings.TrimSpace(installation.Target)
+	if target == "" {
+		target = strings.TrimSpace(githubOwner)
+	}
+	if target != "" {
+		state.InstallationTarget = sql.NullString{String: target, Valid: true}
+	}
+	targetType := strings.TrimSpace(installation.TargetType)
+	if targetType == "" && target != "" {
+		targetType = "Organization"
+	}
+	if targetType != "" {
+		state.InstallationTargetType = sql.NullString{String: targetType, Valid: true}
+	}
+	if strings.TrimSpace(installation.HTMLURL) != "" {
+		state.HTMLURL = sql.NullString{String: strings.TrimSpace(installation.HTMLURL), Valid: true}
+	}
+	if strings.TrimSpace(installation.RepositorySelection) != "" {
+		state.RepositorySelection = sql.NullString{String: strings.TrimSpace(installation.RepositorySelection), Valid: true}
+	}
+	return geckodb.UpsertGitOrganizationState(handler.db, state)
 }
 
 func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {

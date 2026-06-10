@@ -40,11 +40,17 @@ func newGitHandlerTestServer(t *testing.T, fenceServer *httptest.Server, githubT
 	if githubTransport != nil {
 		githubClient.Transport = githubTransport
 	}
+	fenceClient := http.DefaultClient
+	fenceBaseURL := ""
+	if fenceServer != nil {
+		fenceClient = fenceServer.Client()
+		fenceBaseURL = fenceServer.URL
+	}
 	gitSvc := gitservice.NewGitService(gitservice.GitServiceConfig{
 		DataDir:       t.TempDir(),
 		GitHubAPIBase: "https://api.github.com",
 		HTTPClient:    githubClient,
-		FenceClient:   intfence.NewClient(fenceServer.Client(), intfence.Config{BaseURL: fenceServer.URL}),
+		FenceClient:   intfence.NewClient(fenceClient, intfence.Config{BaseURL: fenceBaseURL}),
 	})
 	handler := &Handler{
 		Handler:    &shared.Handler{},
@@ -383,21 +389,51 @@ func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
 			t.Fatalf("decode fence request body: %v", err)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(map[string]any{
-			"installation_id": 42,
-			"repositories": []map[string]any{{
-				"id":        101,
-				"name":      "git_drs_test",
-				"full_name": "EllrottLab/git_drs_test",
-				"html_url":  "https://github.com/EllrottLab/git_drs_test",
-				"clone_url": "https://github.com/EllrottLab/git_drs_test.git",
-			}},
-		})
+		switch receivedBody["action"] {
+		case "organization_installation":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"installed":            true,
+				"installation_id":      42,
+				"target":               "EllrottLab",
+				"target_type":          "Organization",
+				"html_url":             "https://github.com/organizations/EllrottLab/settings/installations/42",
+				"repository_selection": "selected",
+			})
+		case "installation_repositories":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"installation_id": 42,
+				"repositories": []map[string]any{{
+					"id":        101,
+					"name":      "git_drs_test",
+					"full_name": "EllrottLab/git_drs_test",
+					"html_url":  "https://github.com/EllrottLab/git_drs_test",
+					"clone_url": "https://github.com/EllrottLab/git_drs_test.git",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected action: %#v", receivedBody["action"])
+		}
 	}))
 	defer fenceServer.Close()
 
-	handler, _, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
+
+	mock.ExpectExec(`INSERT INTO config_schema\.git_organization_state`).
+		WithArgs(
+			"TEST",
+			true,
+			int64(42),
+			"Organization",
+			"EllrottLab",
+			"https://github.com/organizations/EllrottLab/settings/installations/42",
+			"selected",
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sql.NullString{},
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	app := fiber.New()
 	app.Post("/git/organizations/:orgTitle/connect", handler.handleGitOrganizationConnectPOST)
@@ -416,6 +452,9 @@ func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
 	}
 	if receivedBody["owner"] != "EllrottLab" {
 		t.Fatalf("expected github owner in fence request body, got %#v", receivedBody)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
 
