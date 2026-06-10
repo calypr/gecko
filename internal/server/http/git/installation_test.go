@@ -510,7 +510,17 @@ func TestGitProjectEditConnectRejectsRepositoryOutsideInstallation(t *testing.T)
 
 func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.WriteHeader(http.StatusInternalServerError)
+		var receivedBody map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode fence request body: %v", err)
+		}
+		if receivedBody["action"] != "organization_installation" {
+			t.Fatalf("expected organization_installation action, got %#v", receivedBody["action"])
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installed": false,
+		})
 	}))
 	defer fenceServer.Close()
 

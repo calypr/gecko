@@ -272,7 +272,7 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 		}
 		return httputil.JSON(git.GitOrganizationConnectResponse{Mode: "disconnected"}, http.StatusOK).Write(ctx)
 	}
-	orgState, errResponse := handler.loadConnectedOrganizationState(connectCtx, organization, project)
+	orgState, errResponse := handler.loadOrBootstrapConnectedOrganizationState(connectCtx, authorizationHeader, organization, project, requestBody.RepositoryFullName)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -304,6 +304,40 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 	}
 
 	return httputil.JSON(git.GitOrganizationConnectResponse{Mode: "connected"}, http.StatusOK).Write(ctx)
+}
+
+func (handler *Handler) loadOrBootstrapConnectedOrganizationState(ctx context.Context, authorizationHeader string, organization string, project string, repositoryFullName string) (*geckodb.GitOrganizationState, *httputil.ErrorResponse) {
+	orgState, errResponse := handler.loadConnectedOrganizationState(ctx, organization, project)
+	if errResponse == nil {
+		return orgState, nil
+	}
+	if errResponse.Error.Code != http.StatusConflict {
+		return nil, errResponse
+	}
+
+	identity, err := parseRequestedRepositoryIdentity(repositoryFullName)
+	if err != nil {
+		response := httputil.NewError(apierror.Type("invalid_request"), fmt.Sprintf("invalid repository_full_name %q: %s", repositoryFullName, err), http.StatusBadRequest, map[string]any{"organization": organization, "project": project}, nil)
+		return nil, response
+	}
+	installation, installErr := handler.gitService.RequestOrganizationInstallationStatus(ctx, authorizationHeader, organization, identity.Owner)
+	if installErr != nil {
+		if statusErr, ok := installErr.(*git.HTTPStatusError); ok {
+			response := httputil.NewError(apierror.Type(statusErr.Code), statusErr.Message, statusErr.StatusCode, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
+			return nil, response
+		}
+		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to load GitHub organization installation status: %s", installErr), http.StatusBadGateway, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
+		return nil, response
+	}
+	if !installation.Installed || installation.InstallationID == nil || *installation.InstallationID <= 0 {
+		response := httputil.NewError(apierror.Type("conflict"), "organization is not connected to the GitHub App", http.StatusConflict, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
+		return nil, response
+	}
+	if err := handler.persistConnectedOrganizationState(organization, identity.Owner, installation); err != nil {
+		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist organization git state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
+		return nil, response
+	}
+	return handler.loadConnectedOrganizationState(ctx, organization, project)
 }
 
 func normalizeInstallationRepository(repositoryFullName string, repositories []git.GitHubInstallationRepository, organization string, project string) (git.GitRepositoryIdentity, bool, *httputil.ErrorResponse) {
