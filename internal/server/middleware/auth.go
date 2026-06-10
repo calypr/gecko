@@ -290,6 +290,11 @@ func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessH
 	}
 }
 
+// GitProjectSetupAuth is for setup-adjacent routes that operate on an existing
+// project or organization context, such as storage configuration. Do not place
+// this in front of the bootstrap /git/projects/:orgTitle/:projectTitle/setup
+// route because Arborist must decide whether the caller can create or attach to
+// missing org/project resources.
 func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		authorizationHeader := ctx.Get("Authorization")

@@ -32,7 +32,9 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/thumbnail", handler.handleGitProjectThumbnailGET)
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.Logger))
-	projectGitWrite.Put("/setup", projectSetupAuth, handler.handleCalyprProjectSetupPUT)
+	// Setup must stay auth-only so a brand-new organization can be bootstrapped
+	// before any org/project Arborist resources exist for the caller.
+	projectGitWrite.Put("/setup", handler.handleCalyprProjectSetupPUT)
 	projectGitWrite.Put("/storage", projectSetupAuth, handler.handleCalyprProjectStoragePUT)
 	projectGitWrite.Put("/thumbnail", projectWriteAuth, handler.handleGitProjectThumbnailPUT)
 	projectGitWrite.Delete("/thumbnail", projectWriteAuth, handler.handleGitProjectThumbnailDELETE)
