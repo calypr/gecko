@@ -6,7 +6,6 @@ import (
 
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/calypr/gecko/internal/server/http/config"
-	"github.com/calypr/gecko/internal/server/http/directory"
 	"github.com/calypr/gecko/internal/server/http/git"
 	"github.com/calypr/gecko/internal/server/http/health"
 	"github.com/calypr/gecko/internal/server/http/shared"
@@ -26,7 +25,6 @@ func Register(app *fiber.App, deps Dependencies) {
 	})
 
 	health.RegisterRoutes(app, handler)
-	directory.RegisterRoutes(app, handler, authzHandler)
 	config.RegisterRoutes(app, handler, authzHandler)
 	git.RegisterRoutes(app, handler, authzHandler)
 	vector.RegisterRoutes(app, handler)

@@ -23,6 +23,8 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	projectReadAuth := servermw.GitProjectAuth(handler.Logger, authzHandler)
 	projectSetupAuth := servermw.GitProjectSetupAuth(handler.Logger, authzHandler)
 	projectWriteAuth := servermw.GitProjectMutationAuth(handler.Logger, authzHandler, "update")
+	projectConfigReadAuth := servermw.ProjectConfigAuth(handler.Logger, authzHandler, "read")
+	projectConfigWriteAuth := servermw.ProjectConfigAuth(handler.Logger, authzHandler, "update")
 	gitGroup.Get("/projects/:orgTitle/:projectTitle", projectReadAuth, handler.handleGitProjectGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/refs", projectReadAuth, handler.handleGitProjectRefsGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/tree", projectReadAuth, handler.handleGitProjectTreeGET)
@@ -30,6 +32,7 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/file/*", projectReadAuth, handler.handleGitProjectFileGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/download/*", projectReadAuth, handler.handleGitProjectDownloadGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/thumbnail", handler.handleGitProjectThumbnailGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/presentationConfig", projectConfigReadAuth, handler.handleGitProjectPresentationConfigGET)
 
 	projectGitWrite := gitGroup.Group("/projects/:orgTitle/:projectTitle", servermw.RequireAuthorization(handler.Logger))
 	// Setup must stay auth-only so a brand-new organization can be bootstrapped
@@ -38,6 +41,8 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	projectGitWrite.Put("/storage", projectSetupAuth, handler.handleCalyprProjectStoragePUT)
 	projectGitWrite.Put("/thumbnail", projectWriteAuth, handler.handleGitProjectThumbnailPUT)
 	projectGitWrite.Delete("/thumbnail", projectWriteAuth, handler.handleGitProjectThumbnailDELETE)
+	projectGitWrite.Put("/presentationConfig", projectConfigWriteAuth, handler.handleGitProjectPresentationConfigPUT)
+	projectGitWrite.Post("/presentationConfig", projectConfigWriteAuth, handler.handleGitProjectPresentationConfigPUT)
 	projectGitWrite.Post("/edit-connect", projectWriteAuth, handler.handleGitProjectEditConnectPOST)
 	projectGitWrite.Post("/update", projectWriteAuth, handler.handleGitProjectUpdatePOST)
 	projectGitWrite.Post("/uploads/session", projectWriteAuth, handler.handleGitProjectUploadSessionPOST)
