@@ -2,7 +2,7 @@ package config
 
 import "testing"
 
-func TestPresentationConfigValidateSanitizesUnsafeHTML(t *testing.T) {
+func TestPresentationConfigValidateAllowsRawHTML(t *testing.T) {
 	cfg := &PresentationConfig{
 		PresentationConfig: `<div onclick="alert(1)"><script>alert(1)</script><a href="javascript:alert(1)" target="_blank">link</a><p>Hello</p></div>`,
 	}
@@ -11,18 +11,8 @@ func TestPresentationConfigValidateSanitizesUnsafeHTML(t *testing.T) {
 		t.Fatalf("validate failed: %v", err)
 	}
 
-	if cfg.PresentationConfig != `<div><a>link</a><p>Hello</p></div>` {
-		t.Fatalf("unexpected sanitized HTML: %q", cfg.PresentationConfig)
-	}
-}
-
-func TestPresentationConfigValidateRejectsMalformedHTML(t *testing.T) {
-	cfg := &PresentationConfig{
-		PresentationConfig: `<div><p>broken</div>`,
-	}
-
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected malformed HTML validation error")
+	if cfg.PresentationConfig != `<div onclick="alert(1)"><script>alert(1)</script><a href="javascript:alert(1)" target="_blank">link</a><p>Hello</p></div>` {
+		t.Fatalf("unexpected raw HTML: %q", cfg.PresentationConfig)
 	}
 }
 

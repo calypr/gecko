@@ -217,7 +217,7 @@ const docTemplate = `{
         },
         "/git/projects/{orgTitle}/{projectTitle}/presentationConfig": {
             "get": {
-                "description": "Retrieve the sanitized presentation HTML configured for a project. Returns empty content when no presentation has been configured.",
+                "description": "Retrieve the raw presentation HTML configured for a project. Returns empty content when no presentation has been configured.",
                 "produces": [
                     "application/json"
                 ],
@@ -275,7 +275,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Validate, sanitize, and persist presentation HTML for a project.",
+                "description": "Persist raw presentation HTML for a project.",
                 "consumes": [
                     "application/json"
                 ],
@@ -313,13 +313,13 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Persisted sanitized presentation configuration",
+                        "description": "Persisted presentation configuration",
                         "schema": {
                             "$ref": "#/definitions/config.PresentationConfig"
                         }
                     },
                     "400": {
-                        "description": "Invalid request body or malformed HTML",
+                        "description": "Invalid request body",
                         "schema": {
                             "$ref": "#/definitions/httputil.ErrorResponse"
                         }
@@ -351,7 +351,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Validate, sanitize, and persist presentation HTML for a project.",
+                "description": "Persist raw presentation HTML for a project.",
                 "consumes": [
                     "application/json"
                 ],
@@ -389,13 +389,13 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Persisted sanitized presentation configuration",
+                        "description": "Persisted presentation configuration",
                         "schema": {
                             "$ref": "#/definitions/config.PresentationConfig"
                         }
                     },
                     "400": {
-                        "description": "Invalid request body or malformed HTML",
+                        "description": "Invalid request body",
                         "schema": {
                             "$ref": "#/definitions/httputil.ErrorResponse"
                         }

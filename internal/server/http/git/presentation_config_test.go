@@ -115,7 +115,7 @@ func TestGitProjectPresentationConfigGETNoConfigFallsBackToEmpty(t *testing.T) {
 	}
 }
 
-func TestGitProjectPresentationConfigPUTSanitizesAndPersistsHTML(t *testing.T) {
+func TestGitProjectPresentationConfigPUTPersistsRawHTML(t *testing.T) {
 	handler, mock, cleanup := newPresentationConfigTestServer(t)
 	defer cleanup()
 	expectProjectLookup(mock, "org-a", "proj-a")
@@ -124,7 +124,7 @@ func TestGitProjectPresentationConfigPUTSanitizesAndPersistsHTML(t *testing.T) {
 		PresentationConfig: `<div onclick="bad()"><script>alert(1)</script><p>Hello</p></div>`,
 	}
 	requestBody, _ := json.Marshal(requestPayload)
-	expectedStored := `<div><p>Hello</p></div>`
+	expectedStored := `<div onclick="bad()"><script>alert(1)</script><p>Hello</p></div>`
 
 	app := newPresentationConfigApp(handler, fakePresentationAccessHandler{resources: []any{"/programs/org-a/projects/proj-a"}})
 	req := httptest.NewRequest(http.MethodPut, "/git/projects/org-a/proj-a/presentationConfig", bytes.NewReader(requestBody))
@@ -172,27 +172,6 @@ func TestGitProjectPresentationConfigPOSTUsesSameWritePath(t *testing.T) {
 	}
 	if filepath.Base(handler.presentationStore.ProjectPresentationPath("org-a", "proj-a")) != "proj-a_presentation.html" {
 		t.Fatalf("unexpected presentation filename: %q", filepath.Base(handler.presentationStore.ProjectPresentationPath("org-a", "proj-a")))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet sql expectations: %v", err)
-	}
-}
-
-func TestGitProjectPresentationConfigPUTRejectsMalformedHTML(t *testing.T) {
-	handler, mock, cleanup := newPresentationConfigTestServer(t)
-	defer cleanup()
-	expectProjectLookup(mock, "org-a", "proj-a")
-
-	requestBody := []byte(`{"presentationConfig":"<div><p>broken</div>"}`)
-	app := newPresentationConfigApp(handler, fakePresentationAccessHandler{resources: []any{"/programs/org-a/projects/proj-a"}})
-	req := httptest.NewRequest(http.MethodPut, "/git/projects/org-a/proj-a/presentationConfig", bytes.NewReader(requestBody))
-	req.Header.Set("Authorization", "Bearer test")
-	req.Header.Set("Content-Type", "application/json")
-	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", resp.StatusCode)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

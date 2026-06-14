@@ -835,7 +835,7 @@ paths:
       - Config
   /git/projects/{orgTitle}/{projectTitle}/presentationConfig:
     get:
-      description: Retrieve the sanitized presentation HTML configured for a project. Returns empty content when no presentation has been configured.
+      description: Retrieve the raw presentation HTML configured for a project. Returns empty content when no presentation has been configured.
       parameters:
       - description: Organization title
         in: path
@@ -876,7 +876,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Validate, sanitize, and persist presentation HTML for a project.
+      description: Persist raw presentation HTML for a project.
       parameters:
       - description: Organization title
         in: path
@@ -898,11 +898,11 @@ paths:
       - application/json
       responses:
         "200":
-          description: Persisted sanitized presentation configuration
+          description: Persisted presentation configuration
           schema:
             $ref: '#/definitions/config.PresentationConfig'
         "400":
-          description: Invalid request body or malformed HTML
+          description: Invalid request body
           schema:
             $ref: '#/definitions/httputil.ErrorResponse'
         "401":
@@ -927,7 +927,7 @@ paths:
     put:
       consumes:
       - application/json
-      description: Validate, sanitize, and persist presentation HTML for a project.
+      description: Persist raw presentation HTML for a project.
       parameters:
       - description: Organization title
         in: path
@@ -949,11 +949,11 @@ paths:
       - application/json
       responses:
         "200":
-          description: Persisted sanitized presentation configuration
+          description: Persisted presentation configuration
           schema:
             $ref: '#/definitions/config.PresentationConfig'
         "400":
-          description: Invalid request body or malformed HTML
+          description: Invalid request body
           schema:
             $ref: '#/definitions/httputil.ErrorResponse'
         "401":
