@@ -205,7 +205,7 @@ func TestGitOrganizationInitConnectFallsBackToPlainRedirectWhenRepositoryLookupF
 	}
 }
 
-func TestGitOrganizationInitConnectFallsBackToCleanOrgSettingsURLWhenRepositoryLookupFails(t *testing.T) {
+func TestGitOrganizationInitConnectFallsBackToAppInstallationURLWhenRepositoryLookupFails(t *testing.T) {
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var receivedBody map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
@@ -268,8 +268,8 @@ func TestGitOrganizationInitConnectFallsBackToCleanOrgSettingsURLWhenRepositoryL
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.RedirectURL != "https://github.com/organizations/EllrottLab/settings/installations/134470697" {
-		t.Fatalf("expected clean organization settings redirect when repo lookup fails, got %q", payload.RedirectURL)
+	if payload.RedirectURL != "https://github.com/apps/calypr-github/installations/134470697" {
+		t.Fatalf("expected app installation redirect when repo lookup fails, got %q", payload.RedirectURL)
 	}
 	if strings.Contains(payload.RedirectURL, "suggested_target_id=") || strings.Contains(payload.RedirectURL, "repository_ids") {
 		t.Fatalf("did not expect partial redirect optimization or empty repository_ids, got %q", payload.RedirectURL)

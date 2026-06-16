@@ -284,6 +284,26 @@ These routes cover installation status, connect flows, and organization-wide rep
 
 These expose Gecko as a repository-backed project read service, not just a config API.
 
+#### Known issue: inconsistent Git LFS classification on file detail responses
+
+As of June 15, 2026, the frontend has a defensive fix for Git LFS-backed files in the git-style file browser because some `GET /git/projects/:orgTitle/:projectTitle/file/*` responses appear to omit `lfs_pointer` even when the fetched file content is a valid Git LFS pointer.
+
+Current impact:
+
+- the Gecko contract is intended to mark LFS-backed files with `lfs_pointer`
+- some file detail responses may still look like ordinary GitHub-backed text/blob responses
+- when that happens, a naive client can show the raw GitHub LFS pointer content or link users to GitHub, which is not the desired UX
+
+Current mitigation:
+
+- the frontend now detects Git LFS pointer text directly in the fetched raw content
+- if detected, it suppresses GitHub preview/link actions and routes the user to the Syfon download flow instead
+
+Follow-up:
+
+- Gecko should be investigated later to determine why some `/file/*` responses are not consistently populated with `lfs_pointer`
+- once Gecko is made consistent, clients can treat `lfs_pointer` as the authoritative classification signal again
+
 #### Project-level Git write/workflow routes
 
 - `PUT /git/projects/:orgTitle/:projectTitle/setup`
