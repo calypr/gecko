@@ -230,11 +230,36 @@ type GitTreeEntry struct {
 	LFSPointer     *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
+type GitTreeResponseOptions struct {
+	IncludeSize         bool
+	IncludeLastModified bool
+	IncludeLFSPointer   bool
+	Limit               int
+}
+
 type GitProjectTreeResponse struct {
-	ProjectID string         `json:"project_id"`
-	Ref       string         `json:"ref"`
-	Path      string         `json:"path"`
-	Entries   []GitTreeEntry `json:"entries"`
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
+}
+
+type GitManifestResponseOptions struct {
+	Limit     int
+	Cursor    string
+	FilesOnly bool
+}
+
+type GitProjectManifestResponse struct {
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	HasMore    bool           `json:"has_more"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
 }
 
 type GitProjectFileResponse struct {

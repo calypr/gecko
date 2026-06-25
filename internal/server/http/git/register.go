@@ -29,6 +29,8 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/refs", projectReadAuth, handler.handleGitProjectRefsGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/tree", projectReadAuth, handler.handleGitProjectTreeGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/tree/*", projectReadAuth, handler.handleGitProjectTreeGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/manifest", projectReadAuth, handler.handleGitProjectManifestGET)
+	gitGroup.Get("/projects/:orgTitle/:projectTitle/manifest/*", projectReadAuth, handler.handleGitProjectManifestGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/file/*", projectReadAuth, handler.handleGitProjectFileGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/download/*", projectReadAuth, handler.handleGitProjectDownloadGET)
 	gitGroup.Get("/projects/:orgTitle/:projectTitle/thumbnail", handler.handleGitProjectThumbnailGET)

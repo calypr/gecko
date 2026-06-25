@@ -2,6 +2,8 @@ package git
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,14 +11,15 @@ import (
 	"sort"
 	"strings"
 
+	servermw "github.com/calypr/gecko/internal/server/middleware"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/go-github/v87/github"
-	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
-func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit.Repository, hash plumbing.Hash) (*GitProjectTreeResponse, error) {
+func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit.Repository, hash plumbing.Hash, options GitTreeResponseOptions) (*GitProjectTreeResponse, error) {
 	commit, err := repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("load commit for ref %s: %w", ref, err)
@@ -43,19 +46,6 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 			gitEntry.Type = "tree"
 		} else {
 			gitEntry.Type = "blob"
-			if file, err := tree.File(entry.Name); err == nil {
-				gitEntry.Size = file.Size
-				if reader, err := file.Reader(); err == nil {
-					contentBytes, readErr := io.ReadAll(io.LimitReader(reader, 2048))
-					_ = reader.Close()
-					if readErr == nil {
-						gitEntry.LFSPointer = ParseGitLFSPointer(contentBytes)
-					}
-				}
-			}
-		}
-		if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entryPath); err == nil && lastModifiedAt != nil {
-			gitEntry.LastModifiedAt = lastModifiedAt
 		}
 		entries = append(entries, gitEntry)
 	}
@@ -65,7 +55,187 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 		}
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
-	return &GitProjectTreeResponse{ProjectID: projectID, Ref: ref, Path: normalizedPath, Entries: entries}, nil
+
+	entryCount := len(entries)
+	truncated := false
+	if options.Limit > 0 && len(entries) > options.Limit {
+		entries = entries[:options.Limit]
+		truncated = true
+	}
+
+	for index := range entries {
+		entry := &entries[index]
+		if entry.Type != "blob" {
+			if options.IncludeLastModified {
+				if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entry.Path); err == nil && lastModifiedAt != nil {
+					entry.LastModifiedAt = lastModifiedAt
+				}
+			}
+			continue
+		}
+
+		needsFileOpen := options.IncludeSize || options.IncludeLFSPointer
+		if needsFileOpen {
+			if file, err := tree.File(entry.Name); err == nil {
+				if options.IncludeSize {
+					entry.Size = file.Size
+				}
+				if options.IncludeLFSPointer {
+					if reader, err := file.Reader(); err == nil {
+						contentBytes, readErr := io.ReadAll(io.LimitReader(reader, 2048))
+						_ = reader.Close()
+						if readErr == nil {
+							entry.LFSPointer = ParseGitLFSPointer(contentBytes)
+						}
+					}
+				}
+			}
+		}
+
+		if options.IncludeLastModified {
+			if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entry.Path); err == nil && lastModifiedAt != nil {
+				entry.LastModifiedAt = lastModifiedAt
+			}
+		}
+	}
+
+	return &GitProjectTreeResponse{
+		ProjectID:  projectID,
+		Ref:        ref,
+		Path:       normalizedPath,
+		EntryCount: entryCount,
+		Truncated:  truncated,
+		Entries:    entries,
+	}, nil
+}
+
+type gitManifestCursor struct {
+	Ref    string `json:"ref"`
+	Path   string `json:"path"`
+	Offset int    `json:"offset"`
+}
+
+func BuildGitManifestResponse(projectID string, ref string, path string, repo *gogit.Repository, hash plumbing.Hash, options GitManifestResponseOptions) (*GitProjectManifestResponse, error) {
+	commit, err := repo.CommitObject(hash)
+	if err != nil {
+		return nil, fmt.Errorf("load commit for ref %s: %w", ref, err)
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("load git tree for ref %s: %w", ref, err)
+	}
+	normalizedPath := strings.Trim(strings.TrimSpace(path), "/")
+	if normalizedPath != "" {
+		tree, err = tree.Tree(normalizedPath)
+		if err != nil {
+			return nil, fmt.Errorf("load git tree path %s: %w", normalizedPath, err)
+		}
+	}
+
+	offset, err := parseGitManifestCursor(options.Cursor, ref, normalizedPath)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]GitTreeEntry, 0, len(tree.Entries))
+	if err := walkGitManifestTree(normalizedPath, tree, options.FilesOnly, &entries); err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if !options.FilesOnly && entries[i].Type != entries[j].Type {
+			return entries[i].Type == "tree"
+		}
+		return entries[i].Path < entries[j].Path
+	})
+	if offset > len(entries) {
+		return nil, fmt.Errorf("invalid manifest cursor")
+	}
+
+	end := len(entries)
+	if options.Limit > 0 && offset+options.Limit < end {
+		end = offset + options.Limit
+	}
+	pageEntries := append([]GitTreeEntry(nil), entries[offset:end]...)
+	hasMore := end < len(entries)
+	nextCursor := ""
+	if hasMore {
+		nextCursor, err = encodeGitManifestCursor(ref, normalizedPath, end)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &GitProjectManifestResponse{
+		ProjectID:  projectID,
+		Ref:        ref,
+		Path:       normalizedPath,
+		EntryCount: len(pageEntries),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+		Entries:    pageEntries,
+	}, nil
+}
+
+func walkGitManifestTree(prefix string, tree *object.Tree, filesOnly bool, entries *[]GitTreeEntry) error {
+	for _, entry := range tree.Entries {
+		entryPath := entry.Name
+		if prefix != "" {
+			entryPath = prefix + "/" + entry.Name
+		}
+		entryType := "blob"
+		if entry.Mode == filemode.Dir {
+			entryType = "tree"
+		}
+		if !filesOnly || entryType == "blob" {
+			*entries = append(*entries, GitTreeEntry{
+				Name: entry.Name,
+				Path: entryPath,
+				Type: entryType,
+				Hash: entry.Hash.String(),
+			})
+		}
+		if entryType == "tree" {
+			childTree, err := tree.Tree(entry.Name)
+			if err != nil {
+				return fmt.Errorf("load nested git tree %s: %w", entryPath, err)
+			}
+			if err := walkGitManifestTree(entryPath, childTree, filesOnly, entries); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func parseGitManifestCursor(raw string, ref string, path string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid manifest cursor")
+	}
+	var payload gitManifestCursor
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return 0, fmt.Errorf("invalid manifest cursor")
+	}
+	if payload.Ref != ref || payload.Path != path || payload.Offset < 0 {
+		return 0, fmt.Errorf("invalid manifest cursor")
+	}
+	return payload.Offset, nil
+}
+
+func encodeGitManifestCursor(ref string, path string, offset int) (string, error) {
+	payload, err := json.Marshal(gitManifestCursor{
+		Ref:    ref,
+		Path:   path,
+		Offset: offset,
+	})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
 func BuildGitRefsResponse(projectID string, defaultBranch string, repo *gogit.Repository) (*GitProjectRefsResponse, error) {
