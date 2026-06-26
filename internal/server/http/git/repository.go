@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -91,10 +92,16 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 		if refName == "" {
 			refName = state.DefaultBranch.String
 		}
+		path, pathErr := decodeGitWildcardPath(ctx)
+		if pathErr != nil {
+			response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
 		return httputil.JSON(&git.GitProjectTreeResponse{
 			ProjectID:  projectID,
 			Ref:        refName,
-			Path:       strings.Trim(ctx.Params("*"), "/"),
+			Path:       path,
 			EntryCount: 0,
 			Entries:    []git.GitTreeEntry{},
 		}, http.StatusOK).Write(ctx)
@@ -105,7 +112,12 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	path := strings.Trim(ctx.Params("*"), "/")
+	path, pathErr := decodeGitWildcardPath(ctx)
+	if pathErr != nil {
+		response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	treeOptions, treeOptionErr := buildGitTreeResponseOptions(ctx)
 	if treeOptionErr != nil {
 		response := httputil.NewError("invalid_request", treeOptionErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
@@ -157,10 +169,16 @@ func (handler *Handler) handleGitProjectManifestGET(ctx fiber.Ctx) error {
 		if refName == "" {
 			refName = state.DefaultBranch.String
 		}
+		path, pathErr := decodeGitWildcardPath(ctx)
+		if pathErr != nil {
+			response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
 		return httputil.JSON(&git.GitProjectManifestResponse{
 			ProjectID:  projectID,
 			Ref:        refName,
-			Path:       strings.Trim(ctx.Params("*"), "/"),
+			Path:       path,
 			EntryCount: 0,
 			HasMore:    false,
 			Entries:    []git.GitTreeEntry{},
@@ -172,7 +190,12 @@ func (handler *Handler) handleGitProjectManifestGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	path := strings.Trim(ctx.Params("*"), "/")
+	path, pathErr := decodeGitWildcardPath(ctx)
+	if pathErr != nil {
+		response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	manifestOptions, manifestOptionErr := buildGitManifestResponseOptions(ctx)
 	if manifestOptionErr != nil {
 		response := httputil.NewError("invalid_request", manifestOptionErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
@@ -279,7 +302,12 @@ func (handler *Handler) handleGitProjectFileGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	path := strings.Trim(ctx.Params("*"), "/")
+	path, pathErr := decodeGitWildcardPath(ctx)
+	if pathErr != nil {
+		response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
 	metadata, contentBytes, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, organization, project, identity, requestedRef, path)
 	if err != nil {
@@ -310,7 +338,12 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	path := strings.Trim(ctx.Params("*"), "/")
+	path, pathErr := decodeGitWildcardPath(ctx)
+	if pathErr != nil {
+		response := httputil.NewError("invalid_request", pathErr.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	requestedRef := strings.TrimSpace(ctx.Query("ref"))
 	metadata, _, err := handler.gitService.GetGitHubFileMetadata(ctx.Context(), authorizationHeader, organization, project, identity, requestedRef, path)
 	if err != nil {
@@ -332,4 +365,16 @@ func (handler *Handler) handleGitProjectDownloadGET(ctx fiber.Ctx) error {
 		return response.Write(ctx)
 	}
 	return ctx.Redirect().To(strings.TrimSpace(metadata.GetDownloadURL()))
+}
+
+func decodeGitWildcardPath(ctx fiber.Ctx) (string, error) {
+	rawPath := strings.Trim(ctx.Params("*"), "/")
+	if rawPath == "" {
+		return "", nil
+	}
+	decodedPath, err := url.PathUnescape(rawPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid git path")
+	}
+	return strings.Trim(decodedPath, "/"), nil
 }
