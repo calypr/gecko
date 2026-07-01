@@ -193,6 +193,11 @@ definitions:
       sharedFilters:
         $ref: '#/definitions/config.SharedFiltersConfig'
     type: object
+  config.PresentationConfig:
+    properties:
+      presentationConfig:
+        type: string
+    type: object
   config.ConfigItem:
     properties:
       buttons:
@@ -828,44 +833,148 @@ paths:
       summary: List all configuration IDs for a specific type
       tags:
       - Config
-  /dir/{projectId}:
+  /git/projects/{orgTitle}/{projectTitle}/presentationConfig:
     get:
-      description: Retrieve directory details for the given project ID and Directory
-        path
+      description: Retrieve the raw presentation HTML configured for a project. Returns empty content when no presentation has been configured.
       parameters:
-      - description: 'Project ID (format: program-project)'
+      - description: Organization title
         in: path
-        name: projectId
+        name: orgTitle
         required: true
         type: string
-      - description: Directory Path (e.g., /data/my-dir)
-        in: query
-        name: directory_path
+      - description: Project title
+        in: path
+        name: projectTitle
         required: true
         type: string
       produces:
       - application/json
       responses:
         "200":
-          description: Directory information
+          description: Presentation configuration
           schema:
-            additionalProperties: true
-            type: object
-        "400":
-          description: Invalid request body or Directory path
+            $ref: '#/definitions/config.PresentationConfig'
+        "401":
+          description: Missing authorization
           schema:
-            $ref: '#/definitions/gecko.ErrorResponse'
+            $ref: '#/definitions/httputil.ErrorResponse'
         "403":
-          description: User is not allowed on any resource path
+          description: Forbidden
           schema:
-            $ref: '#/definitions/gecko.ErrorResponse'
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "404":
+          description: Project not found
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
         "500":
           description: Server error
           schema:
-            $ref: '#/definitions/gecko.ErrorResponse'
-      summary: Retrieve directory information for a project
+            $ref: '#/definitions/httputil.ErrorResponse'
+      summary: Get project presentation HTML
       tags:
-      - Directory
+      - Git
+    post:
+      consumes:
+      - application/json
+      description: Persist raw presentation HTML for a project.
+      parameters:
+      - description: Organization title
+        in: path
+        name: orgTitle
+        required: true
+        type: string
+      - description: Project title
+        in: path
+        name: projectTitle
+        required: true
+        type: string
+      - description: Presentation HTML payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/config.PresentationConfig'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Persisted presentation configuration
+          schema:
+            $ref: '#/definitions/config.PresentationConfig'
+        "400":
+          description: Invalid request body
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "401":
+          description: Missing authorization
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "404":
+          description: Project not found
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+      summary: Create project presentation HTML
+      tags:
+      - Git
+    put:
+      consumes:
+      - application/json
+      description: Persist raw presentation HTML for a project.
+      parameters:
+      - description: Organization title
+        in: path
+        name: orgTitle
+        required: true
+        type: string
+      - description: Project title
+        in: path
+        name: projectTitle
+        required: true
+        type: string
+      - description: Presentation HTML payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/config.PresentationConfig'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Persisted presentation configuration
+          schema:
+            $ref: '#/definitions/config.PresentationConfig'
+        "400":
+          description: Invalid request body
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "401":
+          description: Missing authorization
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "404":
+          description: Project not found
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+        "500":
+          description: Server error
+          schema:
+            $ref: '#/definitions/httputil.ErrorResponse'
+      summary: Update project presentation HTML
+      tags:
+      - Git
   /health:
     get:
       description: Checks the database connection and returns the server status

@@ -40,11 +40,17 @@ func newGitHandlerTestServer(t *testing.T, fenceServer *httptest.Server, githubT
 	if githubTransport != nil {
 		githubClient.Transport = githubTransport
 	}
+	fenceClient := http.DefaultClient
+	fenceBaseURL := ""
+	if fenceServer != nil {
+		fenceClient = fenceServer.Client()
+		fenceBaseURL = fenceServer.URL
+	}
 	gitSvc := gitservice.NewGitService(gitservice.GitServiceConfig{
 		DataDir:       t.TempDir(),
 		GitHubAPIBase: "https://api.github.com",
 		HTTPClient:    githubClient,
-		FenceClient:   intfence.NewClient(fenceServer.Client(), intfence.Config{BaseURL: fenceServer.URL}),
+		FenceClient:   intfence.NewClient(fenceClient, intfence.Config{BaseURL: fenceBaseURL}),
 	})
 	handler := &Handler{
 		Handler:    &shared.Handler{},
@@ -199,7 +205,7 @@ func TestGitOrganizationInitConnectFallsBackToPlainRedirectWhenRepositoryLookupF
 	}
 }
 
-func TestGitOrganizationInitConnectFallsBackToCleanOrgSettingsURLWhenRepositoryLookupFails(t *testing.T) {
+func TestGitOrganizationInitConnectFallsBackToAppInstallationURLWhenRepositoryLookupFails(t *testing.T) {
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var receivedBody map[string]any
 		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
@@ -262,8 +268,8 @@ func TestGitOrganizationInitConnectFallsBackToCleanOrgSettingsURLWhenRepositoryL
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if payload.RedirectURL != "https://github.com/organizations/EllrottLab/settings/installations/134470697" {
-		t.Fatalf("expected clean organization settings redirect when repo lookup fails, got %q", payload.RedirectURL)
+	if payload.RedirectURL != "https://github.com/apps/calypr-github/installations/134470697" {
+		t.Fatalf("expected app installation redirect when repo lookup fails, got %q", payload.RedirectURL)
 	}
 	if strings.Contains(payload.RedirectURL, "suggested_target_id=") || strings.Contains(payload.RedirectURL, "repository_ids") {
 		t.Fatalf("did not expect partial redirect optimization or empty repository_ids, got %q", payload.RedirectURL)
@@ -337,15 +343,115 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
 	}
-	if receivedBody["action"] != "installation_repositories" {
-		t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
-	}
-	var payload gitservice.GitOrganizationConnectResponse
+		if receivedBody["action"] != "installation_repositories" {
+			t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
+		}
+		if receivedBody["organization"] != "TEST" {
+			t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
+		}
+		if receivedBody["owner"] != "EllrottLab" {
+			t.Fatalf("expected owner in fence request body, got %#v", receivedBody)
+		}
+		var payload gitservice.GitOrganizationConnectResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload.Mode != "connected" {
 		t.Fatalf("expected connected mode, got %+v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGitOrganizationConnectRequiresGitHubOwner(t *testing.T) {
+	handler, _, cleanup := newGitHandlerTestServer(t, nil, nil)
+	defer cleanup()
+
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", handler.handleGitOrganizationConnectPOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/organizations/TEST/connect", bytes.NewBufferString(`{"installation_id":42}`))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, payload)
+	}
+}
+
+func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
+	var receivedBody map[string]any
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode fence request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch receivedBody["action"] {
+		case "organization_installation":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"installed":            true,
+				"installation_id":      42,
+				"target":               "EllrottLab",
+				"target_type":          "Organization",
+				"html_url":             "https://github.com/organizations/EllrottLab/settings/installations/42",
+				"repository_selection": "selected",
+			})
+		case "installation_repositories":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"installation_id": 42,
+				"repositories": []map[string]any{{
+					"id":        101,
+					"name":      "git_drs_test",
+					"full_name": "EllrottLab/git_drs_test",
+					"html_url":  "https://github.com/EllrottLab/git_drs_test",
+					"clone_url": "https://github.com/EllrottLab/git_drs_test.git",
+				}},
+			})
+		default:
+			t.Fatalf("unexpected action: %#v", receivedBody["action"])
+		}
+	}))
+	defer fenceServer.Close()
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	mock.ExpectExec(`INSERT INTO config_schema\.git_organization_state`).
+		WithArgs(
+			"TEST",
+			true,
+			int64(42),
+			"Organization",
+			"EllrottLab",
+			"https://github.com/organizations/EllrottLab/settings/installations/42",
+			"selected",
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			sql.NullString{},
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	app := fiber.New()
+	app.Post("/git/organizations/:orgTitle/connect", handler.handleGitOrganizationConnectPOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/organizations/TEST/connect", bytes.NewBufferString(`{"installation_id":42,"github_owner":"EllrottLab"}`))
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
+	}
+	if receivedBody["organization"] != "TEST" {
+		t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "EllrottLab" {
+		t.Fatalf("expected github owner in fence request body, got %#v", receivedBody)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -404,7 +510,17 @@ func TestGitProjectEditConnectRejectsRepositoryOutsideInstallation(t *testing.T)
 
 func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.WriteHeader(http.StatusInternalServerError)
+		var receivedBody map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&receivedBody); err != nil {
+			t.Fatalf("decode fence request body: %v", err)
+		}
+		if receivedBody["action"] != "organization_installation" {
+			t.Fatalf("expected organization_installation action, got %#v", receivedBody["action"])
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"installed": false,
+		})
 	}))
 	defer fenceServer.Close()
 
@@ -436,6 +552,124 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fenceServer.Close()
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	projectCfg := appconfig.ProjectConfig{
+		Title:        "proj-a",
+		OrgTitle:     "TEST",
+		ProjectTitle: "proj-a",
+		SrcRepo:      "https://github.com/EllrottLab/git_drs_test",
+	}
+	projectContent, err := json.Marshal(projectCfg)
+	if err != nil {
+		t.Fatalf("marshal project config: %v", err)
+	}
+	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects WHERE name=\$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "content"}).AddRow("TEST/proj-a", projectContent))
+	updatedCfg := projectCfg
+	updatedCfg.SrcRepo = ""
+	updatedContent, err := json.Marshal(&updatedCfg)
+	if err != nil {
+		t.Fatalf("marshal updated project config: %v", err)
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO config_schema\.projects`).
+		WithArgs("TEST/proj-a", updatedContent).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`DELETE FROM config_schema\.git_project_state WHERE project_id = \$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/edit-connect", handler.handleGitProjectEditConnectPOST)
+	body := bytes.NewBufferString(`{"repository_full_name":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/git/projects/TEST/proj-a/edit-connect", body)
+	req.Header.Set("Authorization", "Bearer test")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
+	}
+	var payload gitservice.GitOrganizationConnectResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Mode != "disconnected" {
+		t.Fatalf("expected disconnected mode, got %+v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *testing.T) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fenceServer.Close()
+
+	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	defer cleanup()
+
+	projectCfg := appconfig.ProjectConfig{
+		Title:        "proj-a",
+		OrgTitle:     "TEST",
+		ProjectTitle: "proj-a",
+		Description:  "setup only",
+		ContactEmail: "test@example.org",
+		SrcRepo:      "",
+	}
+	projectContent, err := json.Marshal(projectCfg)
+	if err != nil {
+		t.Fatalf("marshal project config: %v", err)
+	}
+	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects WHERE name=\$1`).
+		WithArgs("TEST/proj-a").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "content"}).AddRow("TEST/proj-a", projectContent))
+
+	app := fiber.New()
+	app.Post("/git/projects/:orgTitle/:projectTitle/update", handler.handleGitProjectUpdatePOST)
+	req := httptest.NewRequest(http.MethodPost, "/git/projects/TEST/proj-a/update", nil)
+	req.Header.Set("Authorization", "Bearer test")
+
+	resp := runGitRequest(t, app, req)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)
+	}
+	var payload struct {
+		Error struct {
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(payload.Error.Message, "GitHub connection has not been completed") {
+		t.Fatalf("unexpected error message: %q", payload.Error.Message)
+	}
+	if got := payload.Error.Details["workflow_stage"]; got != gitservice.GitWorkflowStageAwaitingGitHubConnect {
+		t.Fatalf("expected workflow stage %q, got %#v", gitservice.GitWorkflowStageAwaitingGitHubConnect, got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

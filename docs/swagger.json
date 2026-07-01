@@ -209,56 +209,213 @@
                 }
             }
         },
-        "/dir/{projectId}": {
+        "/git/projects/{orgTitle}/{projectTitle}/presentationConfig": {
             "get": {
-                "description": "Retrieve directory details for the given project ID and Directory path",
+                "description": "Retrieve the raw presentation HTML configured for a project. Returns empty content when no presentation has been configured.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Directory"
+                    "Git"
                 ],
-                "summary": "Retrieve directory information for a project",
+                "summary": "Get project presentation HTML",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Project ID (format: program-project)",
-                        "name": "projectId",
+                        "description": "Organization title",
+                        "name": "orgTitle",
                         "in": "path",
                         "required": true
                     },
                     {
                         "type": "string",
-                        "description": "Directory Path (e.g., /data/my-dir)",
-                        "name": "directory_path",
-                        "in": "query",
+                        "description": "Project title",
+                        "name": "projectTitle",
+                        "in": "path",
                         "required": true
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "Directory information",
+                        "description": "Presentation configuration",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/config.PresentationConfig"
                         }
                     },
-                    "400": {
-                        "description": "Invalid request body or Directory path",
+                    "401": {
+                        "description": "Missing authorization",
                         "schema": {
-                            "$ref": "#/definitions/gecko.ErrorResponse"
+                            "$ref": "#/definitions/httputil.ErrorResponse"
                         }
                     },
                     "403": {
-                        "description": "User is not allowed on any resource path",
+                        "description": "Forbidden",
                         "schema": {
-                            "$ref": "#/definitions/gecko.ErrorResponse"
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Project not found",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
                         }
                     },
                     "500": {
                         "description": "Server error",
                         "schema": {
-                            "$ref": "#/definitions/gecko.ErrorResponse"
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Persist raw presentation HTML for a project.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Git"
+                ],
+                "summary": "Create project presentation HTML",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization title",
+                        "name": "orgTitle",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project title",
+                        "name": "projectTitle",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Presentation HTML payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/config.PresentationConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Persisted presentation configuration",
+                        "schema": {
+                            "$ref": "#/definitions/config.PresentationConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing authorization",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Project not found",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Server error",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Persist raw presentation HTML for a project.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Git"
+                ],
+                "summary": "Update project presentation HTML",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization title",
+                        "name": "orgTitle",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Project title",
+                        "name": "projectTitle",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Presentation HTML payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/config.PresentationConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Persisted presentation configuration",
+                        "schema": {
+                            "$ref": "#/definitions/config.PresentationConfig"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request body",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Missing authorization",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Project not found",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Server error",
+                        "schema": {
+                            "$ref": "#/definitions/httputil.ErrorResponse"
                         }
                     }
                 }
@@ -1034,6 +1191,14 @@
                 },
                 "sharedFilters": {
                     "$ref": "#/definitions/config.SharedFiltersConfig"
+                }
+            }
+        },
+        "config.PresentationConfig": {
+            "type": "object",
+            "properties": {
+                "presentationConfig": {
+                    "type": "string"
                 }
             }
         },

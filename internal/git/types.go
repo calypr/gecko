@@ -22,6 +22,9 @@ const (
 
 	GitInstallationNotConnected = "not_connected"
 	GitInstallationConnected    = "connected"
+
+	GitWorkflowStageAwaitingGitHubConnect = "awaiting_github_connect"
+	GitWorkflowStageGitHubConnected       = "github_connected"
 )
 
 type GitServiceConfig struct {
@@ -53,6 +56,7 @@ type GitProjectStatusResponse struct {
 	RequestAccessResourcePath       string                  `json:"request_access_resource_path,omitempty"`
 	Config                          appconfig.ProjectConfig `json:"config"`
 	Repository                      GitRepositoryIdentity   `json:"repository"`
+	WorkflowStage                   string                  `json:"workflow_stage,omitempty"`
 	InstallationState               string                  `json:"installation_state"`
 	InstallationID                  *int64                  `json:"installation_id,omitempty"`
 	InstallationTarget              string                  `json:"installation_target,omitempty"`
@@ -77,7 +81,6 @@ type GitOrganizationConnectResponse struct {
 // GitRepositoryInstallationStatus is an alias for domain.GitRepositoryInstallationStatus.
 type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
 
-
 type ProjectIntegrationCheck struct {
 	Pass    bool   `json:"pass"`
 	Reason  string `json:"reason,omitempty"`
@@ -94,6 +97,7 @@ type GitOrganizationProjectStatus struct {
 	Project                   string                          `json:"project"`
 	ResourcePath              string                          `json:"resource_path"`
 	Repository                GitRepositoryIdentity           `json:"repository"`
+	WorkflowStage             string                          `json:"workflow_stage,omitempty"`
 	Configured                bool                            `json:"configured"`
 	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
 	Integrations              ProjectIntegrationStatus        `json:"integrations"`
@@ -163,8 +167,6 @@ type CalyprProjectSetupResponse struct {
 // GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
 type GitHubInstallationRepository = domain.GitHubInstallationRepository
 
-
-
 type GitOrganizationStatusResponse struct {
 	Organization        string                         `json:"organization"`
 	Connected           bool                           `json:"connected"`
@@ -228,11 +230,36 @@ type GitTreeEntry struct {
 	LFSPointer     *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
+type GitTreeResponseOptions struct {
+	IncludeSize         bool
+	IncludeLastModified bool
+	IncludeLFSPointer   bool
+	Limit               int
+}
+
 type GitProjectTreeResponse struct {
-	ProjectID string         `json:"project_id"`
-	Ref       string         `json:"ref"`
-	Path      string         `json:"path"`
-	Entries   []GitTreeEntry `json:"entries"`
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
+}
+
+type GitManifestResponseOptions struct {
+	Limit     int
+	Cursor    string
+	FilesOnly bool
+}
+
+type GitProjectManifestResponse struct {
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	HasMore    bool           `json:"has_more"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
 }
 
 type GitProjectFileResponse struct {
@@ -251,6 +278,262 @@ type GitLFSPointerInfo struct {
 	Version string `json:"version"`
 	OID     string `json:"oid"`
 	Size    int64  `json:"size"`
+}
+
+type GitRepoAnalyticsChild struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Type       string `json:"type"`
+	FileCount  int    `json:"file_count"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type GitRepoAnalyticsDirectory struct {
+	Path             string                  `json:"path"`
+	DirectChildCount int                     `json:"direct_child_count"`
+	FileCount        int                     `json:"file_count"`
+	TotalBytes       int64                   `json:"total_bytes"`
+	Children         []GitRepoAnalyticsChild `json:"children"`
+}
+
+type GitRepoAnalyticsIndexSidecar struct {
+	SchemaVersion int                         `json:"schema_version"`
+	CommitHash    string                      `json:"commit_hash"`
+	RefName       string                      `json:"ref_name"`
+	GeneratedAt   time.Time                   `json:"generated_at"`
+	Files         []RepoInventoryFile         `json:"files"`
+	Directories   []GitRepoAnalyticsDirectory `json:"directories"`
+}
+
+type GitStorageSummaryResponse struct {
+	Path               string `json:"path"`
+	FileCount          int    `json:"file_count"`
+	RecordCount        int    `json:"record_count"`
+	DirectChildCount   int    `json:"direct_child_count"`
+	TotalBytes         int64  `json:"total_bytes"`
+	DownloadCount      int64  `json:"download_count"`
+	LastDownloadTime   string `json:"last_download_time,omitempty"`
+	LatestUpdateTime   string `json:"latest_update_time,omitempty"`
+	DuplicatePathCount int    `json:"duplicate_path_count"`
+}
+
+type GitStorageChildResponseItem struct {
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Type             string `json:"type"`
+	FileCount        int    `json:"file_count"`
+	RecordCount      int    `json:"record_count"`
+	TotalBytes       int64  `json:"total_bytes"`
+	DownloadCount    int64  `json:"download_count"`
+	LastDownloadTime string `json:"last_download_time,omitempty"`
+	LatestUpdateTime string `json:"latest_update_time,omitempty"`
+}
+
+type GitStorageChildrenResponse struct {
+	Items []GitStorageChildResponseItem `json:"items"`
+}
+
+type GitProjectDiffAuditRequest struct {
+	GitSubpath string `json:"git_subpath,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+}
+
+type GitAuditEvidence struct {
+	Checksum         string   `json:"checksum,omitempty"`
+	SourcePaths      []string `json:"source_paths,omitempty"`
+	ObjectIDs        []string `json:"object_ids,omitempty"`
+	AccessURLs       []string `json:"access_urls,omitempty"`
+	BucketObjectURLs []string `json:"bucket_object_urls,omitempty"`
+	Buckets          []string `json:"buckets,omitempty"`
+	Keys             []string `json:"keys,omitempty"`
+	ProbeStatuses    []string `json:"probe_statuses,omitempty"`
+	ValidationStates []string `json:"validation_states,omitempty"`
+	ErrorKinds       []string `json:"error_kinds,omitempty"`
+	Errors           []string `json:"errors,omitempty"`
+	BucketEvaluation string   `json:"bucket_evaluation,omitempty"`
+}
+
+type GitProjectDiffFinding struct {
+	Kind              string            `json:"kind"`
+	NormalizedPath    string            `json:"normalized_path"`
+	Checksum          string            `json:"checksum,omitempty"`
+	SourcePaths       []string          `json:"source_paths,omitempty"`
+	ObjectIDs         []string          `json:"object_ids"`
+	RecordCount       int               `json:"record_count"`
+	SizeBytes         int64             `json:"size_bytes,omitempty"`
+	DownloadCount     int64             `json:"download_count,omitempty"`
+	LastDownload      string            `json:"last_download_time,omitempty"`
+	RecommendedAction string            `json:"recommended_action"`
+	Evidence          *GitAuditEvidence `json:"evidence,omitempty"`
+}
+
+type GitProjectDiffSummary struct {
+	CountsByKind         map[string]int `json:"counts_by_kind"`
+	TotalFindings        int            `json:"total_findings"`
+	IndexedPathCount     int            `json:"indexed_path_count"`
+	ExpectedPathCount    int            `json:"expected_path_count"`
+	MatchedPathCount     int            `json:"matched_path_count"`
+	IncludesRepoManifest bool           `json:"includes_repo_manifest"`
+	ScannedRecordCount   int            `json:"scanned_record_count"`
+}
+
+type GitProjectDiffAuditResponse struct {
+	Findings   []GitProjectDiffFinding `json:"findings"`
+	Summary    GitProjectDiffSummary   `json:"summary"`
+	PathPrefix string                  `json:"path_prefix"`
+}
+
+type GitStorageCleanupAuditRequest struct {
+	GitSubpath        string   `json:"git_subpath,omitempty"`
+	Ref               string   `json:"ref,omitempty"`
+	CheckStorage      bool     `json:"check_storage,omitempty"`
+	SelectedRepoPaths []string `json:"selected_repo_paths,omitempty"`
+}
+
+type GitStorageChainAuditRequest struct {
+	GitSubpath string `json:"git_subpath,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+}
+
+type GitStorageChainFinding struct {
+	Kind              string            `json:"kind"`
+	NormalizedPath    string            `json:"normalized_path"`
+	Checksum          string            `json:"checksum,omitempty"`
+	SourcePaths       []string          `json:"source_paths,omitempty"`
+	ObjectIDs         []string          `json:"object_ids"`
+	AccessURLs        []string          `json:"access_urls,omitempty"`
+	BucketObjectURL   string            `json:"bucket_object_url,omitempty"`
+	ResolvedBucket    string            `json:"resolved_bucket,omitempty"`
+	ResolvedKey       string            `json:"resolved_key,omitempty"`
+	ProbeStatus       string            `json:"probe_status,omitempty"`
+	ErrorKind         string            `json:"error_kind,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	RecordCount       int               `json:"record_count"`
+	SizeBytes         int64             `json:"size_bytes,omitempty"`
+	RecommendedAction string            `json:"recommended_action"`
+	Evidence          *GitAuditEvidence `json:"evidence,omitempty"`
+}
+
+type GitStorageChainAuditSummary struct {
+	CountsByKind             map[string]int `json:"counts_by_kind"`
+	TotalFindings            int            `json:"total_findings"`
+	BucketObjectCount        int            `json:"bucket_object_count"`
+	SyfonRecordCount         int            `json:"syfon_record_count"`
+	GitTrackedFileCount      int            `json:"git_tracked_file_count"`
+	BucketInventoryAvailable bool           `json:"bucket_inventory_available"`
+	BucketInventoryError     string         `json:"bucket_inventory_error,omitempty"`
+}
+
+type GitStorageChainIssueGroup struct {
+	Kind         string `json:"kind"`
+	FindingCount int    `json:"finding_count"`
+	PathCount    int    `json:"path_count"`
+	RecordCount  int    `json:"record_count"`
+	ObjectCount  int    `json:"object_count"`
+	TotalBytes   int64  `json:"total_bytes,omitempty"`
+}
+
+type GitStorageChainAuditResponse struct {
+	Findings   []GitStorageChainFinding    `json:"findings"`
+	Groups     []GitStorageChainIssueGroup `json:"groups,omitempty"`
+	Summary    GitStorageChainAuditSummary `json:"summary"`
+	PathPrefix string                      `json:"path_prefix"`
+}
+
+type GitStorageCleanupAccessProbe struct {
+	URL                  string   `json:"url"`
+	Provider             string   `json:"provider,omitempty"`
+	Bucket               string   `json:"bucket,omitempty"`
+	Key                  string   `json:"key,omitempty"`
+	Path                 string   `json:"path,omitempty"`
+	Exists               *bool    `json:"exists,omitempty"`
+	Status               string   `json:"status,omitempty"`
+	Error                string   `json:"error,omitempty"`
+	ErrorKind            string   `json:"error_kind,omitempty"`
+	SizeBytes            *int64   `json:"size_bytes,omitempty"`
+	MetaSHA256           string   `json:"meta_sha256,omitempty"`
+	ETag                 string   `json:"etag,omitempty"`
+	LastModified         string   `json:"last_modified,omitempty"`
+	ValidationStatus     string   `json:"validation_status,omitempty"`
+	SizeMatch            *bool    `json:"size_match,omitempty"`
+	SHA256Match          *bool    `json:"sha256_match,omitempty"`
+	ValidationMismatches []string `json:"validation_mismatches,omitempty"`
+}
+
+type GitStorageCleanupRecordAudit struct {
+	ObjectID       string                         `json:"object_id"`
+	Checksum       string                         `json:"checksum,omitempty"`
+	NormalizedPath string                         `json:"normalized_path,omitempty"`
+	CleanupScope   string                         `json:"cleanup_scope"`
+	AccessProbes   []GitStorageCleanupAccessProbe `json:"access_probes"`
+	Status         string                         `json:"status,omitempty"`
+	Error          string                         `json:"error,omitempty"`
+	SizeBytes      int64                          `json:"size,omitempty"`
+	LastUpdated    string                         `json:"updated_time,omitempty"`
+	DownloadCount  int64                          `json:"download_count,omitempty"`
+	LastDownload   string                         `json:"last_download_time,omitempty"`
+}
+
+type GitStorageCleanupFinding struct {
+	Kind                string                         `json:"kind"`
+	NormalizedPath      string                         `json:"normalized_path"`
+	Checksum            string                         `json:"checksum,omitempty"`
+	ObjectIDs           []string                       `json:"object_ids"`
+	Records             []GitStorageCleanupRecordAudit `json:"records"`
+	RecommendedAction   string                         `json:"recommended_action"`
+	RepoDeleteCandidate bool                           `json:"repo_delete_candidate"`
+	CleanupScope        string                         `json:"cleanup_scope"`
+	SizeBytes           int64                          `json:"total_bytes,omitempty"`
+	LastUpdated         string                         `json:"last_updated,omitempty"`
+	DownloadCount       int64                          `json:"download_count,omitempty"`
+	LastDownload        string                         `json:"last_download_time,omitempty"`
+	Evidence            *GitAuditEvidence              `json:"evidence,omitempty"`
+}
+
+type GitStorageCleanupAuditSummary struct {
+	CountsByKind             map[string]int `json:"counts_by_kind"`
+	TotalFindings            int            `json:"total_findings"`
+	ManualFindingCount       int            `json:"manual_finding_count"`
+	RepoDeleteCandidateCount int            `json:"repo_delete_candidate_count"`
+	StaleDuplicateCount      int            `json:"stale_duplicate_count"`
+	RepoOrphanCount          int            `json:"repo_orphan_count"`
+}
+
+type GitStorageCleanupAuditResponse struct {
+	Findings             []GitStorageCleanupFinding    `json:"findings"`
+	Summary              GitStorageCleanupAuditSummary `json:"summary"`
+	ExpectedPathCount    int                           `json:"expected_path_count"`
+	IncludesRepoManifest bool                          `json:"includes_repo_manifest"`
+	PathPrefix           string                        `json:"path_prefix"`
+}
+
+type GitStorageCleanupApplyRequest struct {
+	GitSubpath                 string   `json:"git_subpath,omitempty"`
+	Ref                        string   `json:"ref,omitempty"`
+	DeleteRepoOrphans          bool     `json:"delete_repo_orphans,omitempty"`
+	DeleteStaleDuplicates      bool     `json:"delete_stale_duplicates,omitempty"`
+	DeleteBucketOnlyObjects    bool     `json:"delete_bucket_only_objects,omitempty"`
+	RepairBrokenBucketMappings bool     `json:"repair_broken_bucket_mappings,omitempty"`
+	DryRun                     bool     `json:"dry_run,omitempty"`
+	SelectedRepoPaths          []string `json:"selected_repo_paths,omitempty"`
+}
+
+type GitStorageCleanupPurgeResult struct {
+	ObjectID string `json:"object_id"`
+	Success  *bool  `json:"success"`
+	Status   string `json:"status,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+type GitStorageCleanupApplyResponse struct {
+	DeletedRecordIDs        []string                       `json:"deleted_record_ids"`
+	DeletedBucketObjectURLs []string                       `json:"deleted_bucket_object_urls"`
+	UpdatedRecordIDs        []string                       `json:"updated_record_ids"`
+	PurgeResults            []GitStorageCleanupPurgeResult `json:"purge_results"`
+	RepoDeletePaths         []string                       `json:"repo_delete_paths"`
+	ManualPaths             []string                       `json:"manual_paths"`
+	SkippedPaths            []string                       `json:"skipped_paths"`
+	DryRun                  bool                           `json:"dry_run"`
 }
 
 type GitUploadSessionFileManifest struct {
@@ -310,10 +593,8 @@ type GitUploadSessionResponse struct {
 // GitHubRepositoryMetadata is an alias for domain.GitHubRepositoryMetadata.
 type GitHubRepositoryMetadata = domain.GitHubRepositoryMetadata
 
-
 // HTTPStatusError is an alias for domain.HTTPStatusError.
 type HTTPStatusError = domain.HTTPStatusError
-
 
 func NewGitService(config GitServiceConfig) *GitService {
 	if config.GitHubAPIBase == "" {
@@ -372,8 +653,6 @@ type StorageBucket = domain.StorageBucket
 // StorageConfig is an alias for domain.StorageConfig.
 type StorageConfig = domain.StorageConfig
 
-
 func ProgramProjectResourcePath(organization, project string) string {
 	return fmt.Sprintf("/programs/%s/projects/%s", organization, project)
 }
-

@@ -166,10 +166,12 @@ func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, auth
 	}, nil
 }
 
-func (c *Client) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]domain.GitHubInstallationRepository, error) {
+func (c *Client) ListInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, owner string, installationID int64) ([]domain.GitHubInstallationRepository, error) {
 	var payload fenceGitHubInstallationRepositoriesResponse
 	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":          "installation_repositories",
+		"organization":    organization,
+		"owner":           owner,
 		"installation_id": installationID,
 	}, &payload); err != nil {
 		return nil, err

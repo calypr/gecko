@@ -64,6 +64,19 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 	if err := SyncRepositoryMirror(ctx, cloneURL, state.MirrorPath, &githttp.BasicAuth{Username: "x-access-token", Password: accessToken}); err != nil {
 		return nil, state, err
 	}
+	repo, err := OpenRepository(state.MirrorPath)
+	if err != nil {
+		return nil, state, fmt.Errorf("open refreshed git mirror: %w", err)
+	}
+	if !RepositoryIsEmpty(repo) {
+		refName, hash, err := ResolveGitReference(repo, repoMetadata.DefaultBranch, repoMetadata.DefaultBranch)
+		if err != nil {
+			return nil, state, fmt.Errorf("resolve refreshed git ref: %w", err)
+		}
+		if err := PersistRepoAnalyticsIndex(ctx, state.MirrorPath, repo, refName, hash); err != nil {
+			return nil, state, fmt.Errorf("persist repo analytics index: %w", err)
+		}
+	}
 	updated := *state
 	updated.InstallationTarget = sql.NullString{String: identity.Owner, Valid: identity.Owner != ""}
 	updated.InstallationTargetType = sql.NullString{String: "Organization", Valid: identity.Owner != ""}
@@ -75,6 +88,10 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 }
 
 func (service *GitService) StatusFromState(projectID string, organization string, project string, cfg appconfig.ProjectConfig, identity GitRepositoryIdentity, state *geckodb.GitProjectState, orgState *geckodb.GitOrganizationState) GitProjectStatusResponse {
+	workflowStage := ""
+	if strings.TrimSpace(cfg.SrcRepo) == "" {
+		workflowStage = GitWorkflowStageAwaitingGitHubConnect
+	}
 	response := GitProjectStatusResponse{
 		ProjectID:                 projectID,
 		Organization:              organization,
@@ -83,6 +100,7 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		RequestAccessResourcePath: ProgramProjectResourcePath(organization, project),
 		Config:                    cfg,
 		Repository:                identity,
+		WorkflowStage:             workflowStage,
 		InstallationState:         GitInstallationNotConnected,
 		SyncState:                 GitSyncNeverSynced,
 	}
@@ -96,10 +114,15 @@ func (service *GitService) StatusFromState(projectID string, organization string
 		}
 	}
 	if state == nil {
+		if response.WorkflowStage == "" && response.OrganizationAppInstalled && response.OrganizationRepositorySelection == "all" {
+			response.WorkflowStage = GitWorkflowStageGitHubConnected
+			response.InstallationState = GitInstallationConnected
+		}
 		return response
 	}
 	if state.InstallationID.Valid || state.InstallationTarget.Valid {
 		response.InstallationState = GitInstallationConnected
+		response.WorkflowStage = GitWorkflowStageGitHubConnected
 	}
 	if state.InstallationID.Valid {
 		installationID := state.InstallationID.Int64
@@ -193,11 +216,11 @@ func (service *GitService) RequestOrganizationInstallationStatus(ctx context.Con
 	return service.fenceAPI.RequestOrganizationInstallationStatus(ctx, authorizationHeader, organization, owner)
 }
 
-func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]GitHubInstallationRepository, error) {
+func (service *GitService) ListInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, owner string, installationID int64) ([]GitHubInstallationRepository, error) {
 	if service.fenceAPI == nil {
 		return nil, fmt.Errorf("fence client is not initialized")
 	}
-	return service.fenceAPI.ListInstallationRepositories(ctx, authorizationHeader, installationID)
+	return service.fenceAPI.ListInstallationRepositories(ctx, authorizationHeader, organization, owner, installationID)
 }
 
 func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
