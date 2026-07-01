@@ -46,7 +46,7 @@ func (handler *Handler) handleGitOrganizationInitConnectPOST(ctx fiber.Ctx) erro
 	if redirectPath == "" {
 		redirectPath = "/git"
 	}
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	connectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	redirectURL, err := handler.gitService.RequestInstallationURL(
 		connectCtx,
@@ -149,7 +149,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	connectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	installation, err := handler.gitService.RequestOrganizationInstallationStatus(
 		connectCtx,
@@ -262,7 +262,7 @@ func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	connectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	projectCfg, errResponse := handler.loadProjectConfig(connectCtx, projectID)
 	if errResponse != nil {

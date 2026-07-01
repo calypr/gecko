@@ -64,6 +64,19 @@ func (service *GitService) RefreshProject(ctx context.Context, projectID string,
 	if err := SyncRepositoryMirror(ctx, cloneURL, state.MirrorPath, &githttp.BasicAuth{Username: "x-access-token", Password: accessToken}); err != nil {
 		return nil, state, err
 	}
+	repo, err := OpenRepository(state.MirrorPath)
+	if err != nil {
+		return nil, state, fmt.Errorf("open refreshed git mirror: %w", err)
+	}
+	if !RepositoryIsEmpty(repo) {
+		refName, hash, err := ResolveGitReference(repo, repoMetadata.DefaultBranch, repoMetadata.DefaultBranch)
+		if err != nil {
+			return nil, state, fmt.Errorf("resolve refreshed git ref: %w", err)
+		}
+		if err := PersistRepoAnalyticsIndex(ctx, state.MirrorPath, repo, refName, hash); err != nil {
+			return nil, state, fmt.Errorf("persist repo analytics index: %w", err)
+		}
+	}
 	updated := *state
 	updated.InstallationTarget = sql.NullString{String: identity.Owner, Valid: identity.Owner != ""}
 	updated.InstallationTargetType = sql.NullString{String: "Organization", Valid: identity.Owner != ""}

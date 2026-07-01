@@ -38,6 +38,7 @@ type Handler struct {
 	GitService        *git.GitService
 	ProjectSetup      *git.SetupService
 	ProjectSync       *git.ReconcileService
+	SyfonManager      *gintegrationsyfon.Manager
 	ThumbnailStore    thumbnail.Manager
 	PresentationStore presentation.Manager
 }
@@ -45,8 +46,9 @@ type Handler struct {
 func NewHandler(deps Dependencies) *Handler {
 	var projectSetup *git.SetupService
 	var projectSync *git.ReconcileService
+	var storageManager *gintegrationsyfon.Manager
 	if deps.GitService != nil {
-		storageManager := gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), http.DefaultClient)
+		storageManager = gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), http.DefaultClient)
 		projectSetup = git.NewSetupService(deps.DB, deps.GitService, storageManager, servermw.NewFenceUserAccessHandler(nil))
 		projectSync = git.NewReconcileService(
 			deps.DB,
@@ -64,6 +66,7 @@ func NewHandler(deps Dependencies) *Handler {
 		GitService:        deps.GitService,
 		ProjectSetup:      projectSetup,
 		ProjectSync:       projectSync,
+		SyfonManager:      storageManager,
 		ThumbnailStore:    deps.ThumbnailStore,
 		PresentationStore: deps.PresentationStore,
 	}

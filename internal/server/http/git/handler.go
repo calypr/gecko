@@ -22,11 +22,16 @@ type Handler struct {
 	gitService        *git.GitService
 	projectSetup      *git.SetupService
 	projectSync       *git.ReconcileService
+	storageAnalytics  *git.StorageAnalyticsService
 	thumbnailStore    thumbnail.Manager
 	presentationStore presentation.Manager
 }
 
 func NewHandler(sharedHandler *shared.Handler) *Handler {
+	var storageAnalytics *git.StorageAnalyticsService
+	if sharedHandler.GitService != nil && sharedHandler.SyfonManager != nil {
+		storageAnalytics = git.NewStorageAnalyticsService(sharedHandler.SyfonManager)
+	}
 	return &Handler{
 		Handler:           sharedHandler,
 		db:                sharedHandler.DB,
@@ -38,6 +43,7 @@ func NewHandler(sharedHandler *shared.Handler) *Handler {
 		gitService:        sharedHandler.GitService,
 		projectSetup:      sharedHandler.ProjectSetup,
 		projectSync:       sharedHandler.ProjectSync,
+		storageAnalytics:  storageAnalytics,
 		thumbnailStore:    sharedHandler.ThumbnailStore,
 		presentationStore: sharedHandler.PresentationStore,
 	}
