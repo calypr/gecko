@@ -140,7 +140,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	bucketMode := gitcore.StorageChainBucketModeItems
+	bucketMode := gitcore.StorageChainBucketModeValidate
 	if strings.TrimSpace(requestBody.BucketInventoryMode) != "" {
 		var valid bool
 		bucketMode, valid = gitcore.NormalizeStorageChainBucketInventoryMode(requestBody.BucketInventoryMode)

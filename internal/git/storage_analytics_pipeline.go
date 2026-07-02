@@ -38,11 +38,18 @@ type storageAuditStorageView struct {
 }
 
 type storageChainIndex struct {
-	inventory           []RepoInventoryFile
-	allRecords          []projectRecordState
-	bucketObjectsByURL  map[string]gintegrationsyfon.ProjectBucketObject
-	repoPathsByChecksum map[string][]string
-	recordsByBucketURL  map[string][]projectRecordState
+	inventory            []RepoInventoryFile
+	allRecords           []projectRecordState
+	bucketObjectsByURL   map[string]gintegrationsyfon.ProjectBucketObject
+	repoPathsByChecksum  map[string][]string
+	recordsByBucketURL   map[string][]projectRecordState
+	equivalentRecordKeys equivalentRecordKeyIndex
+}
+
+type equivalentRecordKeyIndex struct {
+	byName            map[string]struct{}
+	byNameSize        map[string]map[int64]struct{}
+	unknownSizeByName map[string]struct{}
 }
 
 func (service *StorageAnalyticsService) loadStorageChainInventory(ctx context.Context, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) ([]RepoInventoryFile, error) {
@@ -826,11 +833,12 @@ func buildStorageChainIndex(inventory []RepoInventoryFile, allProjectRecords map
 		}
 	}
 	return storageChainIndex{
-		inventory:           inventory,
-		allRecords:          allRecords,
-		bucketObjectsByURL:  bucketObjectsByURL,
-		repoPathsByChecksum: repoPathsByChecksum,
-		recordsByBucketURL:  recordsByBucketURL,
+		inventory:            inventory,
+		allRecords:           allRecords,
+		bucketObjectsByURL:   bucketObjectsByURL,
+		repoPathsByChecksum:  repoPathsByChecksum,
+		recordsByBucketURL:   recordsByBucketURL,
+		equivalentRecordKeys: buildEquivalentRecordKeyIndex(allRecords),
 	}
 }
 
@@ -860,17 +868,18 @@ func buildBucketOriginChainFindings(index storageChainIndex, acc *chainAuditAccu
 			acc.addCount("bucket_syfon_git_complete", 1)
 			continue
 		}
-		if bucketObjectHasEquivalentSyfonRecord(item, index.allRecords) {
+		if bucketObjectHasEquivalentSyfonRecord(item, index.equivalentRecordKeys) {
 			continue
 		}
 		acc.add("bucket_only_object", buildChainBucketOnlyFinding(item))
 	}
 }
 
-func bucketObjectHasEquivalentSyfonRecord(item gintegrationsyfon.ProjectBucketObject, records []projectRecordState) bool {
-	itemName := strings.TrimSpace(path.Base(strings.TrimSpace(item.Key)))
-	if itemName == "" {
-		return false
+func buildEquivalentRecordKeyIndex(records []projectRecordState) equivalentRecordKeyIndex {
+	index := equivalentRecordKeyIndex{
+		byName:            make(map[string]struct{}),
+		byNameSize:        make(map[string]map[int64]struct{}),
+		unknownSizeByName: make(map[string]struct{}),
 	}
 	for _, record := range records {
 		for _, accessURL := range accessURLsForStorage(record) {
@@ -878,14 +887,41 @@ func bucketObjectHasEquivalentSyfonRecord(item gintegrationsyfon.ProjectBucketOb
 			if !ok {
 				continue
 			}
-			if strings.TrimSpace(path.Base(key)) != itemName {
+			name := strings.TrimSpace(path.Base(key))
+			if name == "" {
 				continue
 			}
-			if record.Size > 0 && item.SizeBytes > 0 && record.Size != item.SizeBytes {
+			index.byName[name] = struct{}{}
+			if record.Size <= 0 {
+				index.unknownSizeByName[name] = struct{}{}
 				continue
 			}
-			return true
+			if index.byNameSize[name] == nil {
+				index.byNameSize[name] = make(map[int64]struct{})
+			}
+			index.byNameSize[name][record.Size] = struct{}{}
 		}
+	}
+	return index
+}
+
+func bucketObjectHasEquivalentSyfonRecord(item gintegrationsyfon.ProjectBucketObject, index equivalentRecordKeyIndex) bool {
+	itemName := strings.TrimSpace(path.Base(strings.TrimSpace(item.Key)))
+	if itemName == "" {
+		return false
+	}
+	if _, ok := index.byName[itemName]; !ok {
+		return false
+	}
+	if item.SizeBytes <= 0 {
+		return true
+	}
+	if _, ok := index.unknownSizeByName[itemName]; ok {
+		return true
+	}
+	if sizes := index.byNameSize[itemName]; sizes != nil {
+		_, ok := sizes[item.SizeBytes]
+		return ok
 	}
 	return false
 }
@@ -914,7 +950,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 				acc.addCount("git_syfon_metadata_mismatch", len(gitPaths))
 				continue
 			}
-			acc.add("bucket_syfon_no_git", buildChainRecordFindingsWithOptions("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.", countCompleteFromSyfon)...)
+			acc.add("bucket_syfon_no_git", buildChainRecordFindings("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.")...)
 		case storageFindingBrokenAccessURL, storageFindingProbeError:
 			findings := buildChainRecordFindings("probe_error", record, gitPaths, bucketMatches, "Bucket verification failed before Gecko could classify this record cleanly.")
 			acc.findings = append(acc.findings, findings...)
@@ -925,7 +961,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 				continue
 			}
 			if len(gitPaths) == 0 && len(bucketMatches) > 0 {
-				acc.add("bucket_syfon_no_git", buildChainRecordFindingsWithOptions("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.", countCompleteFromSyfon)...)
+				acc.add("bucket_syfon_no_git", buildChainRecordFindings("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.")...)
 			}
 		}
 	}

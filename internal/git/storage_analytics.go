@@ -1201,6 +1201,9 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if inventoryHasValidationMismatch(record, bucketMatches, bucketObjectsByURL) {
 		return storageFindingValidationMismatch
 	}
+	if recordHasValidationMismatchProbe(record) {
+		return storageFindingValidationMismatch
+	}
 	if len(bucketMatches) > 0 {
 		return storageFindingNone
 	}
@@ -1286,6 +1289,15 @@ func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []strin
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+func recordHasValidationMismatchProbe(record projectRecordState) bool {
+	for _, probe := range record.AccessProbes {
+		if strings.TrimSpace(probe.ValidationStatus) == "mismatched" {
+			return true
+		}
 	}
 	return false
 }

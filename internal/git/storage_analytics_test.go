@@ -917,7 +917,7 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	}
 	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
 	assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/mismatch.txt")
-	assertHasChainFinding(t, chain.Findings, "bucket_syfon_no_git", "syfon-only.txt")
+	assertHasChainFinding(t, chain.Findings, "bucket_syfon_no_git", "s3://bucket/syfon-only.txt")
 }
 
 func TestExpectedStorageObjectNameForListValidationSkipsContentAddressedKeys(t *testing.T) {
