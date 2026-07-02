@@ -140,6 +140,18 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
+	validationMode := gitcore.StorageChainValidationModeList
+	if strings.TrimSpace(requestBody.ValidationMode) != "" {
+		var valid bool
+		validationMode, valid = gitcore.NormalizeStorageChainValidationMode(requestBody.ValidationMode)
+		if !valid {
+			response := httputil.NewError("invalid_request", "validation_mode must be either list, metadata, or inventory", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+	} else if strings.TrimSpace(requestBody.ProbeMode) != "" {
+		validationMode = gitcore.DefaultStorageChainValidationMode(probeMode, "")
+	}
 	bucketMode := gitcore.StorageChainBucketModeValidate
 	if strings.TrimSpace(requestBody.BucketInventoryMode) != "" {
 		var valid bool
@@ -149,6 +161,9 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 			response.WriteLog(handler.logger)
 			return response.Write(ctx)
 		}
+	}
+	if validationMode == gitcore.StorageChainValidationModeInventory && strings.TrimSpace(requestBody.BucketInventoryMode) == "" {
+		bucketMode = gitcore.StorageChainBucketModeItems
 	}
 	findingLimit := requestBody.FindingLimit
 	if findingLimit == 0 {
@@ -167,7 +182,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	}
 	projectCtx.applyRequestRef(requestBody.Ref)
 	gitSubpath := normalizeAnalyticsSubpath(requestBody.GitSubpath)
-	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, probeMode, bucketMode, bucketPathPrefix, findingLimit)
+	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingLimit)
 	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
 	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
@@ -181,6 +196,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 		projectCtx.hash,
 		gitcore.StorageChainAuditOptions{
 			ProbeMode:           probeMode,
+			ValidationMode:      validationMode,
 			BucketInventoryMode: bucketMode,
 			BucketPathPrefix:    bucketPathPrefix,
 			FindingLimit:        findingLimit,
@@ -417,10 +433,11 @@ func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsCont
 		bucketPathExists = strconv.FormatBool(*response.Summary.BucketPathExists)
 	}
 	handler.logger.Info(
-		"storage_chain_audit project_id=%s ref=%s git_subpath=%q probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
+		"storage_chain_audit project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
 		projectCtx.projectID,
 		projectCtx.refName,
 		gitSubpath,
+		response.Summary.ValidationMode,
 		probeMode,
 		bucketMode,
 		bucketPathExists,

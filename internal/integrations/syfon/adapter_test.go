@@ -282,6 +282,98 @@ func TestBulkListStorageObjectsSendsExpectedName(t *testing.T) {
 	}
 }
 
+func TestBulkListStorageObjectsDeduplicatesIdenticalRequests(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk-list" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		requests++
+		var req struct {
+			Items []struct {
+				ID                string `json:"id"`
+				ObjectURL         string `json:"object_url"`
+				ExpectedSizeBytes *int64 `json:"expected_size_bytes"`
+				ExpectedName      string `json:"expected_name"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Items) != 1 {
+			t.Fatalf("expected identical LIST items to be deduplicated, got %+v", req.Items)
+		}
+		sizeMatch := true
+		nameMatch := true
+		body, err := json.Marshal(map[string]any{"items": []map[string]any{{
+			"id":                req.Items[0].ID,
+			"object_url":        req.Items[0].ObjectURL,
+			"exists":            true,
+			"status":            "present",
+			"validation_status": "matched",
+			"size_match":        sizeMatch,
+			"name_match":        nameMatch,
+		}}})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	size := int64(17)
+	manager := NewManager("http://syfon.example", client)
+	results, err := manager.BulkListStorageObjects(context.Background(), "Bearer token", []BulkStorageProbeItem{
+		{ID: "item-1", ObjectURL: "s3://bucket/file.bin", ExpectedSizeBytes: &size, ExpectedName: "file.bin"},
+		{ID: "item-2", ObjectURL: "s3://bucket/file.bin", ExpectedSizeBytes: &size, ExpectedName: "file.bin"},
+	})
+	if err != nil {
+		t.Fatalf("BulkListStorageObjects returned error: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one bulk-list request, got %d", requests)
+	}
+	if len(results) != 2 || results[0].ObjectURL != "s3://bucket/file.bin" || results[1].ObjectURL != "s3://bucket/file.bin" {
+		t.Fatalf("expected deduplicated response to fan out to all original items, got %+v", results)
+	}
+}
+
+func TestListProjectAuditRecordsIncludesPathPrefix(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/project-records" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req struct {
+			Organization string `json:"organization"`
+			Project      string `json:"project"`
+			PathPrefix   string `json:"path_prefix"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Organization != "org" || req.Project != "proj" || req.PathPrefix != "CONFIG" {
+			t.Fatalf("unexpected request payload: %+v", req)
+		}
+		body, err := json.Marshal(map[string]any{"items": []map[string]any{}})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	manager := NewManager("http://syfon.example", client)
+	if _, err := manager.ListProjectAuditRecords(context.Background(), "Bearer token", "org", "proj", "/CONFIG/"); err != nil {
+		t.Fatalf("ListProjectAuditRecords returned error: %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

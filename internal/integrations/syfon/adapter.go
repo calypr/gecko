@@ -62,6 +62,7 @@ type BulkStorageProbeItem struct {
 
 type BulkStorageProbeResult struct {
 	ID                   string
+	Operation            string
 	ObjectURL            string
 	Provider             string
 	Bucket               string
@@ -300,13 +301,15 @@ func (manager *Manager) ListProjectRecords(ctx context.Context, authorizationHea
 	return out, nil
 }
 
-func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]ProjectRecord, error) {
+func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectRecord, error) {
 	requestBody := struct {
 		Organization string `json:"organization,omitempty"`
 		Project      string `json:"project,omitempty"`
+		PathPrefix   string `json:"path_prefix,omitempty"`
 	}{
 		Organization: strings.TrimSpace(organization),
 		Project:      strings.TrimSpace(project),
+		PathPrefix:   strings.Trim(strings.TrimSpace(pathPrefix), "/"),
 	}
 	var response struct {
 		Items []struct {
@@ -616,8 +619,20 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 		return []BulkStorageProbeResult{}, nil
 	}
 	started := time.Now()
+	requestItems := append([]BulkStorageProbeItem(nil), items...)
+	duplicateCount := 0
+	resultKeyByOriginalID := make(map[string]string, len(requestItems))
+	for _, item := range requestItems {
+		resultKeyByOriginalID[strings.TrimSpace(item.ID)] = strings.TrimSpace(item.ID)
+	}
+	if includeExpectedName {
+		var deduped map[string]string
+		items, deduped = dedupeBulkStorageProbeItems(items, includeExpectedName)
+		duplicateCount = len(requestItems) - len(items)
+		resultKeyByOriginalID = deduped
+	}
 	batchCount := (len(items) + bulkStorageProbeBatchSize - 1) / bulkStorageProbeBatchSize
-	log.Printf("INFO: syfon_bulk_storage_request_start path=%s items=%d batch_size=%d batches=%d concurrency=%d include_expected_name=%t", requestPath, len(items), bulkStorageProbeBatchSize, batchCount, bulkStorageProbeConcurrency, includeExpectedName)
+	log.Printf("INFO: syfon_bulk_storage_request_start path=%s items=%d unique_items=%d duplicate_items=%d batch_size=%d batches=%d concurrency=%d include_expected_name=%t", requestPath, len(requestItems), len(items), duplicateCount, bulkStorageProbeBatchSize, batchCount, bulkStorageProbeConcurrency, includeExpectedName)
 	resultsByID := make(map[string]BulkStorageProbeResult, len(items))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -658,14 +673,49 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 		log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d error=%q", requestPath, len(items), len(resultsByID), batchCount, time.Since(started).Milliseconds(), firstErr.Error())
 		return nil, firstErr
 	}
-	out := make([]BulkStorageProbeResult, 0, len(resultsByID))
-	for _, item := range items {
-		if result, ok := resultsByID[strings.TrimSpace(item.ID)]; ok {
+	out := make([]BulkStorageProbeResult, 0, len(requestItems))
+	for _, item := range requestItems {
+		resultKey := resultKeyByOriginalID[strings.TrimSpace(item.ID)]
+		if result, ok := resultsByID[resultKey]; ok {
+			result.ID = strings.TrimSpace(item.ID)
 			out = append(out, result)
 		}
 	}
-	log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d", requestPath, len(items), len(out), batchCount, time.Since(started).Milliseconds())
+	log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d unique_items=%d results=%d batches=%d duration_ms=%d", requestPath, len(requestItems), len(items), len(out), batchCount, time.Since(started).Milliseconds())
 	return out, nil
+}
+
+func dedupeBulkStorageProbeItems(items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeItem, map[string]string) {
+	seen := make(map[string]BulkStorageProbeItem, len(items))
+	keyByOriginalID := make(map[string]string, len(items))
+	out := make([]BulkStorageProbeItem, 0, len(items))
+	for _, item := range items {
+		key := bulkStorageProbeDedupKey(item, includeExpectedName)
+		originalID := strings.TrimSpace(item.ID)
+		if existing, ok := seen[key]; ok {
+			keyByOriginalID[originalID] = strings.TrimSpace(existing.ID)
+			continue
+		}
+		seen[key] = item
+		keyByOriginalID[originalID] = originalID
+		out = append(out, item)
+	}
+	return out, keyByOriginalID
+}
+
+func bulkStorageProbeDedupKey(item BulkStorageProbeItem, includeExpectedName bool) string {
+	parts := []string{strings.TrimSpace(item.ObjectURL)}
+	if item.ExpectedSizeBytes == nil {
+		parts = append(parts, "")
+	} else {
+		parts = append(parts, strconv.FormatInt(*item.ExpectedSizeBytes, 10))
+	}
+	if includeExpectedName {
+		parts = append(parts, strings.TrimSpace(item.ExpectedName))
+	} else {
+		parts = append(parts, strings.TrimSpace(item.ExpectedSHA256))
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeResult, error) {

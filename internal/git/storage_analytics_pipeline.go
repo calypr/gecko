@@ -106,7 +106,7 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 	go func() {
 		start := time.Now()
 		timings.StageStart("syfon_project_records")
-		recordSet, err := service.loadCachedProjectAuditRecordSet(ctx, authorizationHeader, organization, project)
+		recordSet, err := service.loadCachedProjectAuditRecordSet(ctx, authorizationHeader, organization, project, gitSubpath)
 		timings.Record("syfon_project_records", time.Since(start))
 		recordCount := 0
 		if recordSet != nil {
@@ -329,23 +329,23 @@ func applyScopeCanonicalization(recordSet *storageAuditRecordSet, scopes []domai
 	}
 }
 
-func (service *StorageAnalyticsService) loadProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string) (*storageAuditRecordSet, error) {
-	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
+func (service *StorageAnalyticsService) loadProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (*storageAuditRecordSet, error) {
+	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project, pathPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project audit records: %w", err)
 	}
 	return buildProjectAuditRecordSet(projectRecords), nil
 }
 
-func (service *StorageAnalyticsService) loadCachedProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string) (*storageAuditRecordSet, error) {
-	cacheKey := service.projectChainInputCacheKey(organization, project)
+func (service *StorageAnalyticsService) loadCachedProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (*storageAuditRecordSet, error) {
+	cacheKey := service.projectChainInputCacheKey(organization, project) + "::audit-records::" + normalizeRepoSubpath(pathPrefix)
 	service.chainInputMu.RLock()
 	cached, ok := service.chainInputCache[cacheKey]
 	service.chainInputMu.RUnlock()
 	if ok && time.Now().Before(cached.expiresAt) && cached.projectRecords != nil {
 		return buildProjectAuditRecordSet(cached.projectRecords), nil
 	}
-	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
+	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project, pathPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project audit records: %w", err)
 	}
@@ -608,7 +608,7 @@ func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context
 	return view, nil
 }
 
-func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, probeMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
+func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
 	recordSet = applyScopeCanonicalization(recordSet, scopes)
 	view := &storageAuditStorageView{
 		scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
@@ -623,9 +623,24 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			view.bucketInventoryAvailable = false
 			view.bucketInventoryError = strings.TrimSpace(bucketInventoryErr.Error())
 		}
+		if validationMode == StorageChainValidationModeInventory {
+			return view, nil
+		}
 		probeStart := time.Now()
-		probedRecordSet, probeErr := service.attachProjectStorageListValidations(ctx, authorizationHeader, recordSet)
-		timings.Record("bulk_list_validation", time.Since(probeStart))
+		var (
+			probedRecordSet *storageAuditRecordSet
+			probeErr        error
+			stage           string
+		)
+		switch validationMode {
+		case StorageChainValidationModeMetadata:
+			probedRecordSet, probeErr = service.attachProjectStorageProbes(ctx, authorizationHeader, recordSet)
+			stage = "bulk_metadata_validation"
+		default:
+			probedRecordSet, probeErr = service.attachProjectStorageListValidations(ctx, authorizationHeader, recordSet)
+			stage = "bulk_list_validation"
+		}
+		timings.Record(stage, time.Since(probeStart))
 		if probeErr != nil {
 			return nil, probeErr
 		}
@@ -638,7 +653,7 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 		return nil, bucketInventoryErr
 	}
 	view.bucketObjects, view.bucketObjectsByURL = cloneBucketInventory(bucketObjects, bucketObjectsByURL)
-	if probeMode == StorageChainProbeModeInventoryOnly {
+	if validationMode == StorageChainValidationModeInventory || validationMode == StorageChainValidationModeList {
 		return view, nil
 	}
 

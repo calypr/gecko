@@ -339,18 +339,19 @@ type GitProjectDiffAuditRequest struct {
 }
 
 type GitAuditEvidence struct {
-	Checksum         string   `json:"checksum,omitempty"`
-	SourcePaths      []string `json:"source_paths,omitempty"`
-	ObjectIDs        []string `json:"object_ids,omitempty"`
-	AccessURLs       []string `json:"access_urls,omitempty"`
-	BucketObjectURLs []string `json:"bucket_object_urls,omitempty"`
-	Buckets          []string `json:"buckets,omitempty"`
-	Keys             []string `json:"keys,omitempty"`
-	ProbeStatuses    []string `json:"probe_statuses,omitempty"`
-	ValidationStates []string `json:"validation_states,omitempty"`
-	ErrorKinds       []string `json:"error_kinds,omitempty"`
-	Errors           []string `json:"errors,omitempty"`
-	BucketEvaluation string   `json:"bucket_evaluation,omitempty"`
+	Checksum          string   `json:"checksum,omitempty"`
+	SourcePaths       []string `json:"source_paths,omitempty"`
+	ObjectIDs         []string `json:"object_ids,omitempty"`
+	AccessURLs        []string `json:"access_urls,omitempty"`
+	BucketObjectURLs  []string `json:"bucket_object_urls,omitempty"`
+	Buckets           []string `json:"buckets,omitempty"`
+	Keys              []string `json:"keys,omitempty"`
+	StorageOperations []string `json:"storage_operations,omitempty"`
+	ProbeStatuses     []string `json:"probe_statuses,omitempty"`
+	ValidationStates  []string `json:"validation_states,omitempty"`
+	ErrorKinds        []string `json:"error_kinds,omitempty"`
+	Errors            []string `json:"errors,omitempty"`
+	BucketEvaluation  string   `json:"bucket_evaluation,omitempty"`
 }
 
 type GitProjectDiffFinding struct {
@@ -394,6 +395,7 @@ type GitStorageChainAuditRequest struct {
 	GitSubpath          string `json:"git_subpath,omitempty"`
 	Ref                 string `json:"ref,omitempty"`
 	ProbeMode           string `json:"probe_mode,omitempty"`
+	ValidationMode      string `json:"validation_mode,omitempty"`
 	BucketInventoryMode string `json:"bucket_inventory_mode,omitempty"`
 	BucketPathPrefix    string `json:"bucket_path_prefix,omitempty"`
 	FindingLimit        int    `json:"finding_limit,omitempty"`
@@ -424,6 +426,7 @@ type GitStorageChainAuditSummary struct {
 	ReturnedFindings         int            `json:"returned_findings"`
 	FindingsTruncated        bool           `json:"findings_truncated"`
 	FindingLimit             int            `json:"finding_limit,omitempty"`
+	ValidationMode           string         `json:"validation_mode,omitempty"`
 	BucketObjectCount        int            `json:"bucket_object_count"`
 	SyfonRecordCount         int            `json:"syfon_record_count"`
 	GitTrackedFileCount      int            `json:"git_tracked_file_count"`
@@ -453,6 +456,7 @@ type GitStorageChainAuditResponse struct {
 
 type GitStorageCleanupAccessProbe struct {
 	URL                  string   `json:"url"`
+	Operation            string   `json:"operation,omitempty"`
 	Provider             string   `json:"provider,omitempty"`
 	Bucket               string   `json:"bucket,omitempty"`
 	Key                  string   `json:"key,omitempty"`

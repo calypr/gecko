@@ -12,10 +12,15 @@ const (
 
 	StorageChainBucketModeItems    = "items"
 	StorageChainBucketModeValidate = "validate"
+
+	StorageChainValidationModeList      = "list"
+	StorageChainValidationModeMetadata  = "metadata"
+	StorageChainValidationModeInventory = "inventory"
 )
 
 type StorageChainAuditOptions struct {
 	ProbeMode           string
+	ValidationMode      string
 	BucketInventoryMode string
 	BucketPathPrefix    string
 	FindingLimit        int
@@ -79,6 +84,29 @@ func NormalizeStorageChainProbeMode(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func NormalizeStorageChainValidationMode(raw string) (string, bool) {
+	switch strings.TrimSpace(raw) {
+	case "", StorageChainValidationModeList:
+		return StorageChainValidationModeList, true
+	case StorageChainValidationModeMetadata, StorageChainProbeModeFull:
+		return StorageChainValidationModeMetadata, true
+	case StorageChainValidationModeInventory, StorageChainProbeModeInventoryOnly:
+		return StorageChainValidationModeInventory, true
+	default:
+		return "", false
+	}
+}
+
+func DefaultStorageChainValidationMode(probeMode string, bucketMode string) string {
+	switch strings.TrimSpace(probeMode) {
+	case StorageChainProbeModeInventoryOnly:
+		return StorageChainValidationModeInventory
+	case StorageChainProbeModeFull:
+		return StorageChainValidationModeMetadata
+	}
+	return StorageChainValidationModeList
 }
 
 func NormalizeStorageChainBucketInventoryMode(raw string) (string, bool) {

@@ -25,7 +25,7 @@ type storageAnalyticsBackend interface {
 	ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error)
 	ListBucketScopes(ctx context.Context, authorizationHeader string, bucket string) ([]domain.StorageBucketScope, error)
 	ListProjectRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error)
-	ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error)
+	ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectRecord, error)
 	ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
 	ListProjectFileUsage(ctx context.Context, authorizationHeader string, organization string, project string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
@@ -244,6 +244,18 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	if !ok {
 		return nil, fmt.Errorf("invalid storage chain bucket inventory mode %q", options.BucketInventoryMode)
 	}
+	validationMode := strings.TrimSpace(options.ValidationMode)
+	if validationMode == "" {
+		if strings.TrimSpace(options.ProbeMode) == "" && bucketMode == StorageChainBucketModeValidate {
+			validationMode = StorageChainValidationModeList
+		} else {
+			validationMode = DefaultStorageChainValidationMode(probeMode, bucketMode)
+		}
+	}
+	validationMode, ok = NormalizeStorageChainValidationMode(validationMode)
+	if !ok {
+		return nil, fmt.Errorf("invalid storage chain validation mode %q", options.ValidationMode)
+	}
 	bucketPathPrefix := normalizeRepoSubpath(options.BucketPathPrefix)
 	start := time.Now()
 	options.Timings.StageStart("chain_setup_total")
@@ -254,7 +266,7 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, probeMode, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if err != nil {
 		return nil, err
@@ -266,6 +278,7 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	options.Timings.Record("model_build", time.Since(modelStart))
 	model.Summary.BucketInventoryAvailable = storageView.bucketInventoryAvailable
 	model.Summary.BucketInventoryError = storageView.bucketInventoryError
+	model.Summary.ValidationMode = validationMode
 	if inputs.bucketSummary != nil {
 		exists := inputs.bucketSummary.Exists
 		model.Summary.BucketPathExists = &exists
@@ -651,8 +664,10 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 		}
 	}
 	mode := "head"
+	operation := StorageChainValidationModeMetadata
 	if useListValidation {
 		mode = "list"
+		operation = StorageChainValidationModeList
 	}
 	log.Printf(
 		"INFO: storage_chain_validation_request_built mode=%s record_count=%d access_url_count=%d unique_request_count=%d duplicate_request_count=%d build_ms=%d",
@@ -684,6 +699,7 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 			return nil, nil, fmt.Errorf("probe syfon storage objects: %w", err)
 		}
 		for _, result := range results {
+			result.Operation = operation
 			resultsByKey[strings.TrimSpace(result.ID)] = result
 		}
 	}
@@ -699,6 +715,7 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 				probes := make([]gintegrationsyfon.BulkStorageProbeResult, 0, len(keys))
 				for _, key := range keys {
 					if result, ok := resultsByKey[key]; ok {
+						result.Operation = operation
 						probes = append(probes, result)
 					}
 				}
@@ -1332,6 +1349,7 @@ func accessProbesForRecord(record projectRecordState) []GitStorageCleanupAccessP
 			exists := probe.Exists
 			probes = append(probes, GitStorageCleanupAccessProbe{
 				URL:                  probe.ObjectURL,
+				Operation:            probe.Operation,
 				Provider:             probe.Provider,
 				Bucket:               probe.Bucket,
 				Key:                  probe.Key,
@@ -1421,11 +1439,12 @@ func buildBucketOnlyFinding(item gintegrationsyfon.ProjectBucketObject) GitStora
 		SizeBytes:           item.SizeBytes,
 		LastUpdated:         strings.TrimSpace(item.LastModified),
 		Evidence: &GitAuditEvidence{
-			AccessURLs:       []string{objectURL},
-			Buckets:          uniqueStrings([]string{item.Bucket}),
-			Keys:             uniqueStrings([]string{item.Key}),
-			ProbeStatuses:    []string{"enumerated"},
-			BucketEvaluation: "enumerated",
+			AccessURLs:        []string{objectURL},
+			Buckets:           uniqueStrings([]string{item.Bucket}),
+			Keys:              uniqueStrings([]string{item.Key}),
+			StorageOperations: []string{StorageChainValidationModeInventory},
+			ProbeStatuses:     []string{"enumerated"},
+			BucketEvaluation:  "enumerated",
 		},
 	}
 }
@@ -1445,12 +1464,13 @@ func buildChainBucketOnlyFinding(item gintegrationsyfon.ProjectBucketObject) Git
 		SizeBytes:         item.SizeBytes,
 		RecommendedAction: "Bucket object exists, but no Syfon record matched it.",
 		Evidence: &GitAuditEvidence{
-			AccessURLs:       []string{objectURL},
-			BucketObjectURLs: []string{objectURL},
-			Buckets:          uniqueStrings([]string{item.Bucket}),
-			Keys:             uniqueStrings([]string{item.Key}),
-			ProbeStatuses:    []string{"enumerated"},
-			BucketEvaluation: "enumerated",
+			AccessURLs:        []string{objectURL},
+			BucketObjectURLs:  []string{objectURL},
+			Buckets:           uniqueStrings([]string{item.Bucket}),
+			Keys:              uniqueStrings([]string{item.Key}),
+			StorageOperations: []string{StorageChainValidationModeInventory},
+			ProbeStatuses:     []string{"enumerated"},
+			BucketEvaluation:  "enumerated",
 		},
 	}
 }
@@ -1973,18 +1993,19 @@ func recordObjectIDs(matches []projectRecordState) []string {
 
 func buildFindingEvidence(checksum string, sourcePaths []string, matches []projectRecordState, bucketEvaluation string) *GitAuditEvidence {
 	evidence := &GitAuditEvidence{
-		Checksum:         strings.TrimSpace(checksum),
-		SourcePaths:      uniqueStrings(sourcePaths),
-		ObjectIDs:        []string{},
-		AccessURLs:       []string{},
-		BucketObjectURLs: []string{},
-		Buckets:          []string{},
-		Keys:             []string{},
-		ProbeStatuses:    []string{},
-		ValidationStates: []string{},
-		ErrorKinds:       []string{},
-		Errors:           []string{},
-		BucketEvaluation: strings.TrimSpace(bucketEvaluation),
+		Checksum:          strings.TrimSpace(checksum),
+		SourcePaths:       uniqueStrings(sourcePaths),
+		ObjectIDs:         []string{},
+		AccessURLs:        []string{},
+		BucketObjectURLs:  []string{},
+		Buckets:           []string{},
+		Keys:              []string{},
+		StorageOperations: []string{},
+		ProbeStatuses:     []string{},
+		ValidationStates:  []string{},
+		ErrorKinds:        []string{},
+		Errors:            []string{},
+		BucketEvaluation:  strings.TrimSpace(bucketEvaluation),
 	}
 	for _, match := range matches {
 		if objectID := strings.TrimSpace(match.ObjectID); objectID != "" {
@@ -2003,6 +2024,9 @@ func buildFindingEvidence(checksum string, sourcePaths []string, matches []proje
 			}
 			if key := strings.TrimSpace(probe.Key); key != "" {
 				evidence.Keys = append(evidence.Keys, key)
+			}
+			if operation := strings.TrimSpace(probe.Operation); operation != "" {
+				evidence.StorageOperations = append(evidence.StorageOperations, operation)
 			}
 			if status := strings.TrimSpace(probe.Status); status != "" {
 				evidence.ProbeStatuses = append(evidence.ProbeStatuses, status)
@@ -2023,6 +2047,7 @@ func buildFindingEvidence(checksum string, sourcePaths []string, matches []proje
 	evidence.BucketObjectURLs = uniqueStrings(evidence.BucketObjectURLs)
 	evidence.Buckets = uniqueStrings(evidence.Buckets)
 	evidence.Keys = uniqueStrings(evidence.Keys)
+	evidence.StorageOperations = uniqueStrings(evidence.StorageOperations)
 	evidence.ProbeStatuses = uniqueStrings(evidence.ProbeStatuses)
 	evidence.ValidationStates = uniqueStrings(evidence.ValidationStates)
 	evidence.ErrorKinds = uniqueStrings(evidence.ErrorKinds)
@@ -2034,6 +2059,7 @@ func buildFindingEvidence(checksum string, sourcePaths []string, matches []proje
 		len(evidence.BucketObjectURLs) == 0 &&
 		len(evidence.Buckets) == 0 &&
 		len(evidence.Keys) == 0 &&
+		len(evidence.StorageOperations) == 0 &&
 		len(evidence.ProbeStatuses) == 0 &&
 		len(evidence.ValidationStates) == 0 &&
 		len(evidence.ErrorKinds) == 0 &&
