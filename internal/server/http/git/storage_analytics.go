@@ -16,6 +16,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+const defaultStorageChainFindingLimit = 500
+
 func (handler *Handler) handleGitProjectStorageSummaryGET(ctx fiber.Ctx) error {
 	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
 	if errResponse != nil {
@@ -109,18 +111,65 @@ func (handler *Handler) handleGitProjectStorageCleanupAuditPOST(ctx fiber.Ctx) e
 }
 
 func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) error {
-	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
+	routeOrg := strings.TrimSpace(ctx.Params("orgTitle"))
+	routeProject := strings.TrimSpace(ctx.Params("projectTitle"))
+	handler.logger.Info("storage_chain_audit_request_received org=%s project=%s path=%s query=%s", routeOrg, routeProject, ctx.Path(), string(ctx.Request().URI().QueryString()))
+	timings := &gitcore.StorageChainAuditTimings{
+		Logf:        handler.logger.Info,
+		DebugPrefix: fmt.Sprintf("org=%s project=%s", routeOrg, routeProject),
+	}
+	resolveStart := time.Now()
+	timings.StageStart("resolve_git_context")
+	projectCtx, errResponse := handler.resolveGitAnalyticsContextWithTimings(ctx, timings)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
+	timings.Record("resolve_git_context", time.Since(resolveStart))
+	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q", projectCtx.projectID, projectCtx.refName, "")
 	requestBody := gitcore.GitStorageChainAuditRequest{}
+	parseStart := time.Now()
+	timings.StageStart("parse_request_body")
 	if errResponse := parseOptionalAnalyticsBody(ctx, &requestBody, map[string]any{"project_id": projectCtx.projectID}); errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	timings.Record("parse_request_body", time.Since(parseStart))
+	probeMode, ok := gitcore.NormalizeStorageChainProbeMode(requestBody.ProbeMode)
+	if !ok {
+		response := httputil.NewError("invalid_request", "probe_mode must be either full or inventory_only", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	bucketMode := gitcore.StorageChainBucketModeItems
+	if strings.TrimSpace(requestBody.BucketInventoryMode) != "" {
+		var valid bool
+		bucketMode, valid = gitcore.NormalizeStorageChainBucketInventoryMode(requestBody.BucketInventoryMode)
+		if !valid {
+			response := httputil.NewError("invalid_request", "bucket_inventory_mode must be either validate or items", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+			response.WriteLog(handler.logger)
+			return response.Write(ctx)
+		}
+	}
+	findingLimit := requestBody.FindingLimit
+	if findingLimit == 0 {
+		findingLimit = defaultStorageChainFindingLimit
+	}
+	if findingLimit < -1 {
+		response := httputil.NewError("invalid_request", "finding_limit must be -1 for all findings or a positive integer", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
+	bucketPathPrefix := normalizeAnalyticsSubpath(requestBody.BucketPathPrefix)
+	if bucketPathPrefix != "" && bucketMode != gitcore.StorageChainBucketModeItems {
+		response := httputil.NewError("invalid_request", "bucket_path_prefix requires bucket_inventory_mode=items", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+		response.WriteLog(handler.logger)
+		return response.Write(ctx)
+	}
 	projectCtx.applyRequestRef(requestBody.Ref)
 	gitSubpath := normalizeAnalyticsSubpath(requestBody.GitSubpath)
-	response, err := handler.storageAnalytics.BuildStorageChainAudit(
+	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, probeMode, bucketMode, bucketPathPrefix, findingLimit)
+	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
+	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
 		projectCtx.organization,
@@ -130,11 +179,35 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 		projectCtx.mirrorPath,
 		projectCtx.repo,
 		projectCtx.hash,
+		gitcore.StorageChainAuditOptions{
+			ProbeMode:           probeMode,
+			BucketInventoryMode: bucketMode,
+			BucketPathPrefix:    bucketPathPrefix,
+			FindingLimit:        findingLimit,
+			Timings:             timings,
+		},
 	)
 	if err != nil {
+		handler.logger.Info("storage_chain_audit_request_error %s error=%q timings=%s", timings.DebugPrefix, err.Error(), formatStorageChainTimingSnapshot(timings))
 		return handler.writeGitAnalyticsError(ctx, projectCtx.projectID, projectCtx.refName, gitSubpath, err)
 	}
-	return httputil.JSON(response, http.StatusOK).Write(ctx)
+	writeStart := time.Now()
+	timings.StageStart("json_response")
+	writeErr := httputil.JSON(response, http.StatusOK).Write(ctx)
+	timings.Record("json_response", time.Since(writeStart))
+	handler.logStorageChainAuditTimings(projectCtx, gitSubpath, probeMode, bucketMode, response, timings)
+	return writeErr
+}
+
+func formatStorageChainTimingSnapshot(timings *gitcore.StorageChainAuditTimings) string {
+	parts := make([]string, 0)
+	for _, stage := range timings.Snapshot() {
+		if stage.Stage == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s_ms=%d", stage.Stage, stage.Duration.Milliseconds()))
+	}
+	return strings.Join(parts, ",")
 }
 
 func (handler *Handler) handleGitProjectStorageCleanupApplyPOST(ctx fiber.Ctx) error {
@@ -216,6 +289,10 @@ func (handler *Handler) parseCleanupAnalyticsRequest(ctx fiber.Ctx) (*gitAnalyti
 }
 
 func (handler *Handler) resolveGitAnalyticsContext(ctx fiber.Ctx) (*gitAnalyticsContext, *httputil.ErrorResponse) {
+	return handler.resolveGitAnalyticsContextWithTimings(ctx, nil)
+}
+
+func (handler *Handler) resolveGitAnalyticsContextWithTimings(ctx fiber.Ctx, timings *gitcore.StorageChainAuditTimings) (*gitAnalyticsContext, *httputil.ErrorResponse) {
 	if handler.storageAnalytics == nil {
 		response := httputil.NewError("internal_error", "storage analytics service is not configured", http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)
@@ -238,9 +315,12 @@ func (handler *Handler) resolveGitAnalyticsContext(ctx fiber.Ctx) (*gitAnalytics
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
 	if authorizationHeader != "" {
+		start := time.Now()
+		timings.StageStart("mirror_warmup")
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		timings.Record("mirror_warmup", time.Since(start))
 		if err != nil {
 			handler.logger.Warning("failed to warm git mirror for %s analytics: %v", projectID, err)
 		}
@@ -319,4 +399,40 @@ func (handler *Handler) writeGitAnalyticsError(ctx fiber.Ctx, projectID string, 
 	}, nil)
 	response.WriteLog(handler.logger)
 	return response.Write(ctx)
+}
+
+func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsContext, gitSubpath string, probeMode string, bucketMode string, response *gitcore.GitStorageChainAuditResponse, timings *gitcore.StorageChainAuditTimings) {
+	if projectCtx == nil || response == nil {
+		return
+	}
+	parts := make([]string, 0)
+	for _, stage := range timings.Snapshot() {
+		if stage.Stage == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s_ms=%d", stage.Stage, stage.Duration.Milliseconds()))
+	}
+	bucketPathExists := "unknown"
+	if response.Summary.BucketPathExists != nil {
+		bucketPathExists = strconv.FormatBool(*response.Summary.BucketPathExists)
+	}
+	handler.logger.Info(
+		"storage_chain_audit project_id=%s ref=%s git_subpath=%q probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
+		projectCtx.projectID,
+		projectCtx.refName,
+		gitSubpath,
+		probeMode,
+		bucketMode,
+		bucketPathExists,
+		response.Summary.BucketSummaryMode,
+		response.Summary.BucketInventoryAvailable,
+		response.Summary.TotalFindings,
+		response.Summary.ReturnedFindings,
+		response.Summary.FindingsTruncated,
+		response.Summary.FindingLimit,
+		response.Summary.BucketObjectCount,
+		response.Summary.SyfonRecordCount,
+		response.Summary.GitTrackedFileCount,
+		strings.Join(parts, " "),
+	)
 }

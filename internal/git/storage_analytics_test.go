@@ -18,26 +18,32 @@ import (
 )
 
 type fakeStorageAnalyticsBackend struct {
-	projectRecords                []gintegrationsyfon.ProjectRecord
-	bulkRecords                   map[string][]gintegrationsyfon.ProjectRecord
-	buckets                       map[string]domain.StorageBucket
-	bucketScopes                  map[string][]domain.StorageBucketScope
-	projectScopes                 []domain.StorageBucketScope
-	usageByObject                 map[string]gintegrationsyfon.FileUsage
-	probeResults                  map[string]gintegrationsyfon.BulkStorageProbeResult
-	bucketObjects                 []gintegrationsyfon.ProjectBucketObject
-	listProjectBucketObjectsErr   error
-	listBucketsCalls              int
-	listBucketScopesCalls         int
-	listProjectAuditRecordsCalls  int
-	listProjectScopesCalls        int
-	listProjectFileUsageCalls     int
-	listProjectBucketObjectsCalls int
-	probeCalls                    int
-	probeItems                    []gintegrationsyfon.BulkStorageProbeItem
-	deletedIDs                    []string
-	updatedAccessMethods          map[string][]gintegrationsyfon.ProjectAccessMethod
-	deletedBucketObjects          []string
+	projectRecords                     []gintegrationsyfon.ProjectRecord
+	bulkRecords                        map[string][]gintegrationsyfon.ProjectRecord
+	buckets                            map[string]domain.StorageBucket
+	bucketScopes                       map[string][]domain.StorageBucketScope
+	projectScopes                      []domain.StorageBucketScope
+	usageByObject                      map[string]gintegrationsyfon.FileUsage
+	probeResults                       map[string]gintegrationsyfon.BulkStorageProbeResult
+	listProbeResults                   map[string]gintegrationsyfon.BulkStorageProbeResult
+	bucketObjects                      []gintegrationsyfon.ProjectBucketObject
+	listProjectBucketObjectsErr        error
+	listBucketsCalls                   int
+	listBucketScopesCalls              int
+	listProjectAuditRecordsCalls       int
+	listProjectScopesCalls             int
+	listProjectFileUsageCalls          int
+	listProjectBucketObjectsCalls      int
+	listProjectBucketObjectsPathPrefix string
+	listProjectBucketSummaryCalls      int
+	listProjectBucketSummaryMode       string
+	probeCalls                         int
+	probeItems                         []gintegrationsyfon.BulkStorageProbeItem
+	listProbeCalls                     int
+	listProbeItems                     []gintegrationsyfon.BulkStorageProbeItem
+	deletedIDs                         []string
+	updatedAccessMethods               map[string][]gintegrationsyfon.ProjectAccessMethod
+	deletedBucketObjects               []string
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error) {
@@ -109,12 +115,32 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsage(ctx context.Contex
 	return out, nil
 }
 
-func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectBucketObject, error) {
+func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error) {
 	fake.listProjectBucketObjectsCalls++
+	fake.listProjectBucketObjectsPathPrefix = pathPrefix
 	if fake.listProjectBucketObjectsErr != nil {
 		return nil, fake.listProjectBucketObjectsErr
 	}
 	return append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...), nil
+}
+
+func (fake *fakeStorageAnalyticsBackend) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error) {
+	fake.listProjectBucketSummaryCalls++
+	fake.listProjectBucketSummaryMode = mode
+	var totalBytes int64
+	for _, item := range fake.bucketObjects {
+		totalBytes += item.SizeBytes
+	}
+	return &gintegrationsyfon.ProjectBucketSummary{
+		Provider:    "s3",
+		Bucket:      "bucket",
+		Prefix:      organization + "/" + project,
+		ObjectURL:   "s3://bucket/" + organization + "/" + project,
+		Exists:      len(fake.bucketObjects) > 0,
+		ObjectCount: len(fake.bucketObjects),
+		TotalBytes:  totalBytes,
+		Mode:        mode,
+	}, nil
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
@@ -135,6 +161,30 @@ func (fake *fakeStorageAnalyticsBackend) BulkProbeStorageObjects(ctx context.Con
 			ValidationStatus: "matched",
 			SizeBytes:        item.ExpectedSizeBytes,
 			MetaSHA256:       item.ExpectedSHA256,
+		})
+	}
+	return out, nil
+}
+
+func (fake *fakeStorageAnalyticsBackend) BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
+	fake.listProbeCalls++
+	fake.listProbeItems = append(fake.listProbeItems, items...)
+	out := make([]gintegrationsyfon.BulkStorageProbeResult, 0, len(items))
+	for _, item := range items {
+		if result, ok := fake.listProbeResults[item.ID]; ok {
+			out = append(out, result)
+			continue
+		}
+		exists := true
+		out = append(out, gintegrationsyfon.BulkStorageProbeResult{
+			ID:               item.ID,
+			ObjectURL:        item.ObjectURL,
+			Exists:           exists,
+			Status:           "present",
+			ValidationStatus: "matched",
+			SizeBytes:        item.ExpectedSizeBytes,
+			SizeMatch:        ptrBool(true),
+			NameMatch:        ptrBool(true),
 		})
 	}
 	return out, nil
@@ -743,6 +793,213 @@ func TestBuildStorageChainAuditUsesProjectAuditSourcesAndTargetsProbes(t *testin
 	}
 }
 
+func TestBuildStorageChainAuditInventoryOnlySkipsTargetedProbes(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/present"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/present", Bucket: "bucket", Key: "present", Path: "present", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"data",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly},
+	)
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if backend.probeCalls != 0 || len(backend.probeItems) != 0 {
+		t.Fatalf("expected inventory-only audit to skip targeted probes, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected inventory-derived complete chain, got summary %+v", chain.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt":  lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/mismatch.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Name: "present.txt", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/present.txt"}},
+			{ObjectID: "obj-mismatch", Name: "expected.txt", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, AccessURLs: []string{"s3://bucket/mismatch.txt"}},
+			{ObjectID: "obj-syfon-only", Name: "syfon-only.txt", Checksum: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", Organization: "org", Project: "proj", Size: 300, AccessURLs: []string{"s3://bucket/syfon-only.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/present.txt", Bucket: "bucket", Key: "present.txt", Path: "present.txt", SizeBytes: 100},
+		},
+		listProbeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageListValidationRequestKey("s3://bucket/mismatch.txt", 200, "expected.txt"): {
+				ID:                   storageListValidationRequestKey("s3://bucket/mismatch.txt", 200, "expected.txt"),
+				ObjectURL:            "s3://bucket/mismatch.txt",
+				Provider:             "s3",
+				Bucket:               "bucket",
+				Key:                  "mismatch.txt",
+				Path:                 "mismatch.txt",
+				Exists:               true,
+				Status:               "present",
+				ValidationStatus:     "mismatched",
+				SizeBytes:            int64Ptr(200),
+				SizeMatch:            ptrBool(true),
+				NameMatch:            ptrBool(false),
+				ValidationMismatches: []string{"name"},
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"data",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err != nil {
+		t.Fatalf("build validate chain audit: %v", err)
+	}
+	if backend.listProjectBucketObjectsCalls != 0 {
+		t.Fatalf("expected validate mode to skip recursive bucket inventory, got %d calls", backend.listProjectBucketObjectsCalls)
+	}
+	if backend.listProjectBucketSummaryCalls != 0 {
+		t.Fatalf("expected validate mode to skip bucket summary preflight, got %d calls", backend.listProjectBucketSummaryCalls)
+	}
+	if backend.probeCalls != 0 {
+		t.Fatalf("expected validate mode to skip HEAD probes, got %d calls", backend.probeCalls)
+	}
+	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 3 {
+		t.Fatalf("expected three bulk LIST validation items, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
+	}
+	if backend.listProbeItems[0].ExpectedName == "" && backend.listProbeItems[1].ExpectedName == "" {
+		t.Fatalf("expected LIST validation items to include expected Syfon names, got %+v", backend.listProbeItems)
+	}
+	if chain.Summary.BucketPathExists != nil || chain.Summary.BucketSummaryMode != "" {
+		t.Fatalf("expected validate mode not to claim bucket prefix summary, got %+v", chain.Summary)
+	}
+	if chain.Summary.BucketObjectCount != 3 || chain.Summary.CountsByKind["bucket_only_object"] != 0 {
+		t.Fatalf("expected validate mode to count validated objects without bucket-only inventory, got summary %+v", chain.Summary)
+	}
+	if chain.Summary.CountsByKind["bucket_syfon_git_complete"] != 1 {
+		t.Fatalf("expected validate mode to count clean Syfon/Git/bucket join, got summary %+v", chain.Summary)
+	}
+	if chain.Summary.CountsByKind["bucket_syfon_no_git"] != 1 {
+		t.Fatalf("expected validate mode to report Syfon-backed no-Git record, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["git_syfon_metadata_mismatch"]; got != 1 {
+		t.Fatalf("expected one LIST-derived metadata mismatch, got summary %+v", chain.Summary)
+	}
+	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
+	assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/mismatch.txt")
+	assertHasChainFinding(t, chain.Findings, "bucket_syfon_no_git", "syfon-only.txt")
+}
+
+func TestExpectedStorageObjectNameForListValidationSkipsContentAddressedKeys(t *testing.T) {
+	if got := expectedStorageObjectNameForListValidation("s3://cbds/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/ec4b068cb42b52449dd44052c3bfb2a459b00336a9cd42cd29c22ca1d1b26cb0", "CONFIG/cbds-BForePC.json"); got != "" {
+		t.Fatalf("expected content-addressed storage key to skip name validation, got %q", got)
+	}
+	if got := expectedStorageObjectNameForListValidation("s3://bucket/path/cbds-BForePC.json", "CONFIG/cbds-BForePC.json"); got != "cbds-BForePC.json" {
+		t.Fatalf("expected filename-backed storage key to validate basename, got %q", got)
+	}
+}
+
+func TestBuildStorageChainAuditCachesProjectChainInputs(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/present"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/present", Bucket: "bucket", Key: "present", Path: "present", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	options := StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly}
+
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build first chain audit: %v", err)
+	}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build second chain audit: %v", err)
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected cached project records, got %d calls", backend.listProjectAuditRecordsCalls)
+	}
+	if backend.listProjectScopesCalls != 1 {
+		t.Fatalf("expected cached project scopes, got %d calls", backend.listProjectScopesCalls)
+	}
+	if backend.listProjectBucketObjectsCalls != 1 {
+		t.Fatalf("expected cached project bucket inventory, got %d calls", backend.listProjectBucketObjectsCalls)
+	}
+}
+
+func TestBuildStorageChainAuditForwardsBucketPathPrefixForExplicitInventory(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"README.md": "fixture",
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/root/CONFIG/a.json", Bucket: "bucket", Key: "root/CONFIG/a.json", Path: "CONFIG/a.json", SizeBytes: 10},
+			{ObjectURL: "s3://bucket/root/CONFIG/nested/b.json", Bucket: "bucket", Key: "root/CONFIG/nested/b.json", Path: "CONFIG/nested/b.json", SizeBytes: 15},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	response, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeItems,
+		BucketPathPrefix:    "/CONFIG/",
+		ProbeMode:           StorageChainProbeModeInventoryOnly,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if backend.listProjectBucketObjectsCalls != 1 {
+		t.Fatalf("expected one recursive bucket inventory call, got %d", backend.listProjectBucketObjectsCalls)
+	}
+	if backend.listProjectBucketObjectsPathPrefix != "CONFIG" {
+		t.Fatalf("expected bucket path prefix to be forwarded, got %q", backend.listProjectBucketObjectsPathPrefix)
+	}
+	if response.BucketPathPrefix != "CONFIG" {
+		t.Fatalf("expected response bucket path prefix, got %q", response.BucketPathPrefix)
+	}
+	if response.Summary.BucketObjectCount != 2 {
+		t.Fatalf("expected recursive LIST rows to drive bucket count, got %+v", response.Summary)
+	}
+}
+
 func TestBuildStorageChainAuditSurfacesMetadataMismatchAndEvidence(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
@@ -887,16 +1144,17 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
-		t.Fatalf("expected stale raw scoped URL to surface as broken bucket mapping, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
+		t.Fatalf("expected mapped bucket match to suppress stale raw URL misclassification, got %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 0 {
-		t.Fatalf("expected stale raw scoped URL to block clean-chain count, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected mapped bucket match to preserve clean-chain count, got %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
-	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "data/slide.ome.tiff")
-	if finding.Evidence == nil || !contains(finding.Evidence.AccessURLs, "s3://bforepc-prod/OHSU/slide.ome.tiff") {
-		t.Fatalf("expected raw stale access URL in evidence, got %+v", finding)
+	for _, finding := range findings {
+		if finding.NormalizedPath == "data/slide.ome.tiff" {
+			t.Fatalf("did not expect stale raw URL to produce a chain finding once mapped object exists: %+v", finding)
+		}
 	}
 	if len(backend.probeItems) != 2 {
 		t.Fatalf("expected raw and canonical probes, got %+v", backend.probeItems)
@@ -904,6 +1162,86 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	if !containsProbeTarget(backend.probeItems, "s3://bforepc-prod/OHSU/slide.ome.tiff") || !containsProbeTarget(backend.probeItems, "s3://bforepc/bforepc-prod/OHSU/slide.ome.tiff") {
 		t.Fatalf("expected probe targets to include raw and canonical URLs, got %+v", backend.probeItems)
 	}
+}
+
+func TestBuildStorageChainAuditFlagsExactPathMismatchWhenHashExistsElsewhereInBucket(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"CONFIG/cbds-BForePC.json": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 23739),
+	})
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	objectHash := "ec4b068cb42b52449dd44052c3bfb2a459b00336a9cd42cd29c22ca1d1b26cb0"
+	rawURL := "s3://cbds/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/" + objectHash
+	canonicalURL := "s3://bforepc/bforepc-prod/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/" + objectHash
+	relocatedURL := "s3://bforepc/bforepc-prod/2532ab27-4961-57da-8bef-e9774093bf56/" + objectHash
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-a",
+				Name:         "CONFIG/cbds-BForePC.json",
+				Checksum:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Organization: "HTAN_INT",
+				Project:      "BForePC",
+				Size:         23739,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{rawURL},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bforepc",
+				Organization: "HTAN_INT",
+				ProjectID:    "BForePC",
+				Path:         "s3://bforepc/bforepc-prod",
+			},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL: relocatedURL,
+				Bucket:    "bforepc",
+				Key:       "bforepc-prod/2532ab27-4961-57da-8bef-e9774093bf56/" + objectHash,
+				Path:      objectHash,
+				SizeBytes: 23739,
+			},
+		},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey(rawURL, 23739, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"): {
+				ID:               storageProbeRequestKey(rawURL, 23739, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+				ObjectURL:        rawURL,
+				Bucket:           "cbds",
+				Key:              "0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/" + objectHash,
+				Status:           "present",
+				Exists:           true,
+				ValidationStatus: "matched",
+			},
+			storageProbeRequestKey(canonicalURL, 23739, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"): {
+				ID:               storageProbeRequestKey(canonicalURL, 23739, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+				ObjectURL:        canonicalURL,
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/" + objectHash,
+				Status:           "not_found",
+				Exists:           false,
+				ErrorKind:        "object_not_found",
+				ValidationStatus: "unverifiable",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "CONFIG", mirrorPath, repo, hash)
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
+		t.Fatalf("expected exact mapped-key miss to surface as broken bucket mapping, got %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_only_object"]; got != 0 {
+		t.Fatalf("expected relocated hash not to be double-counted as bucket-only, got %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 0 {
+		t.Fatalf("expected exact mapped-key miss to block clean-chain count, got %+v", chain.Summary)
+	}
+	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "CONFIG/cbds-BForePC.json")
 }
 
 func TestBuildStorageChainAuditNormalizesChecksumJoinKeys(t *testing.T) {
@@ -975,7 +1313,7 @@ func TestBuildStorageChainAuditNormalizesChecksumJoinKeys(t *testing.T) {
 	}
 }
 
-func TestBuildStorageChainAuditDegradesWhenProjectBucketListDenied(t *testing.T) {
+func TestBuildStorageChainAuditFailsWhenProjectBucketListDenied(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -1019,29 +1357,18 @@ func TestBuildStorageChainAuditDegradesWhenProjectBucketListDenied(t *testing.T)
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
-	if err != nil {
-		t.Fatalf("build chain audit: %v", err)
+	_, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	if err == nil {
+		t.Fatal("expected bucket inventory failure to hard-error chain audit")
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
-		t.Fatalf("expected one connected chain when bucket inventory degrades to probes, got %+v", chain.Summary)
-	}
-	if chain.Summary.BucketInventoryAvailable {
-		t.Fatalf("expected bucket inventory to be marked unavailable, got %+v", chain.Summary)
-	}
-	if !strings.Contains(chain.Summary.BucketInventoryError, "mapped bucket target may be missing or inaccessible") {
-		t.Fatalf("expected bucket inventory error detail, got %+v", chain.Summary)
-	}
-	for _, finding := range loadAllChainFindings(t, service, "org", "proj", chain) {
-		if finding.Kind == "git_only_no_syfon" {
-			t.Fatalf("did not expect git-only miss after degraded inventory fallback: %+v", finding)
-		}
+	if !strings.Contains(err.Error(), "mapped bucket target may be missing or inaccessible") {
+		t.Fatalf("expected bucket inventory error detail, got %v", err)
 	}
 	if backend.listProjectBucketObjectsCalls != 1 {
 		t.Fatalf("expected one bucket inventory attempt, got %d", backend.listProjectBucketObjectsCalls)
 	}
-	if backend.probeCalls != 1 {
-		t.Fatalf("expected probe fallback to run once, got %d", backend.probeCalls)
+	if backend.probeCalls != 0 {
+		t.Fatalf("expected no probe fallback after bucket inventory failure, got %d", backend.probeCalls)
 	}
 }
 
@@ -1272,6 +1599,16 @@ func ptrTime(value time.Time) *time.Time {
 	return &copyValue
 }
 
+func ptrBool(value bool) *bool {
+	copyValue := value
+	return &copyValue
+}
+
+func int64Ptr(value int64) *int64 {
+	copyValue := value
+	return &copyValue
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1331,4 +1668,13 @@ func assertHasChainFinding(t *testing.T, findings []GitStorageChainFinding, kind
 	}
 	t.Fatalf("missing chain finding kind=%s path=%s in %+v", kind, path, findings)
 	return GitStorageChainFinding{}
+}
+
+func assertNoChainFinding(t *testing.T, findings []GitStorageChainFinding, kind string) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Kind == kind {
+			t.Fatalf("unexpected chain finding kind=%s in %+v", kind, findings)
+		}
+	}
 }

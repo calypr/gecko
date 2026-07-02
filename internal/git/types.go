@@ -391,8 +391,12 @@ type GitStorageCleanupAuditRequest struct {
 }
 
 type GitStorageChainAuditRequest struct {
-	GitSubpath string `json:"git_subpath,omitempty"`
-	Ref        string `json:"ref,omitempty"`
+	GitSubpath          string `json:"git_subpath,omitempty"`
+	Ref                 string `json:"ref,omitempty"`
+	ProbeMode           string `json:"probe_mode,omitempty"`
+	BucketInventoryMode string `json:"bucket_inventory_mode,omitempty"`
+	BucketPathPrefix    string `json:"bucket_path_prefix,omitempty"`
+	FindingLimit        int    `json:"finding_limit,omitempty"`
 }
 
 type GitStorageChainFinding struct {
@@ -417,9 +421,15 @@ type GitStorageChainFinding struct {
 type GitStorageChainAuditSummary struct {
 	CountsByKind             map[string]int `json:"counts_by_kind"`
 	TotalFindings            int            `json:"total_findings"`
+	ReturnedFindings         int            `json:"returned_findings"`
+	FindingsTruncated        bool           `json:"findings_truncated"`
+	FindingLimit             int            `json:"finding_limit,omitempty"`
 	BucketObjectCount        int            `json:"bucket_object_count"`
 	SyfonRecordCount         int            `json:"syfon_record_count"`
 	GitTrackedFileCount      int            `json:"git_tracked_file_count"`
+	BucketPathExists         *bool          `json:"bucket_path_exists,omitempty"`
+	BucketPathObjectURL      string         `json:"bucket_path_object_url,omitempty"`
+	BucketSummaryMode        string         `json:"bucket_summary_mode,omitempty"`
 	BucketInventoryAvailable bool           `json:"bucket_inventory_available"`
 	BucketInventoryError     string         `json:"bucket_inventory_error,omitempty"`
 }
@@ -434,10 +444,11 @@ type GitStorageChainIssueGroup struct {
 }
 
 type GitStorageChainAuditResponse struct {
-	Findings   []GitStorageChainFinding    `json:"findings"`
-	Groups     []GitStorageChainIssueGroup `json:"groups,omitempty"`
-	Summary    GitStorageChainAuditSummary `json:"summary"`
-	PathPrefix string                      `json:"path_prefix"`
+	Findings         []GitStorageChainFinding    `json:"findings"`
+	Groups           []GitStorageChainIssueGroup `json:"groups,omitempty"`
+	Summary          GitStorageChainAuditSummary `json:"summary"`
+	PathPrefix       string                      `json:"path_prefix"`
+	BucketPathPrefix string                      `json:"bucket_path_prefix,omitempty"`
 }
 
 type GitStorageCleanupAccessProbe struct {
@@ -456,6 +467,7 @@ type GitStorageCleanupAccessProbe struct {
 	LastModified         string   `json:"last_modified,omitempty"`
 	ValidationStatus     string   `json:"validation_status,omitempty"`
 	SizeMatch            *bool    `json:"size_match,omitempty"`
+	NameMatch            *bool    `json:"name_match,omitempty"`
 	SHA256Match          *bool    `json:"sha256_match,omitempty"`
 	ValidationMismatches []string `json:"validation_mismatches,omitempty"`
 }

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/calypr/gecko/internal/git/domain"
@@ -23,6 +25,7 @@ import (
 
 const refreshAuthzHeader = "X-Syfon-Refresh-Authz"
 const bulkStorageProbeBatchSize = 200
+const bulkStorageProbeConcurrency = 4
 
 type Manager struct {
 	baseURL string
@@ -31,6 +34,7 @@ type Manager struct {
 
 type ProjectRecord struct {
 	ObjectID      string
+	Name          string
 	Checksum      string
 	Organization  string
 	Project       string
@@ -53,6 +57,7 @@ type BulkStorageProbeItem struct {
 	ObjectURL         string
 	ExpectedSizeBytes *int64
 	ExpectedSHA256    string
+	ExpectedName      string
 }
 
 type BulkStorageProbeResult struct {
@@ -72,8 +77,21 @@ type BulkStorageProbeResult struct {
 	LastModified         string
 	ValidationStatus     string
 	SizeMatch            *bool
+	NameMatch            *bool
 	SHA256Match          *bool
 	ValidationMismatches []string
+}
+
+type ProjectBucketSummary struct {
+	ObjectURL   string
+	Provider    string
+	Bucket      string
+	Prefix      string
+	Exists      bool
+	ObjectCount int
+	TotalBytes  int64
+	ComputedAt  string
+	Mode        string
 }
 
 type ProjectBucketObject struct {
@@ -293,6 +311,7 @@ func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizati
 	var response struct {
 		Items []struct {
 			ObjectID      string   `json:"object_id"`
+			Name          string   `json:"name"`
 			Checksum      string   `json:"checksum"`
 			Organization  string   `json:"organization"`
 			Project       string   `json:"project"`
@@ -334,6 +353,7 @@ func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizati
 		}
 		out = append(out, ProjectRecord{
 			ObjectID:      strings.TrimSpace(item.ObjectID),
+			Name:          strings.TrimSpace(item.Name),
 			Checksum:      checksum,
 			Organization:  strings.TrimSpace(item.Organization),
 			Project:       strings.TrimSpace(item.Project),
@@ -588,99 +608,218 @@ func (manager *Manager) BulkUpdateAccessMethods(ctx context.Context, authorizati
 }
 
 func (manager *Manager) BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false)
+}
+
+func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeResult, error) {
 	if len(items) == 0 {
 		return []BulkStorageProbeResult{}, nil
 	}
-	out := make([]BulkStorageProbeResult, 0, len(items))
+	started := time.Now()
+	batchCount := (len(items) + bulkStorageProbeBatchSize - 1) / bulkStorageProbeBatchSize
+	log.Printf("INFO: syfon_bulk_storage_request_start path=%s items=%d batch_size=%d batches=%d concurrency=%d include_expected_name=%t", requestPath, len(items), bulkStorageProbeBatchSize, batchCount, bulkStorageProbeConcurrency, includeExpectedName)
+	resultsByID := make(map[string]BulkStorageProbeResult, len(items))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, bulkStorageProbeConcurrency)
+	var firstErr error
 	for start := 0; start < len(items); start += bulkStorageProbeBatchSize {
 		end := start + bulkStorageProbeBatchSize
 		if end > len(items) {
 			end = len(items)
 		}
-		requestBody := struct {
-			Items []struct {
-				ID                string `json:"id,omitempty"`
-				ObjectURL         string `json:"object_url,omitempty"`
-				ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
-				ExpectedSHA256    string `json:"expected_sha256,omitempty"`
-			} `json:"items"`
-		}{Items: make([]struct {
+		batchStart := start
+		batch := append([]BulkStorageProbeItem(nil), items[start:end]...)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			batchStarted := time.Now()
+			results, err := manager.probeStorageObjectBatch(ctx, authorizationHeader, requestPath, batch, includeExpectedName)
+			batchMs := time.Since(batchStarted).Milliseconds()
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				log.Printf("INFO: syfon_bulk_storage_request_batch path=%s batch_start=%d batch_items=%d duration_ms=%d error=%q", requestPath, batchStart, len(batch), batchMs, err.Error())
+				if firstErr == nil {
+					firstErr = fmt.Errorf("bulk syfon storage object request %s batch starting at %d: %w", requestPath, batchStart, err)
+				}
+				return
+			}
+			for _, result := range results {
+				resultsByID[strings.TrimSpace(result.ID)] = result
+			}
+			log.Printf("INFO: syfon_bulk_storage_request_batch path=%s batch_start=%d batch_items=%d result_items=%d duration_ms=%d", requestPath, batchStart, len(batch), len(results), batchMs)
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d error=%q", requestPath, len(items), len(resultsByID), batchCount, time.Since(started).Milliseconds(), firstErr.Error())
+		return nil, firstErr
+	}
+	out := make([]BulkStorageProbeResult, 0, len(resultsByID))
+	for _, item := range items {
+		if result, ok := resultsByID[strings.TrimSpace(item.ID)]; ok {
+			out = append(out, result)
+		}
+	}
+	log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d", requestPath, len(items), len(out), batchCount, time.Since(started).Milliseconds())
+	return out, nil
+}
+
+func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeResult, error) {
+	requestBody := struct {
+		Items []struct {
 			ID                string `json:"id,omitempty"`
 			ObjectURL         string `json:"object_url,omitempty"`
 			ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
 			ExpectedSHA256    string `json:"expected_sha256,omitempty"`
-		}, 0, end-start)}
-		for _, item := range items[start:end] {
-			requestBody.Items = append(requestBody.Items, struct {
-				ID                string `json:"id,omitempty"`
-				ObjectURL         string `json:"object_url,omitempty"`
-				ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
-				ExpectedSHA256    string `json:"expected_sha256,omitempty"`
-			}{
-				ID:                strings.TrimSpace(item.ID),
-				ObjectURL:         strings.TrimSpace(item.ObjectURL),
-				ExpectedSizeBytes: item.ExpectedSizeBytes,
-				ExpectedSHA256:    strings.TrimSpace(item.ExpectedSHA256),
-			})
+			ExpectedName      string `json:"expected_name,omitempty"`
+		} `json:"items"`
+	}{Items: make([]struct {
+		ID                string `json:"id,omitempty"`
+		ObjectURL         string `json:"object_url,omitempty"`
+		ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
+		ExpectedSHA256    string `json:"expected_sha256,omitempty"`
+		ExpectedName      string `json:"expected_name,omitempty"`
+	}, 0, len(items))}
+	for _, item := range items {
+		row := struct {
+			ID                string `json:"id,omitempty"`
+			ObjectURL         string `json:"object_url,omitempty"`
+			ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
+			ExpectedSHA256    string `json:"expected_sha256,omitempty"`
+			ExpectedName      string `json:"expected_name,omitempty"`
+		}{
+			ID:                strings.TrimSpace(item.ID),
+			ObjectURL:         strings.TrimSpace(item.ObjectURL),
+			ExpectedSizeBytes: item.ExpectedSizeBytes,
+			ExpectedSHA256:    strings.TrimSpace(item.ExpectedSHA256),
 		}
-		var response struct {
-			Items []struct {
-				ID                   string   `json:"id"`
-				ObjectURL            string   `json:"object_url"`
-				Provider             string   `json:"provider"`
-				Bucket               string   `json:"bucket"`
-				Key                  string   `json:"key"`
-				Path                 string   `json:"path"`
-				Exists               bool     `json:"exists"`
-				Status               string   `json:"status"`
-				Error                string   `json:"error"`
-				ErrorKind            string   `json:"error_kind"`
-				SizeBytes            *int64   `json:"size_bytes"`
-				MetaSHA256           string   `json:"meta_sha256"`
-				ETag                 string   `json:"etag"`
-				LastModified         string   `json:"last_modified"`
-				ValidationStatus     string   `json:"validation_status"`
-				SizeMatch            *bool    `json:"size_match"`
-				SHA256Match          *bool    `json:"sha256_match"`
-				ValidationMismatches []string `json:"validation_mismatches"`
-			} `json:"items"`
+		if includeExpectedName {
+			row.ExpectedName = strings.TrimSpace(item.ExpectedName)
 		}
-		if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, "/data/inspect/bulk", nil, requestBody, &response); err != nil {
-			return nil, fmt.Errorf("bulk probe syfon storage objects: %w", err)
-		}
-		for _, item := range response.Items {
-			out = append(out, BulkStorageProbeResult{
-				ID:                   strings.TrimSpace(item.ID),
-				ObjectURL:            strings.TrimSpace(item.ObjectURL),
-				Provider:             strings.TrimSpace(item.Provider),
-				Bucket:               strings.TrimSpace(item.Bucket),
-				Key:                  strings.TrimSpace(item.Key),
-				Path:                 strings.TrimSpace(item.Path),
-				Exists:               item.Exists,
-				Status:               strings.TrimSpace(item.Status),
-				Error:                strings.TrimSpace(item.Error),
-				ErrorKind:            strings.TrimSpace(item.ErrorKind),
-				SizeBytes:            item.SizeBytes,
-				MetaSHA256:           strings.TrimSpace(item.MetaSHA256),
-				ETag:                 strings.TrimSpace(item.ETag),
-				LastModified:         strings.TrimSpace(item.LastModified),
-				ValidationStatus:     strings.TrimSpace(item.ValidationStatus),
-				SizeMatch:            item.SizeMatch,
-				SHA256Match:          item.SHA256Match,
-				ValidationMismatches: append([]string(nil), item.ValidationMismatches...),
-			})
-		}
+		requestBody.Items = append(requestBody.Items, row)
+	}
+	var response struct {
+		Items []struct {
+			ID                   string   `json:"id"`
+			ObjectURL            string   `json:"object_url"`
+			Provider             string   `json:"provider"`
+			Bucket               string   `json:"bucket"`
+			Key                  string   `json:"key"`
+			Path                 string   `json:"path"`
+			Exists               bool     `json:"exists"`
+			Status               string   `json:"status"`
+			Error                string   `json:"error"`
+			ErrorKind            string   `json:"error_kind"`
+			SizeBytes            *int64   `json:"size_bytes"`
+			MetaSHA256           string   `json:"meta_sha256"`
+			ETag                 string   `json:"etag"`
+			LastModified         string   `json:"last_modified"`
+			ValidationStatus     string   `json:"validation_status"`
+			SizeMatch            *bool    `json:"size_match"`
+			NameMatch            *bool    `json:"name_match"`
+			SHA256Match          *bool    `json:"sha256_match"`
+			ValidationMismatches []string `json:"validation_mismatches"`
+		} `json:"items"`
+	}
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, requestPath, nil, requestBody, &response); err != nil {
+		return nil, fmt.Errorf("bulk syfon storage object request %s: %w", requestPath, err)
+	}
+	out := make([]BulkStorageProbeResult, 0, len(response.Items))
+	for _, item := range response.Items {
+		out = append(out, BulkStorageProbeResult{
+			ID:                   strings.TrimSpace(item.ID),
+			ObjectURL:            strings.TrimSpace(item.ObjectURL),
+			Provider:             strings.TrimSpace(item.Provider),
+			Bucket:               strings.TrimSpace(item.Bucket),
+			Key:                  strings.TrimSpace(item.Key),
+			Path:                 strings.TrimSpace(item.Path),
+			Exists:               item.Exists,
+			Status:               strings.TrimSpace(item.Status),
+			Error:                strings.TrimSpace(item.Error),
+			ErrorKind:            strings.TrimSpace(item.ErrorKind),
+			SizeBytes:            item.SizeBytes,
+			MetaSHA256:           strings.TrimSpace(item.MetaSHA256),
+			ETag:                 strings.TrimSpace(item.ETag),
+			LastModified:         strings.TrimSpace(item.LastModified),
+			ValidationStatus:     strings.TrimSpace(item.ValidationStatus),
+			SizeMatch:            item.SizeMatch,
+			NameMatch:            item.NameMatch,
+			SHA256Match:          item.SHA256Match,
+			ValidationMismatches: append([]string(nil), item.ValidationMismatches...),
+		})
 	}
 	return out, nil
 }
 
-func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string) ([]ProjectBucketObject, error) {
+func (manager *Manager) BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk-list", items, true)
+}
+
+func (manager *Manager) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*ProjectBucketSummary, error) {
+	started := time.Now()
+	trimmedOrg := strings.TrimSpace(organization)
+	trimmedProject := strings.TrimSpace(project)
+	trimmedMode := strings.TrimSpace(mode)
+	log.Printf("INFO: syfon_project_bucket_summary_request_start organization=%s project=%s mode=%s", trimmedOrg, trimmedProject, trimmedMode)
 	requestBody := struct {
 		Organization string `json:"organization,omitempty"`
 		Project      string `json:"project,omitempty"`
+		Mode         string `json:"mode,omitempty"`
+	}{
+		Organization: trimmedOrg,
+		Project:      trimmedProject,
+		Mode:         trimmedMode,
+	}
+	var response struct {
+		Summary *struct {
+			ObjectURL   string `json:"object_url"`
+			Provider    string `json:"provider"`
+			Bucket      string `json:"bucket"`
+			Prefix      string `json:"prefix"`
+			Exists      bool   `json:"exists"`
+			ObjectCount int    `json:"object_count"`
+			TotalBytes  int64  `json:"total_bytes"`
+			ComputedAt  string `json:"computed_at"`
+			Mode        string `json:"mode"`
+		} `json:"summary"`
+	}
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, "/data/inspect/project-bucket", nil, requestBody, &response); err != nil {
+		log.Printf("INFO: syfon_project_bucket_summary_request_done organization=%s project=%s mode=%s duration_ms=%d error=%q", trimmedOrg, trimmedProject, trimmedMode, time.Since(started).Milliseconds(), err.Error())
+		return nil, fmt.Errorf("inspect syfon project bucket summary: %w", err)
+	}
+	if response.Summary == nil {
+		log.Printf("INFO: syfon_project_bucket_summary_request_done organization=%s project=%s mode=%s duration_ms=%d error=%q", trimmedOrg, trimmedProject, trimmedMode, time.Since(started).Milliseconds(), "response summary is missing")
+		return nil, fmt.Errorf("inspect syfon project bucket summary: response summary is missing")
+	}
+	log.Printf("INFO: syfon_project_bucket_summary_request_done organization=%s project=%s mode=%s exists=%t object_count=%d total_bytes=%d duration_ms=%d", trimmedOrg, trimmedProject, trimmedMode, response.Summary.Exists, response.Summary.ObjectCount, response.Summary.TotalBytes, time.Since(started).Milliseconds())
+	return &ProjectBucketSummary{
+		ObjectURL:   strings.TrimSpace(response.Summary.ObjectURL),
+		Provider:    strings.TrimSpace(response.Summary.Provider),
+		Bucket:      strings.TrimSpace(response.Summary.Bucket),
+		Prefix:      strings.TrimSpace(response.Summary.Prefix),
+		Exists:      response.Summary.Exists,
+		ObjectCount: response.Summary.ObjectCount,
+		TotalBytes:  response.Summary.TotalBytes,
+		ComputedAt:  strings.TrimSpace(response.Summary.ComputedAt),
+		Mode:        strings.TrimSpace(response.Summary.Mode),
+	}, nil
+}
+
+func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+	requestBody := struct {
+		Organization string `json:"organization,omitempty"`
+		Project      string `json:"project,omitempty"`
+		Mode         string `json:"mode,omitempty"`
+		PathPrefix   string `json:"path_prefix,omitempty"`
 	}{
 		Organization: strings.TrimSpace(organization),
 		Project:      strings.TrimSpace(project),
+		Mode:         "items",
+		PathPrefix:   strings.Trim(strings.TrimSpace(pathPrefix), "/"),
 	}
 	var response struct {
 		Items []struct {

@@ -226,6 +226,62 @@ func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	}
 }
 
+func TestBulkListStorageObjectsSendsExpectedName(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk-list" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req struct {
+			Items []struct {
+				ID                string `json:"id"`
+				ObjectURL         string `json:"object_url"`
+				ExpectedSizeBytes *int64 `json:"expected_size_bytes"`
+				ExpectedName      string `json:"expected_name"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Items) != 1 || req.Items[0].ExpectedName != "file.bin" {
+			t.Fatalf("expected request to include expected_name, got %+v", req.Items)
+		}
+		sizeMatch := true
+		nameMatch := true
+		body, err := json.Marshal(map[string]any{"items": []map[string]any{{
+			"id":                req.Items[0].ID,
+			"object_url":        req.Items[0].ObjectURL,
+			"exists":            true,
+			"status":            "present",
+			"validation_status": "matched",
+			"size_match":        sizeMatch,
+			"name_match":        nameMatch,
+		}}})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	size := int64(17)
+	manager := NewManager("http://syfon.example", client)
+	results, err := manager.BulkListStorageObjects(context.Background(), "Bearer token", []BulkStorageProbeItem{{
+		ID:                "item-1",
+		ObjectURL:         "s3://bucket/file.bin",
+		ExpectedSizeBytes: &size,
+		ExpectedName:      "file.bin",
+	}})
+	if err != nil {
+		t.Fatalf("BulkListStorageObjects returned error: %v", err)
+	}
+	if len(results) != 1 || results[0].NameMatch == nil || !*results[0].NameMatch {
+		t.Fatalf("expected parsed name_match result, got %+v", results)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

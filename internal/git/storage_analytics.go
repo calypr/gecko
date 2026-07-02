@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"log"
 	"path"
 	"sort"
 	"strings"
@@ -17,6 +18,8 @@ import (
 
 const cleanupInactiveDays = 30
 const projectJoinCacheTTL = 45 * time.Second
+const chainInputCacheTTL = 45 * time.Second
+const storageChainValidationDebugSampleLimit = 20
 
 type storageAnalyticsBackend interface {
 	ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error)
@@ -26,8 +29,10 @@ type storageAnalyticsBackend interface {
 	ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
 	ListProjectFileUsage(ctx context.Context, authorizationHeader string, organization string, project string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
-	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectBucketObject, error)
+	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error)
+	ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error)
 	BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
+	BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error
 	DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]gintegrationsyfon.ProjectBucketDeleteResult, error)
 	BulkUpdateAccessMethods(ctx context.Context, authorizationHeader string, updates map[string][]gintegrationsyfon.ProjectAccessMethod) error
@@ -37,6 +42,8 @@ type StorageAnalyticsService struct {
 	storage          storageAnalyticsBackend
 	projectJoinMu    sync.RWMutex
 	projectJoinCache map[string]cachedProjectJoinState
+	chainInputMu     sync.RWMutex
+	chainInputCache  map[string]cachedChainInputState
 }
 
 func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyticsService {
@@ -46,6 +53,7 @@ func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyti
 	return &StorageAnalyticsService{
 		storage:          storage,
 		projectJoinCache: map[string]cachedProjectJoinState{},
+		chainInputCache:  map[string]cachedChainInputState{},
 	}
 }
 
@@ -110,6 +118,15 @@ type cachedProjectJoinState struct {
 	expiresAt         time.Time
 	recordsByChecksum map[string][]projectRecordState
 	usageByObjectID   map[string]gintegrationsyfon.FileUsage
+}
+
+type cachedChainInputState struct {
+	expiresAt          time.Time
+	projectRecords     []gintegrationsyfon.ProjectRecord
+	projectScopes      []domain.StorageBucketScope
+	bucketSummary      *gintegrationsyfon.ProjectBucketSummary
+	bucketObjects      []gintegrationsyfon.ProjectBucketObject
+	bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 }
 
 func BuildGitRepoInventory(ref string, gitSubpath string, repo *gogit.Repository, hash plumbing.Hash) ([]RepoInventoryFile, error) {
@@ -215,27 +232,64 @@ func (service *StorageAnalyticsService) BuildStorageCleanupAudit(ctx context.Con
 }
 
 func (service *StorageAnalyticsService) BuildStorageChainAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitStorageChainAuditResponse, error) {
-	inventory, err := service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
+	return service.BuildStorageChainAuditWithOptions(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, StorageChainAuditOptions{})
+}
+
+func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
+	probeMode, ok := NormalizeStorageChainProbeMode(options.ProbeMode)
+	if !ok {
+		return nil, fmt.Errorf("invalid storage chain probe mode %q", options.ProbeMode)
+	}
+	bucketMode, ok := NormalizeStorageChainBucketInventoryMode(options.BucketInventoryMode)
+	if !ok {
+		return nil, fmt.Errorf("invalid storage chain bucket inventory mode %q", options.BucketInventoryMode)
+	}
+	bucketPathPrefix := normalizeRepoSubpath(options.BucketPathPrefix)
+	start := time.Now()
+	options.Timings.StageStart("chain_setup_total")
+	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, bucketPathPrefix, options.Timings)
+	options.Timings.Record("chain_setup_total", time.Since(start))
 	if err != nil {
 		return nil, err
 	}
-	recordSet, err := service.loadProjectAuditRecordSet(ctx, authorizationHeader, organization, project)
+	storageViewStart := time.Now()
+	options.Timings.StageStart("storage_view")
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, probeMode, options.Timings)
+	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if err != nil {
 		return nil, err
 	}
-	storageView, err := service.loadStorageChainView(ctx, authorizationHeader, organization, project, recordSet)
-	if err != nil {
-		return nil, err
-	}
-	model := buildStorageChainAuditModel(gitSubpath, inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL)
+	modelStart := time.Now()
+	options.Timings.StageStart("model_build")
+	includeBucketOrigin := bucketMode != StorageChainBucketModeValidate && storageView.bucketInventoryAvailable
+	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, includeBucketOrigin)
+	options.Timings.Record("model_build", time.Since(modelStart))
 	model.Summary.BucketInventoryAvailable = storageView.bucketInventoryAvailable
 	model.Summary.BucketInventoryError = storageView.bucketInventoryError
+	if inputs.bucketSummary != nil {
+		exists := inputs.bucketSummary.Exists
+		model.Summary.BucketPathExists = &exists
+		model.Summary.BucketPathObjectURL = strings.TrimSpace(inputs.bucketSummary.ObjectURL)
+		model.Summary.BucketSummaryMode = strings.TrimSpace(inputs.bucketSummary.Mode)
+	}
+	findings := limitStorageChainFindings(model.Findings, options.FindingLimit)
+	model.Summary.ReturnedFindings = len(findings)
+	model.Summary.FindingLimit = options.FindingLimit
+	model.Summary.FindingsTruncated = len(findings) < len(model.Findings)
 	return &GitStorageChainAuditResponse{
-		Findings:   append([]GitStorageChainFinding(nil), model.Findings...),
-		Groups:     summarizeChainIssueGroups(model.Findings),
-		Summary:    model.Summary,
-		PathPrefix: model.PathPrefix,
+		Findings:         findings,
+		Groups:           summarizeChainIssueGroups(model.Findings),
+		Summary:          model.Summary,
+		PathPrefix:       model.PathPrefix,
+		BucketPathPrefix: bucketPathPrefix,
 	}, nil
+}
+
+func limitStorageChainFindings(findings []GitStorageChainFinding, limit int) []GitStorageChainFinding {
+	if limit <= 0 || limit >= len(findings) {
+		return append([]GitStorageChainFinding(nil), findings...)
+	}
+	return append([]GitStorageChainFinding(nil), findings[:limit]...)
 }
 
 func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, selectedRepoPaths []string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, checkStorage bool, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool, dryRun bool) (*GitStorageCleanupApplyResponse, error) {
@@ -535,44 +589,105 @@ func applyScopedStorageMappings(recordsByChecksum map[string][]projectRecordStat
 }
 
 func (service *StorageAnalyticsService) attachStorageProbes(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState) (map[string][]projectRecordState, map[string][]projectRecordState, error) {
+	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, false)
+}
+
+func (service *StorageAnalyticsService) attachStorageListValidations(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState) (map[string][]projectRecordState, map[string][]projectRecordState, error) {
+	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, true)
+}
+
+func (service *StorageAnalyticsService) attachStorageValidationResults(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, useListValidation bool) (map[string][]projectRecordState, map[string][]projectRecordState, error) {
+	started := time.Now()
 	items := make([]gintegrationsyfon.BulkStorageProbeItem, 0)
 	itemKeys := map[string]string{}
 	recordProbeKeysByObjectID := map[string][]string{}
+	accessURLCount := 0
 
 	for _, group := range allProjectRecords {
 		for _, record := range group {
 			for _, accessURL := range probeAccessURLsForRecord(record) {
+				accessURLCount++
 				normalizedURL := strings.TrimSpace(accessURL)
 				if normalizedURL == "" {
 					continue
 				}
 				key := storageProbeRequestKey(normalizedURL, record.Size, record.Checksum)
+				expectedName := ""
+				if useListValidation {
+					expectedName = expectedStorageObjectNameForListValidation(normalizedURL, record.Name)
+					key = storageListValidationRequestKey(normalizedURL, record.Size, expectedName)
+				}
 				recordProbeKeysByObjectID[record.ObjectID] = append(recordProbeKeysByObjectID[record.ObjectID], key)
 				if _, ok := itemKeys[key]; ok {
 					continue
 				}
 				itemKeys[key] = key
 				expectedSize := record.Size
-				items = append(items, gintegrationsyfon.BulkStorageProbeItem{
+				item := gintegrationsyfon.BulkStorageProbeItem{
 					ID:                key,
 					ObjectURL:         normalizedURL,
 					ExpectedSizeBytes: &expectedSize,
 					ExpectedSHA256:    strings.TrimSpace(record.Checksum),
-				})
+				}
+				if useListValidation {
+					item.ExpectedSHA256 = ""
+					item.ExpectedName = expectedName
+				}
+				items = append(items, item)
+				if useListValidation && len(items) <= storageChainValidationDebugSampleLimit {
+					log.Printf(
+						"INFO: storage_chain_bulk_list_item object_id=%s name=%q checksum=%s submitted_url=%s raw_access_urls=%q canonical_access_urls=%q expected_size=%d expected_name=%q",
+						strings.TrimSpace(record.ObjectID),
+						strings.TrimSpace(record.Name),
+						strings.TrimSpace(record.Checksum),
+						normalizedURL,
+						strings.Join(rawAccessURLsForRecord(record), ","),
+						strings.Join(accessURLsForStorage(record), ","),
+						record.Size,
+						item.ExpectedName,
+					)
+				}
 			}
 		}
 	}
+	mode := "head"
+	if useListValidation {
+		mode = "list"
+	}
+	log.Printf(
+		"INFO: storage_chain_validation_request_built mode=%s record_count=%d access_url_count=%d unique_request_count=%d duplicate_request_count=%d build_ms=%d",
+		mode,
+		countRecordStates(allProjectRecords),
+		accessURLCount,
+		len(items),
+		accessURLCount-len(items),
+		time.Since(started).Milliseconds(),
+	)
 
 	resultsByKey := map[string]gintegrationsyfon.BulkStorageProbeResult{}
 	if len(items) > 0 {
-		results, err := service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, items)
+		var (
+			results []gintegrationsyfon.BulkStorageProbeResult
+			err     error
+		)
+		if useListValidation {
+			results, err = service.storage.BulkListStorageObjects(ctx, authorizationHeader, items)
+		} else {
+			results, err = service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, items)
+		}
 		if err != nil {
+			if useListValidation {
+				log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
+				return nil, nil, fmt.Errorf("list-validate syfon storage objects: %w", err)
+			}
+			log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
 			return nil, nil, fmt.Errorf("probe syfon storage objects: %w", err)
 		}
 		for _, result := range results {
 			resultsByKey[strings.TrimSpace(result.ID)] = result
 		}
 	}
+	log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d result_count=%d duration_ms=%d", mode, len(items), len(resultsByKey), time.Since(started).Milliseconds())
 
 	attach := func(input map[string][]projectRecordState) map[string][]projectRecordState {
 		out := make(map[string][]projectRecordState, len(input))
@@ -596,6 +711,14 @@ func (service *StorageAnalyticsService) attachStorageProbes(ctx context.Context,
 	}
 
 	return attach(recordsByChecksum), attach(allProjectRecords), nil
+}
+
+func countRecordStates(input map[string][]projectRecordState) int {
+	count := 0
+	for _, group := range input {
+		count += len(group)
+	}
+	return count
 }
 
 func summarizeSubtree(gitSubpath string, inventory []RepoInventoryFile, recordsByChecksum map[string][]projectRecordState, usageByObjectID map[string]gintegrationsyfon.FileUsage, directChildCount int) storageAggregate {
@@ -1071,17 +1194,20 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if recordHasBrokenAccess(record) {
 		return storageFindingBrokenAccessURL
 	}
-	if kind := classifyRawAccessURLFindings(record); kind != storageFindingNone {
-		return kind
-	}
 	bucketMatches := matchedBucketObjectURLs(record, bucketObjectsByURL)
+	if hasExactPathBucketMismatch(record, bucketMatches, bucketObjectsByURL) {
+		return storageFindingBrokenBucketMap
+	}
 	if inventoryHasValidationMismatch(record, bucketMatches, bucketObjectsByURL) {
 		return storageFindingValidationMismatch
 	}
+	if len(bucketMatches) > 0 {
+		return storageFindingNone
+	}
+	if kind := classifyRawAccessURLFindings(record); kind != storageFindingNone {
+		return kind
+	}
 	if len(record.AccessProbes) == 0 {
-		if len(bucketMatches) > 0 {
-			return storageFindingNone
-		}
 		if len(bucketObjectsByURL) > 0 && hasCanonicalBucketURL(record) {
 			return storageFindingProbeError
 		}
@@ -1123,6 +1249,45 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 		return storageFindingProbeError
 	}
 	return storageFindingNone
+}
+
+func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
+	if len(bucketObjectsByURL) == 0 || len(bucketMatches) > 0 {
+		return false
+	}
+	expectedBucketURLs := accessURLsForStorage(record)
+	if len(expectedBucketURLs) == 0 {
+		return false
+	}
+	expectedBasenames := make(map[string]struct{}, len(expectedBucketURLs))
+	for _, accessURL := range expectedBucketURLs {
+		_, key, ok := parseStorageURL(accessURL)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(path.Base(key))
+		if name == "" {
+			continue
+		}
+		expectedBasenames[name] = struct{}{}
+	}
+	if len(expectedBasenames) == 0 {
+		return false
+	}
+	for _, item := range bucketObjectsByURL {
+		itemName := strings.TrimSpace(path.Base(strings.TrimSpace(item.Key)))
+		if itemName == "" {
+			continue
+		}
+		if _, ok := expectedBasenames[itemName]; !ok {
+			continue
+		}
+		if record.Size > 0 && item.SizeBytes > 0 && item.SizeBytes != record.Size {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func inventoryHasValidationMismatch(record projectRecordState, bucketObjectURLs []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
@@ -1169,6 +1334,7 @@ func accessProbesForRecord(record projectRecordState) []GitStorageCleanupAccessP
 				LastModified:         probe.LastModified,
 				ValidationStatus:     probe.ValidationStatus,
 				SizeMatch:            probe.SizeMatch,
+				NameMatch:            probe.NameMatch,
 				SHA256Match:          probe.SHA256Match,
 				ValidationMismatches: append([]string(nil), probe.ValidationMismatches...),
 			})
@@ -1278,9 +1444,16 @@ func buildChainBucketOnlyFinding(item gintegrationsyfon.ProjectBucketObject) Git
 }
 
 func buildChainRecordFindings(kind string, record projectRecordState, gitPaths []string, bucketObjectURLs []string, action string) []GitStorageChainFinding {
+	return buildChainRecordFindingsWithOptions(kind, record, gitPaths, bucketObjectURLs, action, false)
+}
+
+func buildChainRecordFindingsWithOptions(kind string, record projectRecordState, gitPaths []string, bucketObjectURLs []string, action string, preferSyfonRecordPath bool) []GitStorageChainFinding {
 	paths := uniqueStrings(gitPaths)
 	if len(paths) == 0 {
 		displayPath := orphanDisplayPath(strings.TrimSpace(record.Checksum), append(bucketObjectURLs, record.AccessURLs...))
+		if preferSyfonRecordPath {
+			displayPath = syfonRecordDisplayPath(record)
+		}
 		if displayPath == "" {
 			displayPath = strings.TrimSpace(record.Checksum)
 		}
@@ -1339,7 +1512,7 @@ func selectChainProbe(record projectRecordState, bucketObjectURLs []string) chai
 	for _, probe := range probes {
 		objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.URL)
 		if probe.Status != "" || probe.ErrorKind != "" || objectURL != "" || probe.URL != "" {
-			return chainProbeSelection{bucketObjectURL: objectURL, probe: probe}
+			return chainProbeSelection{probe: probe}
 		}
 	}
 	return chainProbeSelection{}
@@ -1912,6 +2085,39 @@ func storageProbeRequestKey(objectURL string, size int64, checksum string) strin
 	return strings.TrimSpace(objectURL) + "|" + fmt.Sprintf("%d", size) + "|" + strings.TrimSpace(checksum)
 }
 
+func storageListValidationRequestKey(objectURL string, size int64, expectedName string) string {
+	return strings.TrimSpace(objectURL) + "|" + fmt.Sprintf("%d", size) + "|" + strings.TrimSpace(expectedName)
+}
+
+func expectedStorageObjectNameForListValidation(objectURL string, recordName string) string {
+	expectedName := path.Base(strings.Trim(strings.TrimSpace(recordName), "/"))
+	if expectedName == "." || expectedName == "/" || expectedName == "" {
+		return ""
+	}
+	_, key, ok := parseStorageURL(objectURL)
+	if !ok {
+		return expectedName
+	}
+	keyBase := path.Base(strings.Trim(key, "/"))
+	if isContentAddressedStorageBasename(keyBase) {
+		return ""
+	}
+	return expectedName
+}
+
+func isContentAddressedStorageBasename(value string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if len(trimmed) < 32 {
+		return false
+	}
+	for _, r := range trimmed {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func sortStorageAggregates(items []storageAggregate, sortBy string, sortOrder string) {
 	desc := !strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
 	switch strings.ToLower(strings.TrimSpace(sortBy)) {
@@ -1945,6 +2151,19 @@ func orphanDisplayPath(checksum string, sourcePaths []string) string {
 		return strings.TrimSpace(sourcePaths[0])
 	}
 	return "sha256/" + strings.TrimSpace(checksum)
+}
+
+func syfonRecordDisplayPath(record projectRecordState) string {
+	if name := strings.TrimSpace(record.Name); name != "" {
+		return name
+	}
+	if objectID := strings.TrimSpace(record.ObjectID); objectID != "" {
+		return "syfon/" + objectID
+	}
+	if checksum := strings.TrimSpace(record.Checksum); checksum != "" {
+		return "sha256/" + checksum
+	}
+	return ""
 }
 
 func recordSourcePaths(matches []projectRecordState) []string {
