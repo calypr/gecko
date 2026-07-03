@@ -46,6 +46,7 @@ type fakeStorageAnalyticsBackend struct {
 	listProbeCalls                     int
 	listProbeItems                     []gintegrationsyfon.BulkStorageProbeItem
 	deletedIDs                         []string
+	deletedStorageIDs                  []string
 	updatedAccessMethods               map[string][]gintegrationsyfon.ProjectAccessMethod
 	deletedBucketObjects               []string
 }
@@ -202,6 +203,9 @@ func (fake *fakeStorageAnalyticsBackend) BulkListStorageObjects(ctx context.Cont
 
 func (fake *fakeStorageAnalyticsBackend) BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error {
 	fake.deletedIDs = append(fake.deletedIDs, objectIDs...)
+	if deleteStorageData {
+		fake.deletedStorageIDs = append(fake.deletedStorageIDs, objectIDs...)
+	}
 	return nil
 }
 
@@ -277,12 +281,19 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 		t.Fatalf("unexpected summary bytes/downloads: %+v", summary)
 	}
 
-	children, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 10, "bytes", "desc")
+	usageCallsBeforeChildren := backend.listProjectFileUsageCalls
+	children, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 10, "bytes", "desc", "")
 	if err != nil {
 		t.Fatalf("build storage children: %v", err)
 	}
+	if backend.listProjectFileUsageCalls != usageCallsBeforeChildren {
+		t.Fatalf("expected storage children to skip project-wide file usage, got calls before=%d after=%d", usageCallsBeforeChildren, backend.listProjectFileUsageCalls)
+	}
 	if len(children.Items) != 4 {
 		t.Fatalf("expected 4 child rows, got %+v", children.Items)
+	}
+	if children.HasMore || children.NextCursor != "" {
+		t.Fatalf("expected unpaginated children response, got %+v", children)
 	}
 	if children.Items[0].Path != "data/c.txt" || children.Items[1].Path != "data/nested" {
 		t.Fatalf("unexpected child ordering: %+v", children.Items)
@@ -328,7 +339,23 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 	assertHasCleanupFinding(t, cleanup.Findings, "broken_access_url_error", "data/c.txt")
 	assertHasCleanupFinding(t, cleanup.Findings, "repo_orphan_stale_record", "s3://bucket/orphan")
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", nil, nil, mirrorPath, repo, hash, true, true, true, false, false, true)
+	applyResult, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		nil,
+		nil,
+		[]GitStorageCleanupApplyFinding{
+			{Kind: "stale_duplicate_record", NormalizedPath: "data/nested/b.txt", ObjectIDs: []string{"obj-b-old"}},
+			{Kind: "repo_orphan_stale_record", NormalizedPath: "s3://bucket/orphan", ObjectIDs: []string{"obj-orphan"}, AccessURLs: []string{"s3://bucket/orphan"}},
+		},
+		true,
+		true,
+		false,
+		false,
+		true,
+	)
 	if err != nil {
 		t.Fatalf("apply cleanup dry run: %v", err)
 	}
@@ -343,11 +370,174 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 	}
 }
 
-func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
+func TestBuildStorageChildrenEnrichesOnlySelectedPage(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
-		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/big/a.txt":   lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 600),
+		"data/big/b.txt":   lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 300),
+		"data/other.txt":   lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 50),
+		"data/small.txt":   lfsPointer("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 100),
+		"outside/file.txt": lfsPointer("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 1000),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-b", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-c", Checksum: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-d", Checksum: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-e", Checksum: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Organization: "org", Project: "proj"},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	children, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "")
+	if err != nil {
+		t.Fatalf("build storage children: %v", err)
+	}
+	if len(children.Items) != 1 || children.Items[0].Path != "data/big" {
+		t.Fatalf("expected only biggest child page, got %+v", children.Items)
+	}
+	if !children.HasMore || children.NextCursor == "" {
+		t.Fatalf("expected next cursor for truncated children page, got %+v", children)
+	}
+	expectedChecksums := []string{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	if strings.Join(backend.bulkChecksums, ",") != strings.Join(expectedChecksums, ",") {
+		t.Fatalf("expected page-scoped checksums %v, got %v", expectedChecksums, backend.bulkChecksums)
+	}
+	if backend.listProjectFileUsageCalls != 0 {
+		t.Fatalf("expected storage children to skip project file usage, got %d calls", backend.listProjectFileUsageCalls)
+	}
+}
+
+func TestBuildStorageChildrenCursorPagination(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 300),
+		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+		"data/c.txt": lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 100),
+	})
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+
+	first, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", "")
+	if err != nil {
+		t.Fatalf("build first storage children page: %v", err)
+	}
+	if len(first.Items) != 2 || first.Items[0].Path != "data/a.txt" || first.Items[1].Path != "data/b.txt" {
+		t.Fatalf("unexpected first page: %+v", first.Items)
+	}
+	if !first.HasMore || first.NextCursor == "" {
+		t.Fatalf("expected next cursor on first page, got %+v", first)
+	}
+
+	second, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", first.NextCursor)
+	if err != nil {
+		t.Fatalf("build second storage children page: %v", err)
+	}
+	if len(second.Items) != 1 || second.Items[0].Path != "data/c.txt" {
+		t.Fatalf("unexpected second page: %+v", second.Items)
+	}
+	if second.HasMore || second.NextCursor != "" {
+		t.Fatalf("expected final page without cursor, got %+v", second)
+	}
+	if second.Items[0].Path == first.Items[0].Path || second.Items[0].Path == first.Items[1].Path {
+		t.Fatalf("expected cursor pages not to duplicate rows: first=%+v second=%+v", first.Items, second.Items)
+	}
+}
+
+func TestBuildStorageChildrenRejectsStaleCursor(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 300),
 		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
 	})
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+	wrongHash := plumbing.NewHash("cccccccccccccccccccccccccccccccccccccccc")
+	staleCursors := map[string]string{
+		"commit":     buildStorageChildrenCursor(wrongHash, "data", "bytes", "desc", 1),
+		"path":       buildStorageChildrenCursor(hash, "other", "bytes", "desc", 1),
+		"sort_by":    buildStorageChildrenCursor(hash, "data", "name", "desc", 1),
+		"sort_order": buildStorageChildrenCursor(hash, "data", "bytes", "asc", 1),
+		"invalid":    "not-base64",
+	}
+	for name, cursor := range staleCursors {
+		t.Run(name, func(t *testing.T) {
+			_, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", cursor)
+			if err == nil {
+				t.Fatalf("expected stale cursor %q to fail", name)
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupMatchesSelectedRepoOrphanByAnyAccessURL(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{}
+	service := NewStorageAnalyticsService(backend)
+
+	applyResult, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{"s3://bucket/orphan-selected"},
+		nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:           "repo_orphan_stale_record",
+			NormalizedPath: "s3://bucket/orphan-primary",
+			ObjectIDs:      []string{"obj-orphan"},
+			AccessURLs:     []string{"s3://bucket/orphan-primary", "s3://bucket/orphan-selected"},
+		}},
+		true,
+		false,
+		false,
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if !contains(applyResult.DeletedRecordIDs, "obj-orphan") {
+		t.Fatalf("expected selected orphan to be deleted, got %+v", applyResult)
+	}
+	if len(applyResult.SkippedPaths) != 0 || len(applyResult.ManualPaths) != 0 {
+		t.Fatalf("expected selected orphan not to be skipped or manual, got %+v", applyResult)
+	}
+	if !contains(backend.deletedIDs, "obj-orphan") {
+		t.Fatalf("expected syfon delete call for selected orphan, got %+v", backend.deletedIDs)
+	}
+}
+
+func TestApplyStorageCleanupRejectsUnmatchedSelectedPaths(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{}
+	service := NewStorageAnalyticsService(backend)
+
+	_, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{"s3://other-bucket/missing"},
+		nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:           "repo_orphan_stale_record",
+			NormalizedPath: "s3://bucket/a",
+			ObjectIDs:      []string{"obj-a"},
+			AccessURLs:     []string{"s3://bucket/a"},
+		}},
+		true,
+		false,
+		false,
+		false,
+		false,
+	)
+	if err == nil {
+		t.Fatalf("expected unmatched selected path to fail")
+	}
+	if !strings.Contains(err.Error(), "selected cleanup paths did not match provided cleanup findings") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
@@ -397,7 +587,46 @@ func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"data/a.txt", "data/b.txt"}, nil, mirrorPath, repo, hash, true, false, false, false, true, false)
+	applyResult, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{"data/a.txt", "data/b.txt"},
+		nil,
+		[]GitStorageCleanupApplyFinding{
+			{
+				Kind:           "broken_bucket_mapping",
+				NormalizedPath: "data/a.txt",
+				ObjectIDs:      []string{"obj-a"},
+				Records: []GitStorageCleanupRecordAudit{{
+					ObjectID:      "obj-a",
+					AccessURLs:    []string{"s3://legacy/a", "s3://bucket/a"},
+					AccessMethods: []GitStorageCleanupAccessMethod{{URL: "s3://legacy/a"}, {URL: "s3://bucket/a"}},
+					AccessProbes: []GitStorageCleanupAccessProbe{
+						{URL: "s3://legacy/a", Status: "error", ErrorKind: "credential_missing"},
+						{URL: "s3://bucket/a", Status: "present"},
+					},
+				}},
+			},
+			{
+				Kind:           "broken_bucket_mapping",
+				NormalizedPath: "data/b.txt",
+				ObjectIDs:      []string{"obj-b"},
+				Records: []GitStorageCleanupRecordAudit{{
+					ObjectID:      "obj-b",
+					AccessURLs:    []string{"s3://legacy/b"},
+					AccessMethods: []GitStorageCleanupAccessMethod{{URL: "s3://legacy/b"}},
+					AccessProbes:  []GitStorageCleanupAccessProbe{{URL: "s3://legacy/b", Status: "error", ErrorKind: "credential_missing"}},
+				}},
+			},
+		},
+		false,
+		false,
+		false,
+		true,
+		false,
+	)
 	if err != nil {
 		t.Fatalf("apply cleanup broken bucket mapping repair: %v", err)
 	}
@@ -417,9 +646,6 @@ func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
 }
 
 func TestApplyStorageCleanupDeletesBucketOnlyObjects(t *testing.T) {
-	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
-		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
-	})
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
@@ -443,7 +669,25 @@ func TestApplyStorageCleanupDeletesBucketOnlyObjects(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"s3://bucket/orphan"}, nil, mirrorPath, repo, hash, true, false, false, true, false, false)
+	applyResult, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{"s3://bucket/orphan"},
+		nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "bucket_only_object",
+			NormalizedPath:   "s3://bucket/orphan",
+			BucketObjectURL:  "s3://bucket/orphan",
+			BucketObjectURLs: []string{"s3://bucket/orphan"},
+		}},
+		false,
+		false,
+		true,
+		false,
+		false,
+	)
 	if err != nil {
 		t.Fatalf("apply cleanup bucket only delete: %v", err)
 	}
@@ -528,9 +772,6 @@ func TestBuildStorageCleanupAuditReportsStorageProbeFailures(t *testing.T) {
 }
 
 func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
-	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
-		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
-	})
 	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
@@ -551,20 +792,23 @@ func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
+	applyFindings := []GitStorageCleanupApplyFinding{{
+		Kind:             "storage_validation_mismatch",
+		NormalizedPath:   "data/b.txt",
+		ObjectIDs:        []string{"obj-b"},
+		BucketObjectURL:  "s3://bucket/b",
+		BucketObjectURLs: []string{"s3://bucket/b"},
+		AccessURLs:       []string{"s3://bucket/b"},
+	}}
 
 	deleteRecordOnly, err := service.ApplyStorageCleanup(
 		context.Background(),
 		"Bearer token",
 		"org",
 		"proj",
-		refName,
-		"data",
 		[]string{"data/b.txt"},
 		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_syfon_record"}},
-		mirrorPath,
-		repo,
-		hash,
-		true,
+		applyFindings,
 		false,
 		false,
 		false,
@@ -586,14 +830,9 @@ func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
 		"Bearer token",
 		"org",
 		"proj",
-		refName,
-		"data",
 		[]string{"data/b.txt"},
 		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_bucket_object"}},
-		mirrorPath,
-		repo,
-		hash,
-		true,
+		applyFindings,
 		false,
 		false,
 		false,
@@ -615,14 +854,9 @@ func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
 		"Bearer token",
 		"org",
 		"proj",
-		refName,
-		"data",
 		[]string{"data/b.txt"},
 		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_both"}},
-		mirrorPath,
-		repo,
-		hash,
-		true,
+		applyFindings,
 		false,
 		false,
 		false,
@@ -637,6 +871,209 @@ func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
 	}
 	if len(deleteBoth.DeletedBucketObjectURLs) != 1 || deleteBoth.DeletedBucketObjectURLs[0] != "s3://bucket/b" {
 		t.Fatalf("expected dual delete action to include bucket object, got %+v", deleteBoth)
+	}
+}
+
+func TestStorageRepairPolicyCoversFindingKinds(t *testing.T) {
+	tests := []struct {
+		kind          string
+		defaultAction string
+		actions       []string
+		actionability string
+	}{
+		{"bucket_only_object", storageActionDeleteBucketObject, []string{storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
+		{"bucket_syfon_no_git", storageActionDeleteBoth, []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
+		{"repo_orphan_live_object", storageActionDeleteBoth, []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
+		{"repo_orphan_stale_record", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"stale_duplicate_record", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"live_duplicate_conflict", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
+		{"broken_access_url_error", storageActionRemoveBrokenAccessURLs, []string{storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"broken_bucket_mapping", storageActionRemoveBrokenAccessURLs, []string{storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"syfon_broken_bucket_mapping", storageActionRemoveBrokenAccessURLs, []string{storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"storage_validation_mismatch", "", []string{storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionDeleteBoth}, storageActionabilityManualChoice},
+		{"git_syfon_metadata_mismatch", "", []string{storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionDeleteBoth}, storageActionabilityManualChoice},
+		{"storage_object_missing", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"syfon_git_no_bucket", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"syfon_missing_bucket_object", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
+		{"git_only_no_syfon", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
+		{"storage_probe_error", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
+		{"probe_error", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
+	}
+	for _, test := range tests {
+		t.Run(test.kind, func(t *testing.T) {
+			policy := storageRepairPolicyForKind(test.kind)
+			if policy.defaultAction != test.defaultAction {
+				t.Fatalf("expected default %q, got %q", test.defaultAction, policy.defaultAction)
+			}
+			if policy.actionability != test.actionability {
+				t.Fatalf("expected actionability %q, got %q", test.actionability, policy.actionability)
+			}
+			for _, action := range test.actions {
+				if !contains(policy.actions, action) {
+					t.Fatalf("expected action %q in %+v", action, policy.actions)
+				}
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupRepairMatrix(t *testing.T) {
+	tests := []struct {
+		name                string
+		finding             GitStorageCleanupApplyFinding
+		actions             []GitStorageCleanupApplyAction
+		wantDeletedIDs      []string
+		wantStorageIDs      []string
+		wantBucketURLs      []string
+		wantUpdatedRecordID string
+		wantManualPath      string
+	}{
+		{name: "bucket only", finding: applyFinding("bucket_only_object", "s3://bucket/only", nil, []string{"s3://bucket/only"}), wantBucketURLs: []string{"s3://bucket/only"}},
+		{name: "bucket syfon no git", finding: applyFinding("bucket_syfon_no_git", "s3://bucket/no-git", []string{"obj-a"}, []string{"s3://bucket/no-git"}), wantDeletedIDs: []string{"obj-a"}, wantBucketURLs: []string{"s3://bucket/no-git"}},
+		{name: "repo orphan live", finding: applyFinding("repo_orphan_live_object", "s3://bucket/live", []string{"obj-live"}, nil), wantDeletedIDs: []string{"obj-live"}, wantStorageIDs: []string{"obj-live"}},
+		{name: "repo orphan stale", finding: applyFinding("repo_orphan_stale_record", "s3://bucket/stale", []string{"obj-stale"}, nil), wantDeletedIDs: []string{"obj-stale"}},
+		{name: "stale duplicate", finding: applyFinding("stale_duplicate_record", "data/a.txt", []string{"obj-old"}, nil), wantDeletedIDs: []string{"obj-old"}},
+		{name: "storage missing", finding: applyFinding("storage_object_missing", "data/missing.txt", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "syfon git no bucket", finding: applyFinding("syfon_git_no_bucket", "data/missing.txt", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "syfon missing bucket object", finding: applyFinding("syfon_missing_bucket_object", "s3://bucket/missing", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "git syfon mismatch delete both", finding: applyFinding("git_syfon_metadata_mismatch", "data/mismatch.txt", []string{"obj-mm"}, []string{"s3://bucket/mismatch"}), actions: []GitStorageCleanupApplyAction{{Kind: "git_syfon_metadata_mismatch", NormalizedPath: "data/mismatch.txt", Action: storageActionDeleteBoth}}, wantDeletedIDs: []string{"obj-mm"}, wantBucketURLs: []string{"s3://bucket/mismatch"}},
+		{name: "storage mismatch delete both", finding: applyFinding("storage_validation_mismatch", "data/mismatch.txt", []string{"obj-mm"}, []string{"s3://bucket/mismatch"}), actions: []GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/mismatch.txt", Action: storageActionDeleteBoth}}, wantDeletedIDs: []string{"obj-mm"}, wantBucketURLs: []string{"s3://bucket/mismatch"}},
+		{name: "live duplicate conflict", finding: applyFinding("live_duplicate_conflict", "data/dup.txt", []string{"obj-a", "obj-b"}, nil), wantManualPath: "data/dup.txt"},
+		{name: "git only no syfon", finding: applyFinding("git_only_no_syfon", "data/git-only.txt", nil, nil), wantManualPath: "data/git-only.txt"},
+		{name: "probe error", finding: applyFinding("probe_error", "data/probe.txt", []string{"obj-probe"}, nil), wantManualPath: "data/probe.txt"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{}
+			service := NewStorageAnalyticsService(backend)
+			result, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", nil, test.actions, []GitStorageCleanupApplyFinding{test.finding}, false, false, false, false, false)
+			if err != nil {
+				t.Fatalf("apply cleanup: %v", err)
+			}
+			assertStringSet(t, "deleted IDs", result.DeletedRecordIDs, test.wantDeletedIDs)
+			assertStringSet(t, "storage IDs", backend.deletedStorageIDs, test.wantStorageIDs)
+			assertStringSet(t, "bucket URLs", result.DeletedBucketObjectURLs, test.wantBucketURLs)
+			if test.wantManualPath != "" && !contains(result.ManualPaths, test.wantManualPath) {
+				t.Fatalf("expected manual path %q, got %+v", test.wantManualPath, result.ManualPaths)
+			}
+			if test.wantUpdatedRecordID != "" && !contains(result.UpdatedRecordIDs, test.wantUpdatedRecordID) {
+				t.Fatalf("expected updated record %q, got %+v", test.wantUpdatedRecordID, result.UpdatedRecordIDs)
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
+	tests := []struct {
+		name           string
+		record         GitStorageCleanupRecordAudit
+		wantDeleted    []string
+		wantRemaining  []string
+		wantErrSnippet string
+	}{
+		{
+			name: "keeps good access method",
+			record: GitStorageCleanupRecordAudit{
+				ObjectID:      "obj-a",
+				AccessURLs:    []string{"s3://legacy/a", "s3://bucket/a"},
+				AccessMethods: []GitStorageCleanupAccessMethod{{URL: "s3://legacy/a"}, {URL: "s3://bucket/a"}},
+				AccessProbes: []GitStorageCleanupAccessProbe{
+					{URL: "s3://legacy/a", Status: "error", ErrorKind: "credential_missing"},
+					{URL: "s3://bucket/a", Status: "present"},
+				},
+			},
+			wantRemaining: []string{"s3://bucket/a"},
+		},
+		{
+			name: "deletes record when only access method is broken",
+			record: GitStorageCleanupRecordAudit{
+				ObjectID:      "obj-b",
+				AccessURLs:    []string{"s3://legacy/b"},
+				AccessMethods: []GitStorageCleanupAccessMethod{{URL: "s3://legacy/b"}},
+				AccessProbes:  []GitStorageCleanupAccessProbe{{URL: "s3://legacy/b", Status: "error", ErrorKind: "credential_missing"}},
+			},
+			wantDeleted: []string{"obj-b"},
+		},
+		{
+			name: "missing evidence fails",
+			record: GitStorageCleanupRecordAudit{
+				ObjectID:      "obj-c",
+				AccessURLs:    []string{"s3://legacy/c"},
+				AccessMethods: []GitStorageCleanupAccessMethod{{URL: "s3://legacy/c"}},
+			},
+			wantErrSnippet: "missing broken access URL evidence",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{}
+			service := NewStorageAnalyticsService(backend)
+			_, err := service.ApplyStorageCleanup(
+				context.Background(),
+				"Bearer token",
+				"org",
+				"proj",
+				nil,
+				nil,
+				[]GitStorageCleanupApplyFinding{{
+					Kind:           "broken_access_url_error",
+					NormalizedPath: "data/a.txt",
+					ObjectIDs:      []string{test.record.ObjectID},
+					Records:        []GitStorageCleanupRecordAudit{test.record},
+				}},
+				false,
+				false,
+				false,
+				false,
+				false,
+			)
+			if test.wantErrSnippet != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErrSnippet) {
+					t.Fatalf("expected error containing %q, got %v", test.wantErrSnippet, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("apply cleanup: %v", err)
+			}
+			assertStringSet(t, "deleted IDs", backend.deletedIDs, test.wantDeleted)
+			if len(test.wantRemaining) > 0 {
+				methods := backend.updatedAccessMethods[test.record.ObjectID]
+				got := make([]string, 0, len(methods))
+				for _, method := range methods {
+					got = append(got, method.URL)
+				}
+				assertStringSet(t, "remaining access methods", got, test.wantRemaining)
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupValidation(t *testing.T) {
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+	tests := []struct {
+		name    string
+		finding GitStorageCleanupApplyFinding
+		actions []GitStorageCleanupApplyAction
+		wantErr string
+	}{
+		{name: "unknown kind", finding: applyFinding("unknown_kind", "data/a.txt", []string{"obj-a"}, nil), wantErr: "unsupported cleanup finding kind"},
+		{name: "unsupported action", finding: applyFinding("bucket_only_object", "s3://bucket/a", nil, []string{"s3://bucket/a"}), actions: []GitStorageCleanupApplyAction{{Kind: "bucket_only_object", NormalizedPath: "s3://bucket/a", Action: storageActionDeleteSyfonRecord}}, wantErr: "not supported"},
+		{name: "action not advertised", finding: func() GitStorageCleanupApplyFinding {
+			finding := applyFinding("bucket_only_object", "s3://bucket/a", nil, []string{"s3://bucket/a"})
+			finding.AvailableActions = []string{storageActionInspectEvidence}
+			return finding
+		}(), wantErr: "not advertised"},
+		{name: "missing object ids", finding: applyFinding("repo_orphan_stale_record", "s3://bucket/a", nil, nil), wantErr: "missing object_ids"},
+		{name: "missing bucket urls", finding: applyFinding("bucket_only_object", "data/a.txt", nil, nil), wantErr: "missing bucket object URLs"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", nil, test.actions, []GitStorageCleanupApplyFinding{test.finding}, false, false, false, false, false)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", test.wantErr, err)
+			}
+		})
 	}
 }
 
@@ -1200,7 +1637,7 @@ func TestBuildStorageChainAuditCachesProjectRecordsPerPathPrefix(t *testing.T) {
 	}
 }
 
-func TestStorageSummaryAndChildrenShareInflightJoinWork(t *testing.T) {
+func TestStorageChildrenSkipsSummaryJoinUsageWork(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -1221,7 +1658,7 @@ func TestStorageSummaryAndChildrenShareInflightJoinWork(t *testing.T) {
 		errCh <- err
 	}()
 	go func() {
-		_, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1000, "bytes", "desc")
+		_, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1000, "bytes", "desc", "")
 		errCh <- err
 	}()
 	for i := 0; i < 2; i++ {
@@ -1229,11 +1666,11 @@ func TestStorageSummaryAndChildrenShareInflightJoinWork(t *testing.T) {
 			t.Fatalf("expected concurrent storage analytics request to succeed, got %v", err)
 		}
 	}
-	if backend.bulkGetProjectRecordsCalls != 1 {
-		t.Fatalf("expected concurrent summary/children requests to share one checksum lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	if backend.bulkGetProjectRecordsCalls != 2 {
+		t.Fatalf("expected summary and page-scoped children checksum lookups, got %d", backend.bulkGetProjectRecordsCalls)
 	}
 	if backend.listProjectFileUsageCalls != 1 {
-		t.Fatalf("expected concurrent summary/children requests to share one usage lookup, got %d", backend.listProjectFileUsageCalls)
+		t.Fatalf("expected only summary to perform usage lookup, got %d", backend.listProjectFileUsageCalls)
 	}
 }
 
@@ -1789,6 +2226,90 @@ func TestBuildStorageChainAuditReturnsFullFindings(t *testing.T) {
 	}
 }
 
+func TestApplyStorageCleanupDeletesSelectedBucketSyfonNoGitChainFinding(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-no-git",
+				Checksum:     "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				Organization: "org",
+				Project:      "proj",
+				Size:         150,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{"s3://bucket/no-git"},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL:  "s3://bucket/no-git",
+				Bucket:     "bucket",
+				Key:        "no-git",
+				Path:       "no-git",
+				SizeBytes:  150,
+				MetaSHA256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	response, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{"s3://bucket/no-git"},
+		nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "bucket_syfon_no_git",
+			NormalizedPath:   "s3://bucket/no-git",
+			ObjectIDs:        []string{"obj-no-git"},
+			BucketObjectURL:  "s3://bucket/no-git",
+			BucketObjectURLs: []string{"s3://bucket/no-git"},
+			AccessURLs:       []string{"s3://bucket/no-git"},
+		}},
+		true,
+		false,
+		false,
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if !contains(response.DeletedRecordIDs, "obj-no-git") {
+		t.Fatalf("expected selected Syfon record to be deleted, got %+v", response)
+	}
+	if !contains(response.DeletedBucketObjectURLs, "s3://bucket/no-git") {
+		t.Fatalf("expected selected bucket object to be deleted, got %+v", response)
+	}
+	if !contains(backend.deletedIDs, "obj-no-git") {
+		t.Fatalf("expected backend Syfon delete, got %+v", backend.deletedIDs)
+	}
+	if !contains(backend.deletedBucketObjects, "s3://bucket/no-git") {
+		t.Fatalf("expected backend bucket delete, got %+v", backend.deletedBucketObjects)
+	}
+}
+
+func TestBuildStorageChainAuditMarksBucketSyfonNoGitActionable(t *testing.T) {
+	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport("bucket_syfon_no_git")
+	if actionability != storageActionabilityAutoRepair {
+		t.Fatalf("expected auto-repair actionability, got %q", actionability)
+	}
+	if defaultAction != storageActionDeleteBoth {
+		t.Fatalf("expected delete-both default action, got %q", defaultAction)
+	}
+	if !supportsDryRun {
+		t.Fatal("expected bucket+Syfon/no-Git to support dry-run")
+	}
+	if !contains(availableActions, storageActionDeleteBoth) || !contains(availableActions, storageActionDeleteSyfonRecord) || !contains(availableActions, storageActionDeleteBucketObject) {
+		t.Fatalf("expected destructive chain actions, got %+v", availableActions)
+	}
+}
+
 func TestBuildStorageCleanupAuditTreatsMissingProbeEvidenceAsProbeError(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
@@ -1970,6 +2491,46 @@ func ptrBool(value bool) *bool {
 func int64Ptr(value int64) *int64 {
 	copyValue := value
 	return &copyValue
+}
+
+func applyFinding(kind string, normalizedPath string, objectIDs []string, bucketURLs []string) GitStorageCleanupApplyFinding {
+	policy := storageRepairPolicyForKind(kind)
+	return GitStorageCleanupApplyFinding{
+		Kind:             kind,
+		NormalizedPath:   normalizedPath,
+		ObjectIDs:        append([]string(nil), objectIDs...),
+		BucketObjectURL:  firstString(bucketURLs),
+		BucketObjectURLs: append([]string(nil), bucketURLs...),
+		AccessURLs:       append([]string(nil), bucketURLs...),
+		AvailableActions: append([]string(nil), policy.actions...),
+		DefaultAction:    policy.defaultAction,
+		Evidence: &GitAuditEvidence{
+			ObjectIDs:        append([]string(nil), objectIDs...),
+			AccessURLs:       append([]string(nil), bucketURLs...),
+			BucketObjectURLs: append([]string(nil), bucketURLs...),
+		},
+	}
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func assertStringSet(t *testing.T, label string, got []string, want []string) {
+	t.Helper()
+	got = uniqueStrings(got)
+	want = uniqueStrings(want)
+	if len(got) != len(want) {
+		t.Fatalf("%s: expected %v, got %v", label, want, got)
+	}
+	for _, value := range want {
+		if !contains(got, value) {
+			t.Fatalf("%s: expected %v, got %v", label, want, got)
+		}
+	}
 }
 
 func contains(values []string, target string) bool {

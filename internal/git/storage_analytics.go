@@ -33,6 +33,54 @@ const (
 	storageActionInspectEvidence        = "inspect_evidence"
 )
 
+type storageRepairPolicy struct {
+	actionability  string
+	actions        []string
+	defaultAction  string
+	supportsDryRun bool
+}
+
+func storageRepairPolicyForKind(kind string) storageRepairPolicy {
+	switch strings.TrimSpace(kind) {
+	case "bucket_only_object":
+		return autoRepairPolicy(storageActionDeleteBucketObject, storageActionInspectEvidence)
+	case "bucket_syfon_no_git", "repo_orphan_live_object":
+		return autoRepairPolicy(storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionInspectEvidence)
+	case "repo_orphan_stale_record", "stale_duplicate_record", "storage_object_missing", "syfon_git_no_bucket", "syfon_missing_bucket_object":
+		return autoRepairPolicy(storageActionDeleteSyfonRecord, storageActionInspectEvidence)
+	case "broken_access_url_error", "broken_bucket_mapping", "syfon_broken_bucket_mapping":
+		return autoRepairPolicy(storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord, storageActionInspectEvidence)
+	case "storage_validation_mismatch", "git_syfon_metadata_mismatch":
+		return storageRepairPolicy{
+			actionability: storageActionabilityManualChoice,
+			actions: []string{
+				storageActionDeleteSyfonRecord,
+				storageActionDeleteBucketObject,
+				storageActionDeleteBoth,
+				storageActionInspectEvidence,
+			},
+			supportsDryRun: true,
+		}
+	default:
+		return storageRepairPolicy{
+			actionability:  storageActionabilityInspectOnly,
+			actions:        []string{storageActionInspectEvidence},
+			defaultAction:  storageActionInspectEvidence,
+			supportsDryRun: false,
+		}
+	}
+}
+
+func autoRepairPolicy(defaultAction string, extraActions ...string) storageRepairPolicy {
+	actions := append([]string{defaultAction}, extraActions...)
+	return storageRepairPolicy{
+		actionability:  storageActionabilityAutoRepair,
+		actions:        uniqueStrings(actions),
+		defaultAction:  defaultAction,
+		supportsDryRun: true,
+	}
+}
+
 type storageAnalyticsBackend interface {
 	ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error)
 	ListBucketScopes(ctx context.Context, authorizationHeader string, bucket string) ([]domain.StorageBucketScope, error)
@@ -113,6 +161,17 @@ type cleanupFindingModel struct {
 	Manual              bool
 }
 
+type storageCleanupApplyPlan struct {
+	DeleteObjectIDs        []string
+	DeleteStorageObjectIDs []string
+	DeleteBucketObjects    []string
+	UpdateAccessMethods    map[string][]gintegrationsyfon.ProjectAccessMethod
+	UpdatedRecordIDs       []string
+	RepoDeletePaths        []string
+	ManualPaths            []string
+	SkippedPaths           []string
+}
+
 type cleanupAuditModel struct {
 	Findings             []cleanupFindingModel
 	PublicFindings       []GitStorageCleanupFinding
@@ -181,8 +240,8 @@ func (service *StorageAnalyticsService) BuildStorageSummary(ctx context.Context,
 	}, nil
 }
 
-func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string) (*GitStorageChildrenResponse, error) {
-	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string) (*GitStorageChildrenResponse, error) {
+	index, err := loadOrBuildRepoAnalyticsIndex(ctx, mirrorPath, ref, repo, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -190,26 +249,22 @@ func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	aggregates := aggregateImmediateChildren(gitSubpath, inventory, recordsByChecksum, usageByObjectID, cloneDirectoryChildren(directory.Children))
+	aggregates := cloneDirectoryChildren(directory.Children)
 	sortStorageAggregates(aggregates, sortBy, sortOrder)
-	if limit > 0 && len(aggregates) > limit {
-		aggregates = aggregates[:limit]
+	page, err := storageChildrenPageForRequest(aggregates, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
+	if err != nil {
+		return nil, err
 	}
-	items := make([]GitStorageChildResponseItem, 0, len(aggregates))
-	for _, agg := range aggregates {
-		items = append(items, GitStorageChildResponseItem{
-			Name:             agg.name,
-			Path:             agg.path,
-			Type:             agg.rowType,
-			FileCount:        agg.fileCount,
-			RecordCount:      agg.recordCount,
-			TotalBytes:       agg.totalBytes,
-			DownloadCount:    agg.downloadCount,
-			LastDownloadTime: formatOptionalTime(agg.lastDownload),
-			LatestUpdateTime: formatOptionalTime(agg.latestUpdate),
-		})
+	inventory := filterInventoryForStorageChildren(index.sidecar.Files, page.items)
+	enriched, err := service.enrichStorageChildrenPage(ctx, authorizationHeader, organization, project, gitSubpath, inventory, page.items)
+	if err != nil {
+		return nil, err
 	}
-	return &GitStorageChildrenResponse{Items: items}, nil
+	return &GitStorageChildrenResponse{
+		Items:      storageChildrenItemsFromAggregates(enriched),
+		HasMore:    page.hasMore,
+		NextCursor: page.nextCursor,
+	}, nil
 }
 
 func (service *StorageAnalyticsService) BuildProjectDiffAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitProjectDiffAuditResponse, error) {
@@ -355,82 +410,280 @@ func limitStorageChainFindings(findings []GitStorageChainFinding, limit int) []G
 	return append([]GitStorageChainFinding(nil), findings[:limit]...)
 }
 
-func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, selectedRepoPaths []string, selectedActions []GitStorageCleanupApplyAction, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, checkStorage bool, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool, dryRun bool) (*GitStorageCleanupApplyResponse, error) {
-	_, model, err := service.BuildStorageCleanupAudit(ctx, authorizationHeader, organization, project, ref, gitSubpath, selectedRepoPaths, mirrorPath, repo, hash, checkStorage)
-	if err != nil {
-		return nil, err
+func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context, authorizationHeader string, organization string, project string, selectedRepoPaths []string, selectedActions []GitStorageCleanupApplyAction, selectedFindings []GitStorageCleanupApplyFinding, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool, dryRun bool) (*GitStorageCleanupApplyResponse, error) {
+	if len(selectedFindings) == 0 {
+		return nil, fmt.Errorf("cleanup apply requires findings from a prior audit; refusing to rebuild audit during apply")
 	}
 	actionSelection := indexCleanupActions(selectedActions)
-	toDelete := make([]string, 0)
-	toDeleteWithStorage := make([]string, 0)
-	toDeleteBucketObjects := make([]string, 0)
-	toUpdate := make(map[string][]gintegrationsyfon.ProjectAccessMethod)
-	repoDeletePaths := make([]string, 0)
-	deletedBucketObjectURLs := make([]string, 0)
-	updatedRecordIDs := make([]string, 0)
-	manualPaths := make([]string, 0)
-	skippedPaths := make([]string, 0)
-	for _, finding := range model.Findings {
-		switch finding.Public.Kind {
-		case "repo_orphan_live_object", "repo_orphan_stale_record":
-			if deleteRepoOrphans {
-				toDelete = append(toDelete, finding.DeleteObjectIDs...)
-				if finding.DeleteStorageData {
-					toDeleteWithStorage = append(toDeleteWithStorage, finding.DeleteObjectIDs...)
-				}
-				repoDeletePaths = append(repoDeletePaths, finding.Public.NormalizedPath)
-			} else {
-				skippedPaths = append(skippedPaths, finding.Public.NormalizedPath)
-			}
-		case "stale_duplicate_record":
-			if deleteStaleDuplicates {
-				toDelete = append(toDelete, finding.DeleteObjectIDs...)
-			} else {
-				skippedPaths = append(skippedPaths, finding.Public.NormalizedPath)
-			}
-		case "broken_bucket_mapping":
-			if repairBrokenBucketMappings {
-				toDelete = append(toDelete, finding.DeleteObjectIDs...)
-				for objectID, methods := range finding.UpdateAccessMethods {
-					if trimmed := strings.TrimSpace(objectID); trimmed != "" {
-						toUpdate[trimmed] = append([]gintegrationsyfon.ProjectAccessMethod(nil), methods...)
-						updatedRecordIDs = append(updatedRecordIDs, trimmed)
-					}
-				}
-			} else {
-				skippedPaths = append(skippedPaths, finding.Public.NormalizedPath)
-			}
-		case "bucket_only_object":
-			if deleteBucketOnlyObjects {
-				toDeleteBucketObjects = append(toDeleteBucketObjects, finding.DeleteBucketObjects...)
-			} else {
-				skippedPaths = append(skippedPaths, finding.Public.NormalizedPath)
-			}
-		case "storage_validation_mismatch":
-			switch cleanupActionForFinding(actionSelection, finding.Public) {
-			case storageActionDeleteSyfonRecord:
-				toDelete = append(toDelete, finding.DeleteObjectIDs...)
-			case storageActionDeleteBucketObject:
-				toDeleteBucketObjects = append(toDeleteBucketObjects, finding.DeleteBucketObjects...)
-			case storageActionDeleteBoth:
-				toDelete = append(toDelete, finding.DeleteObjectIDs...)
-				toDeleteBucketObjects = append(toDeleteBucketObjects, finding.DeleteBucketObjects...)
-			default:
-				manualPaths = append(manualPaths, finding.Public.NormalizedPath)
-			}
-		default:
-			manualPaths = append(manualPaths, finding.Public.NormalizedPath)
+	plan := storageCleanupApplyPlan{
+		UpdateAccessMethods: make(map[string][]gintegrationsyfon.ProjectAccessMethod),
+	}
+	selected := indexCleanupSelection(selectedRepoPaths)
+	for _, finding := range selectedFindings {
+		if len(selected) > 0 && !storageApplyFindingSelected(selected, finding) {
+			continue
+		}
+		action, err := resolveStorageCleanupApplyAction(finding, actionSelection, deleteRepoOrphans, deleteStaleDuplicates, deleteBucketOnlyObjects, repairBrokenBucketMappings)
+		if err != nil {
+			return nil, err
+		}
+		if err := addStorageCleanupApplyFindingToPlan(&plan, finding, action); err != nil {
+			return nil, err
 		}
 	}
-	toDelete = uniqueStrings(toDelete)
-	toDeleteWithStorage = uniqueStrings(toDeleteWithStorage)
+	if len(selectedRepoPaths) > 0 && len(plan.DeleteObjectIDs) == 0 && len(plan.DeleteStorageObjectIDs) == 0 && len(plan.DeleteBucketObjects) == 0 && len(plan.UpdateAccessMethods) == 0 && len(plan.ManualPaths) == 0 && len(plan.SkippedPaths) == 0 {
+		return nil, fmt.Errorf("selected cleanup paths did not match provided cleanup findings")
+	}
+	return service.executeStorageCleanupApplyPlan(ctx, authorizationHeader, organization, project, plan, dryRun)
+}
+
+func resolveStorageCleanupApplyAction(finding GitStorageCleanupApplyFinding, actionSelection map[string]string, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool) (string, error) {
+	kind := strings.TrimSpace(finding.Kind)
+	if !knownStorageRepairKind(kind) {
+		return "", fmt.Errorf("unsupported cleanup finding kind %q", kind)
+	}
+	action := cleanupActionForApplyFinding(actionSelection, finding)
+	if action == "" {
+		action = legacyDefaultStorageCleanupAction(kind, deleteRepoOrphans, deleteStaleDuplicates, deleteBucketOnlyObjects, repairBrokenBucketMappings)
+	}
+	if action == "" {
+		action = strings.TrimSpace(finding.DefaultAction)
+	}
+	if action == "" {
+		action = storageRepairPolicyForKind(kind).defaultAction
+	}
+	if action == storageActionInspectEvidence {
+		return action, nil
+	}
+	if !storageRepairActionAllowed(kind, action) {
+		return "", fmt.Errorf("cleanup action %q is not supported for finding kind %q", action, kind)
+	}
+	if len(finding.AvailableActions) > 0 && !stringSliceContains(finding.AvailableActions, action) {
+		return "", fmt.Errorf("cleanup action %q is not advertised for finding kind %q at %q", action, kind, finding.NormalizedPath)
+	}
+	return action, nil
+}
+
+func knownStorageRepairKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "bucket_only_object", "bucket_syfon_no_git",
+		"repo_orphan_live_object", "repo_orphan_stale_record",
+		"stale_duplicate_record", "live_duplicate_conflict",
+		"broken_access_url_error", "broken_bucket_mapping", "syfon_broken_bucket_mapping",
+		"storage_validation_mismatch", "git_syfon_metadata_mismatch",
+		"storage_object_missing", "syfon_git_no_bucket", "syfon_missing_bucket_object",
+		"git_only_no_syfon", "storage_probe_error", "probe_error":
+		return true
+	default:
+		return false
+	}
+}
+
+func legacyDefaultStorageCleanupAction(kind string, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool) string {
+	switch strings.TrimSpace(kind) {
+	case "repo_orphan_live_object", "repo_orphan_stale_record":
+		if deleteRepoOrphans {
+			return storageRepairPolicyForKind(kind).defaultAction
+		}
+	case "bucket_syfon_no_git":
+		if deleteRepoOrphans {
+			return storageActionDeleteBoth
+		}
+	case "stale_duplicate_record":
+		if deleteStaleDuplicates {
+			return storageActionDeleteSyfonRecord
+		}
+	case "bucket_only_object":
+		if deleteBucketOnlyObjects {
+			return storageActionDeleteBucketObject
+		}
+	case "broken_access_url_error", "broken_bucket_mapping", "syfon_broken_bucket_mapping":
+		if repairBrokenBucketMappings {
+			return storageActionRemoveBrokenAccessURLs
+		}
+	}
+	return ""
+}
+
+func storageRepairActionAllowed(kind string, action string) bool {
+	for _, allowed := range storageRepairPolicyForKind(kind).actions {
+		if action == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func addStorageCleanupApplyFindingToPlan(plan *storageCleanupApplyPlan, finding GitStorageCleanupApplyFinding, action string) error {
+	switch action {
+	case storageActionInspectEvidence:
+		plan.ManualPaths = append(plan.ManualPaths, finding.NormalizedPath)
+	case storageActionDeleteSyfonRecord:
+		objectIDs := storageApplyFindingObjectIDs(finding)
+		if len(objectIDs) == 0 {
+			return fmt.Errorf("cleanup finding %q at %q is missing object_ids for %s", finding.Kind, finding.NormalizedPath, action)
+		}
+		plan.DeleteObjectIDs = append(plan.DeleteObjectIDs, objectIDs...)
+		plan.RepoDeletePaths = append(plan.RepoDeletePaths, finding.NormalizedPath)
+	case storageActionDeleteBucketObject:
+		bucketURLs := storageApplyFindingBucketObjectURLs(finding)
+		if len(bucketURLs) == 0 {
+			return fmt.Errorf("cleanup finding %q at %q is missing bucket object URLs for %s", finding.Kind, finding.NormalizedPath, action)
+		}
+		plan.DeleteBucketObjects = append(plan.DeleteBucketObjects, bucketURLs...)
+	case storageActionDeleteBoth:
+		objectIDs := storageApplyFindingObjectIDs(finding)
+		bucketURLs := storageApplyFindingBucketObjectURLs(finding)
+		if len(objectIDs) == 0 {
+			return fmt.Errorf("cleanup finding %q at %q is missing object_ids for %s", finding.Kind, finding.NormalizedPath, action)
+		}
+		if strings.TrimSpace(finding.Kind) == "repo_orphan_live_object" {
+			plan.DeleteObjectIDs = append(plan.DeleteObjectIDs, objectIDs...)
+			plan.DeleteStorageObjectIDs = append(plan.DeleteStorageObjectIDs, objectIDs...)
+			plan.RepoDeletePaths = append(plan.RepoDeletePaths, finding.NormalizedPath)
+			return nil
+		}
+		if len(bucketURLs) == 0 {
+			return fmt.Errorf("cleanup finding %q at %q is missing bucket object URLs for %s", finding.Kind, finding.NormalizedPath, action)
+		}
+		plan.DeleteObjectIDs = append(plan.DeleteObjectIDs, objectIDs...)
+		plan.DeleteBucketObjects = append(plan.DeleteBucketObjects, bucketURLs...)
+		plan.RepoDeletePaths = append(plan.RepoDeletePaths, finding.NormalizedPath)
+	case storageActionRemoveBrokenAccessURLs:
+		return addAccessMethodRepairToPlan(plan, finding)
+	default:
+		return fmt.Errorf("unsupported cleanup action %q for finding kind %q", action, finding.Kind)
+	}
+	return nil
+}
+
+func storageApplyFindingObjectIDs(finding GitStorageCleanupApplyFinding) []string {
+	objectIDs := append([]string(nil), finding.ObjectIDs...)
+	for _, record := range finding.Records {
+		objectIDs = append(objectIDs, record.ObjectID)
+	}
+	return uniqueStrings(objectIDs)
+}
+
+func addAccessMethodRepairToPlan(plan *storageCleanupApplyPlan, finding GitStorageCleanupApplyFinding) error {
+	records := finding.Records
+	if len(records) == 0 {
+		for _, objectID := range finding.ObjectIDs {
+			records = append(records, GitStorageCleanupRecordAudit{
+				ObjectID:   objectID,
+				AccessURLs: append([]string(nil), finding.AccessURLs...),
+			})
+		}
+	}
+	if len(records) == 0 {
+		return fmt.Errorf("cleanup finding %q at %q is missing records for %s", finding.Kind, finding.NormalizedPath, storageActionRemoveBrokenAccessURLs)
+	}
+	for _, record := range records {
+		objectID := strings.TrimSpace(record.ObjectID)
+		if objectID == "" {
+			return fmt.Errorf("cleanup finding %q at %q has a record without object_id", finding.Kind, finding.NormalizedPath)
+		}
+		if len(brokenAccessURLsForRecord(record)) == 0 {
+			return fmt.Errorf("cleanup finding %q at %q record %q is missing broken access URL evidence", finding.Kind, finding.NormalizedPath, objectID)
+		}
+		remaining := remainingAccessMethodsAfterBrokenRemoval(record)
+		if len(remaining) == 0 {
+			plan.DeleteObjectIDs = append(plan.DeleteObjectIDs, objectID)
+			plan.RepoDeletePaths = append(plan.RepoDeletePaths, finding.NormalizedPath)
+			continue
+		}
+		plan.UpdateAccessMethods[objectID] = remaining
+		plan.UpdatedRecordIDs = append(plan.UpdatedRecordIDs, objectID)
+	}
+	return nil
+}
+
+func remainingAccessMethodsAfterBrokenRemoval(record GitStorageCleanupRecordAudit) []gintegrationsyfon.ProjectAccessMethod {
+	methods := projectAccessMethodsFromCleanupMethods(record.AccessMethods)
+	if len(methods) == 0 {
+		for _, accessURL := range record.AccessURLs {
+			if trimmed := strings.TrimSpace(accessURL); trimmed != "" {
+				methods = append(methods, gintegrationsyfon.ProjectAccessMethod{URL: trimmed})
+			}
+		}
+	}
+	brokenURLs := brokenAccessURLsForRecord(record)
+	remaining := make([]gintegrationsyfon.ProjectAccessMethod, 0, len(methods))
+	for _, method := range methods {
+		url := strings.TrimSpace(method.URL)
+		if url == "" {
+			continue
+		}
+		if _, broken := brokenURLs[normalizeCleanupSelectionKey(url)]; broken {
+			continue
+		}
+		remaining = append(remaining, method)
+	}
+	return remaining
+}
+
+func brokenAccessURLsForRecord(record GitStorageCleanupRecordAudit) map[string]struct{} {
+	broken := make(map[string]struct{})
+	for _, probe := range record.AccessProbes {
+		url := normalizeCleanupSelectionKey(probe.URL)
+		if url == "" {
+			continue
+		}
+		if accessProbeIsBroken(probe) {
+			broken[url] = struct{}{}
+		}
+	}
+	for _, accessURL := range record.AccessURLs {
+		if strings.TrimSpace(accessURL) == "" {
+			continue
+		}
+		if len(record.AccessProbes) == 0 && recordStatusMeansBrokenAccess(record.Status) {
+			broken[normalizeCleanupSelectionKey(accessURL)] = struct{}{}
+		}
+	}
+	return broken
+}
+
+func recordStatusMeansBrokenAccess(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "missing", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
+	switch strings.TrimSpace(probe.ErrorKind) {
+	case "missing_access_url", "credential_missing":
+		return true
+	}
+	switch strings.TrimSpace(probe.Status) {
+	case "missing", "forbidden", "unsupported", "invalid", "error":
+		return true
+	}
+	return false
+}
+
+func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx context.Context, authorizationHeader string, organization string, project string, plan storageCleanupApplyPlan, dryRun bool) (*GitStorageCleanupApplyResponse, error) {
+	toDelete := uniqueStrings(plan.DeleteObjectIDs)
+	toDeleteWithStorage := uniqueStrings(plan.DeleteStorageObjectIDs)
 	toDeleteMetadataOnly := differenceStrings(toDelete, toDeleteWithStorage)
-	toDeleteBucketObjects = uniqueStrings(toDeleteBucketObjects)
-	repoDeletePaths = uniqueStrings(repoDeletePaths)
-	deletedBucketObjectURLs = uniqueStrings(deletedBucketObjectURLs)
-	updatedRecordIDs = uniqueStrings(updatedRecordIDs)
-	manualPaths = uniqueStrings(manualPaths)
-	skippedPaths = uniqueStrings(skippedPaths)
+	toDeleteBucketObjects := uniqueStrings(plan.DeleteBucketObjects)
+	repoDeletePaths := uniqueStrings(plan.RepoDeletePaths)
+	deletedBucketObjectURLs := make([]string, 0)
+	updatedRecordIDs := uniqueStrings(plan.UpdatedRecordIDs)
+	manualPaths := uniqueStrings(plan.ManualPaths)
+	skippedPaths := uniqueStrings(plan.SkippedPaths)
 	purgeResults := make([]GitStorageCleanupPurgeResult, 0, len(toDelete)+len(toDeleteBucketObjects))
 	if dryRun {
 		for _, objectID := range toDelete {
@@ -451,8 +704,8 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 			DryRun:                  true,
 		}, nil
 	}
-	if len(toUpdate) > 0 {
-		if err := service.storage.BulkUpdateAccessMethods(ctx, authorizationHeader, toUpdate); err != nil {
+	if len(plan.UpdateAccessMethods) > 0 {
+		if err := service.storage.BulkUpdateAccessMethods(ctx, authorizationHeader, plan.UpdateAccessMethods); err != nil {
 			return nil, fmt.Errorf("update syfon access methods: %w", err)
 		}
 	}
@@ -485,7 +738,7 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 		}
 		deletedBucketObjectURLs = uniqueStrings(deletedBucketObjectURLs)
 	}
-	if len(toUpdate) > 0 || len(toDelete) > 0 {
+	if len(plan.UpdateAccessMethods) > 0 || len(toDelete) > 0 {
 		service.evictProjectJoinCache(organization, project)
 	}
 	for _, objectID := range toDelete {
@@ -506,6 +759,71 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 		SkippedPaths:            skippedPaths,
 		DryRun:                  false,
 	}, nil
+}
+
+func indexCleanupSelection(paths []string) map[string]struct{} {
+	index := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		normalized := normalizeCleanupSelectionKey(path)
+		if normalized == "" {
+			continue
+		}
+		index[normalized] = struct{}{}
+	}
+	return index
+}
+
+func storageApplyFindingSelected(selected map[string]struct{}, finding GitStorageCleanupApplyFinding) bool {
+	for _, candidate := range storageApplyFindingSelectionCandidates(finding) {
+		if _, ok := selected[candidate]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func storageApplyFindingSelectionCandidates(finding GitStorageCleanupApplyFinding) []string {
+	candidates := []string{
+		finding.NormalizedPath,
+		finding.BucketObjectURL,
+	}
+	candidates = append(candidates, finding.ObjectIDs...)
+	candidates = append(candidates, finding.BucketObjectURLs...)
+	candidates = append(candidates, finding.AccessURLs...)
+	if finding.Evidence != nil {
+		candidates = append(candidates, finding.Evidence.AccessURLs...)
+		candidates = append(candidates, finding.Evidence.BucketObjectURLs...)
+		candidates = append(candidates, finding.Evidence.ObjectIDs...)
+	}
+	return uniqueCleanupSelectionCandidates(candidates)
+}
+
+func storageApplyFindingBucketObjectURLs(finding GitStorageCleanupApplyFinding) []string {
+	candidates := []string{
+		finding.BucketObjectURL,
+	}
+	if canonicalStorageURL("", "", finding.NormalizedPath) != "" {
+		candidates = append(candidates, finding.NormalizedPath)
+	}
+	candidates = append(candidates, finding.BucketObjectURLs...)
+	candidates = append(candidates, finding.AccessURLs...)
+	if finding.Evidence != nil {
+		candidates = append(candidates, finding.Evidence.BucketObjectURLs...)
+		candidates = append(candidates, finding.Evidence.AccessURLs...)
+	}
+	return uniqueCleanupSelectionCandidates(candidates)
+}
+
+func cleanupActionForApplyFinding(index map[string]string, finding GitStorageCleanupApplyFinding) string {
+	for _, path := range storageApplyFindingSelectionCandidates(finding) {
+		if action := strings.TrimSpace(index[cleanupActionKey(finding.Kind, path)]); action != "" {
+			return action
+		}
+		if action := strings.TrimSpace(index[cleanupActionKey("", path)]); action != "" {
+			return action
+		}
+	}
+	return ""
 }
 
 func indexCleanupActions(actions []GitStorageCleanupApplyAction) map[string]string {
@@ -1031,16 +1349,20 @@ func buildProjectDiffAuditModel(gitSubpath string, inventory []RepoInventoryFile
 func buildCleanupAuditModel(gitSubpath string, inventory []RepoInventoryFile, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, selectedRepoPaths []string, checkStorage bool) *cleanupAuditModel {
 	allowed := make(map[string]struct{}, len(selectedRepoPaths))
 	for _, path := range selectedRepoPaths {
-		if normalized := normalizeRepoSubpath(path); normalized != "" {
+		if normalized := normalizeCleanupSelectionKey(path); normalized != "" {
 			allowed[normalized] = struct{}{}
 		}
 	}
-	includePath := func(path string) bool {
+	includePath := func(paths ...string) bool {
 		if len(allowed) == 0 {
 			return true
 		}
-		_, ok := allowed[normalizeRepoSubpath(path)]
-		return ok
+		for _, path := range paths {
+			if _, ok := allowed[normalizeCleanupSelectionKey(path)]; ok {
+				return true
+			}
+		}
+		return false
 	}
 	findings := make([]cleanupFindingModel, 0)
 	countsByKind := map[string]int{
@@ -1134,7 +1456,7 @@ func buildCleanupAuditModel(gitSubpath string, inventory []RepoInventoryFile, re
 			continue
 		}
 		displayPath := orphanDisplayPath(checksum, recordSourcePaths(matches))
-		if !includePath(displayPath) {
+		if !includePath(cleanupSelectionCandidatesForRecords(checksum, displayPath, matches)...) {
 			continue
 		}
 		kind := "repo_orphan_stale_record"
@@ -1168,7 +1490,7 @@ func buildCleanupAuditModel(gitSubpath string, inventory []RepoInventoryFile, re
 			if _, ok := referencedBucketURLs[objectURL]; ok {
 				continue
 			}
-			if !includePath(objectURL) {
+			if !includePath(cleanupSelectionCandidatesForBucketObject(objectURL, bucketObjectsByURL[objectURL])...) {
 				continue
 			}
 			public := buildBucketOnlyFinding(bucketObjectsByURL[objectURL])
@@ -1219,6 +1541,62 @@ func buildCleanupAuditModel(gitSubpath string, inventory []RepoInventoryFile, re
 	}
 }
 
+func normalizeCleanupSelectionKey(raw string) string {
+	trimmed := strings.Trim(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		return ""
+	}
+	if objectURL := canonicalStorageURL("", "", trimmed); objectURL != "" {
+		return objectURL
+	}
+	return trimmed
+}
+
+func cleanupSelectionCandidatesForRecords(checksum string, displayPath string, matches []projectRecordState) []string {
+	candidates := []string{displayPath}
+	normalizedChecksum := normalizeAnalyticsChecksum(checksum)
+	if normalizedChecksum != "" {
+		candidates = append(candidates, normalizedChecksum, "sha256/"+normalizedChecksum)
+	}
+	for _, match := range matches {
+		candidates = append(candidates, match.ObjectID)
+		candidates = append(candidates, match.AccessURLs...)
+		candidates = append(candidates, match.CanonicalAccessURLs...)
+		candidates = append(candidates, accessURLsForStorage(match)...)
+		for _, probe := range match.AccessProbes {
+			candidates = append(candidates, probe.ObjectURL)
+			candidates = append(candidates, canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL))
+		}
+	}
+	return uniqueCleanupSelectionCandidates(candidates)
+}
+
+func cleanupSelectionCandidatesForBucketObject(objectURL string, item gintegrationsyfon.ProjectBucketObject) []string {
+	return uniqueCleanupSelectionCandidates([]string{
+		objectURL,
+		item.ObjectURL,
+		canonicalStorageURL(item.Bucket, item.Key, item.ObjectURL),
+		item.Key,
+	})
+}
+
+func uniqueCleanupSelectionCandidates(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeCleanupSelectionKey(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
 func bucketObjectHasCompleteChain(matches []projectRecordState, repoPathsByChecksum map[string][]string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
 	for _, match := range matches {
 		if classifyStorageFinding(match, bucketObjectsByURL) != storageFindingNone {
@@ -1242,19 +1620,7 @@ func buildCleanupFinding(kind string, normalizedPath string, matches []projectRe
 		if checksum == "" {
 			checksum = strings.TrimSpace(match.Checksum)
 		}
-		records = append(records, GitStorageCleanupRecordAudit{
-			ObjectID:       match.ObjectID,
-			Checksum:       strings.TrimSpace(match.Checksum),
-			NormalizedPath: normalizedPath,
-			CleanupScope:   cleanupScope,
-			AccessProbes:   accessProbesForRecord(match),
-			Status:         accessStatusForRecord(match),
-			Error:          accessErrorForRecord(match),
-			SizeBytes:      match.Size,
-			LastUpdated:    formatOptionalTime(match.UpdatedAt),
-			DownloadCount:  match.Usage.DownloadCount,
-			LastDownload:   formatOptionalTime(match.Usage.LastDownloadTime),
-		})
+		records = append(records, cleanupRecordAuditForRecord(normalizedPath, cleanupScope, match))
 		totalBytes += match.Size
 		totalDownloads += match.Usage.DownloadCount
 		latestUpdate = laterTime(latestUpdate, match.UpdatedAt)
@@ -1286,6 +1652,54 @@ func buildCleanupFinding(kind string, normalizedPath string, matches []projectRe
 	}
 }
 
+func cleanupRecordAuditForRecord(normalizedPath string, cleanupScope string, record projectRecordState) GitStorageCleanupRecordAudit {
+	return GitStorageCleanupRecordAudit{
+		ObjectID:       record.ObjectID,
+		Checksum:       strings.TrimSpace(record.Checksum),
+		NormalizedPath: normalizedPath,
+		CleanupScope:   cleanupScope,
+		AccessURLs:     uniqueStrings(record.AccessURLs),
+		AccessMethods:  cleanupAccessMethodsFromProjectMethods(record.AccessMethods),
+		AccessProbes:   accessProbesForRecord(record),
+		Status:         accessStatusForRecord(record),
+		Error:          accessErrorForRecord(record),
+		SizeBytes:      record.Size,
+		LastUpdated:    formatOptionalTime(record.UpdatedAt),
+		DownloadCount:  record.Usage.DownloadCount,
+		LastDownload:   formatOptionalTime(record.Usage.LastDownloadTime),
+	}
+}
+
+func cleanupAccessMethodsFromProjectMethods(methods []gintegrationsyfon.ProjectAccessMethod) []GitStorageCleanupAccessMethod {
+	out := make([]GitStorageCleanupAccessMethod, 0, len(methods))
+	for _, method := range methods {
+		out = append(out, GitStorageCleanupAccessMethod{
+			AccessID: strings.TrimSpace(method.AccessID),
+			Type:     strings.TrimSpace(method.Type),
+			URL:      strings.TrimSpace(method.URL),
+			Headers:  append([]string(nil), method.Headers...),
+		})
+	}
+	return out
+}
+
+func projectAccessMethodsFromCleanupMethods(methods []GitStorageCleanupAccessMethod) []gintegrationsyfon.ProjectAccessMethod {
+	out := make([]gintegrationsyfon.ProjectAccessMethod, 0, len(methods))
+	for _, method := range methods {
+		url := strings.TrimSpace(method.URL)
+		if url == "" {
+			continue
+		}
+		out = append(out, gintegrationsyfon.ProjectAccessMethod{
+			AccessID: strings.TrimSpace(method.AccessID),
+			Type:     strings.TrimSpace(method.Type),
+			URL:      url,
+			Headers:  append([]string(nil), method.Headers...),
+		})
+	}
+	return out
+}
+
 func repoOrphanAction(kind string) string {
 	if kind == "repo_orphan_live_object" {
 		return "Delete Syfon record and purge storage object"
@@ -1294,43 +1708,13 @@ func repoOrphanAction(kind string) string {
 }
 
 func storageCleanupActionSupport(kind string) (string, []string, string, bool) {
-	switch strings.TrimSpace(kind) {
-	case "broken_bucket_mapping":
-		return storageActionabilityAutoRepair, []string{
-			storageActionRemoveBrokenAccessURLs,
-			storageActionDeleteSyfonRecord,
-			storageActionInspectEvidence,
-		}, storageActionRemoveBrokenAccessURLs, true
-	case "storage_validation_mismatch":
-		return storageActionabilityManualChoice, []string{
-			storageActionDeleteSyfonRecord,
-			storageActionDeleteBucketObject,
-			storageActionDeleteBoth,
-			storageActionInspectEvidence,
-		}, "", true
-	default:
-		return storageActionabilityInspectOnly, []string{storageActionInspectEvidence}, storageActionInspectEvidence, false
-	}
+	policy := storageRepairPolicyForKind(kind)
+	return policy.actionability, append([]string(nil), policy.actions...), policy.defaultAction, policy.supportsDryRun
 }
 
 func storageChainActionSupport(kind string) (string, []string, string, bool) {
-	switch strings.TrimSpace(kind) {
-	case "syfon_broken_bucket_mapping":
-		return storageActionabilityAutoRepair, []string{
-			storageActionRemoveBrokenAccessURLs,
-			storageActionDeleteSyfonRecord,
-			storageActionInspectEvidence,
-		}, storageActionRemoveBrokenAccessURLs, true
-	case "git_syfon_metadata_mismatch":
-		return storageActionabilityManualChoice, []string{
-			storageActionDeleteSyfonRecord,
-			storageActionDeleteBucketObject,
-			storageActionDeleteBoth,
-			storageActionInspectEvidence,
-		}, "", true
-	default:
-		return storageActionabilityInspectOnly, []string{storageActionInspectEvidence}, storageActionInspectEvidence, false
-	}
+	policy := storageRepairPolicyForKind(kind)
+	return policy.actionability, append([]string(nil), policy.actions...), policy.defaultAction, policy.supportsDryRun
 }
 
 func compareRecordState(left projectRecordState, right projectRecordState) int {
@@ -1694,6 +2078,7 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 			Checksum:          strings.TrimSpace(record.Checksum),
 			SourcePaths:       uniqueStrings(gitPaths),
 			ObjectIDs:         objectIDs,
+			Records:           []GitStorageCleanupRecordAudit{cleanupRecordAuditForRecord(path, "access_url", record)},
 			AccessURLs:        accessURLs,
 			BucketObjectURL:   primaryProbe.bucketObjectURL,
 			ResolvedBucket:    primaryProbe.probe.Bucket,

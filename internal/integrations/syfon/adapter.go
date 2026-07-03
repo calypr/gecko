@@ -504,13 +504,15 @@ func (manager *Manager) BulkDeleteObjects(ctx context.Context, authorizationHead
 	if len(normalized) == 0 {
 		return nil
 	}
-	requestBody := drsapi.BulkDeleteObjectsJSONRequestBody{BulkObjectIds: normalized}
-	if deleteStorageData {
-		requestBody.DeleteStorageData = &deleteStorageData
-	}
 	resp, err := manager.drsClient(authorizationHeader)
 	if err != nil {
 		return err
+	}
+	deleteMetadata := true
+	requestBody := drsapi.BulkDeleteObjectsJSONRequestBody{
+		BulkObjectIds:        normalized,
+		DeleteObjectMetadata: &deleteMetadata,
+		DeleteStorageData:    &deleteStorageData,
 	}
 	response, err := resp.BulkDeleteObjectsWithResponse(ctx, requestBody)
 	if err != nil {
@@ -924,7 +926,7 @@ func (manager *Manager) bucketsService(authorizationHeader string) (*syfonservic
 }
 
 func (manager *Manager) drsClient(authorizationHeader string) (*drsapi.ClientWithResponses, error) {
-	clientBaseURL, err := manager.clientBaseURL()
+	clientBaseURL, err := manager.drsAPIBaseURL()
 	if err != nil {
 		return nil, err
 	}
@@ -940,6 +942,17 @@ func (manager *Manager) drsClient(authorizationHeader string) (*drsapi.ClientWit
 		return nil, fmt.Errorf("create syfon drs client: %w", err)
 	}
 	return client, nil
+}
+
+func (manager *Manager) drsAPIBaseURL() (string, error) {
+	clientBaseURL, err := manager.clientBaseURL()
+	if err != nil {
+		return "", err
+	}
+	if strings.HasSuffix(clientBaseURL, "/ga4gh/drs/v1") {
+		return clientBaseURL, nil
+	}
+	return strings.TrimRight(clientBaseURL+"/ga4gh/drs/v1", "/"), nil
 }
 
 func (manager *Manager) clientBaseURL() (string, error) {

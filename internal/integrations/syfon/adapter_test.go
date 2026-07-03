@@ -158,6 +158,60 @@ func TestBulkGetProjectRecordsByChecksumAllowsLegacyUnscopedResults(t *testing.T
 	}
 }
 
+func TestBulkDeleteObjectsUsesBulkDRSDeleteEndpoint(t *testing.T) {
+	t.Helper()
+
+	var requests []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/ga4gh/drs/v1/objects/delete" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		var req struct {
+			BulkObjectIDs        []string `json:"bulk_object_ids"`
+			DeleteObjectMetadata *bool    `json:"delete_object_metadata"`
+			DeleteStorageData    *bool    `json:"delete_storage_data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !reflect.DeepEqual(req.BulkObjectIDs, []string{"obj-a", "obj-b"}) {
+			t.Fatalf("unexpected bulk object ids: %#v", req.BulkObjectIDs)
+		}
+		if req.DeleteObjectMetadata == nil || !*req.DeleteObjectMetadata {
+			t.Fatalf("expected delete_object_metadata=true, got %#v", req.DeleteObjectMetadata)
+		}
+		if req.DeleteStorageData == nil || !*req.DeleteStorageData {
+			t.Fatalf("expected delete_storage_data=true, got %#v", req.DeleteStorageData)
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	})}
+
+	manager := NewManager("http://syfon.example/data", client)
+	if err := manager.BulkDeleteObjects(
+		context.Background(),
+		"Bearer token",
+		[]string{"obj-a", "obj-b", "obj-a"},
+		true,
+	); err != nil {
+		t.Fatalf("BulkDeleteObjects returned error: %v", err)
+	}
+
+	expected := []string{"PUT /ga4gh/drs/v1/objects/delete"}
+	if !reflect.DeepEqual(requests, expected) {
+		t.Fatalf("unexpected delete requests: %#v", requests)
+	}
+}
+
 func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	t.Helper()
 

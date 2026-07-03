@@ -17,6 +17,15 @@ import (
 )
 
 const defaultStorageChainFindingLimit = 500
+const defaultStorageChildrenLimit = 100
+const maxStorageChildrenLimit = 1000
+
+type storageChildrenRequestOptions struct {
+	limit     int
+	cursor    string
+	sortBy    string
+	sortOrder string
+}
 
 func (handler *Handler) handleGitProjectStorageSummaryGET(ctx fiber.Ctx) error {
 	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
@@ -37,15 +46,10 @@ func (handler *Handler) handleGitProjectStorageChildrenGET(ctx fiber.Ctx) error 
 		return errResponse.Write(ctx)
 	}
 	gitSubpath := normalizeAnalyticsSubpath(strings.TrimSpace(ctx.Query("git_subpath")))
-	limit := 1000
-	if rawLimit := strings.TrimSpace(ctx.Query("limit")); rawLimit != "" {
-		parsed, err := strconv.Atoi(rawLimit)
-		if err != nil || parsed <= 0 {
-			response := httputil.NewError("invalid_request", "limit must be a positive integer", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
-			response.WriteLog(handler.logger)
-			return response.Write(ctx)
-		}
-		limit = parsed
+	options, errResponse := parseStorageChildrenRequestOptions(ctx, projectCtx.projectID)
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
 	}
 	response, err := handler.storageAnalytics.BuildStorageChildren(
 		ctx.Context(),
@@ -57,14 +61,42 @@ func (handler *Handler) handleGitProjectStorageChildrenGET(ctx fiber.Ctx) error 
 		projectCtx.mirrorPath,
 		projectCtx.repo,
 		projectCtx.hash,
-		limit,
-		strings.TrimSpace(ctx.Query("sort_by")),
-		strings.TrimSpace(ctx.Query("sort_order")),
+		options.limit,
+		options.sortBy,
+		options.sortOrder,
+		options.cursor,
 	)
 	if err != nil {
 		return handler.writeGitAnalyticsError(ctx, projectCtx.projectID, projectCtx.refName, gitSubpath, err)
 	}
 	return httputil.JSON(response, http.StatusOK).Write(ctx)
+}
+
+func parseStorageChildrenRequestOptions(ctx fiber.Ctx, projectID string) (storageChildrenRequestOptions, *httputil.ErrorResponse) {
+	limit, err := parseStorageChildrenLimit(strings.TrimSpace(ctx.Query("limit")))
+	if err != nil {
+		return storageChildrenRequestOptions{}, httputil.NewError("invalid_request", err.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
+	}
+	return storageChildrenRequestOptions{
+		limit:     limit,
+		cursor:    strings.TrimSpace(ctx.Query("cursor")),
+		sortBy:    strings.TrimSpace(ctx.Query("sort_by")),
+		sortOrder: strings.TrimSpace(ctx.Query("sort_order")),
+	}, nil
+}
+
+func parseStorageChildrenLimit(rawLimit string) (int, error) {
+	if rawLimit == "" {
+		return defaultStorageChildrenLimit, nil
+	}
+	parsed, err := strconv.Atoi(rawLimit)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("limit must be a positive integer")
+	}
+	if parsed > maxStorageChildrenLimit {
+		return maxStorageChildrenLimit, nil
+	}
+	return parsed, nil
 }
 
 func (handler *Handler) handleGitProjectDiffAuditPOST(ctx fiber.Ctx) error {
@@ -246,19 +278,49 @@ func (handler *Handler) handleGitProjectStorageCleanupApplyPOST(ctx fiber.Ctx) e
 		requestBody.Actions[i].Kind = strings.TrimSpace(requestBody.Actions[i].Kind)
 		requestBody.Actions[i].Action = strings.TrimSpace(requestBody.Actions[i].Action)
 	}
+	for i := range requestBody.Findings {
+		requestBody.Findings[i].Kind = strings.TrimSpace(requestBody.Findings[i].Kind)
+		requestBody.Findings[i].NormalizedPath = normalizeAnalyticsSubpath(requestBody.Findings[i].NormalizedPath)
+		requestBody.Findings[i].ObjectIDs = normalizeStringList(requestBody.Findings[i].ObjectIDs)
+		requestBody.Findings[i].BucketObjectURL = strings.TrimSpace(requestBody.Findings[i].BucketObjectURL)
+		requestBody.Findings[i].BucketObjectURLs = normalizeAnalyticsPathList(requestBody.Findings[i].BucketObjectURLs)
+		requestBody.Findings[i].AccessURLs = normalizeAnalyticsPathList(requestBody.Findings[i].AccessURLs)
+		requestBody.Findings[i].AvailableActions = normalizeStringList(requestBody.Findings[i].AvailableActions)
+		requestBody.Findings[i].DefaultAction = strings.TrimSpace(requestBody.Findings[i].DefaultAction)
+		if requestBody.Findings[i].Evidence != nil {
+			requestBody.Findings[i].Evidence.ObjectIDs = normalizeStringList(requestBody.Findings[i].Evidence.ObjectIDs)
+			requestBody.Findings[i].Evidence.AccessURLs = normalizeAnalyticsPathList(requestBody.Findings[i].Evidence.AccessURLs)
+			requestBody.Findings[i].Evidence.BucketObjectURLs = normalizeAnalyticsPathList(requestBody.Findings[i].Evidence.BucketObjectURLs)
+			requestBody.Findings[i].Evidence.SourcePaths = normalizeAnalyticsPathList(requestBody.Findings[i].Evidence.SourcePaths)
+		}
+		for j := range requestBody.Findings[i].Records {
+			record := &requestBody.Findings[i].Records[j]
+			record.ObjectID = strings.TrimSpace(record.ObjectID)
+			record.Checksum = strings.TrimSpace(record.Checksum)
+			record.NormalizedPath = normalizeAnalyticsSubpath(record.NormalizedPath)
+			record.CleanupScope = strings.TrimSpace(record.CleanupScope)
+			record.AccessURLs = normalizeAnalyticsPathList(record.AccessURLs)
+			for k := range record.AccessMethods {
+				record.AccessMethods[k].AccessID = strings.TrimSpace(record.AccessMethods[k].AccessID)
+				record.AccessMethods[k].Type = strings.TrimSpace(record.AccessMethods[k].Type)
+				record.AccessMethods[k].URL = strings.TrimSpace(record.AccessMethods[k].URL)
+				record.AccessMethods[k].Headers = normalizeStringList(record.AccessMethods[k].Headers)
+			}
+			for k := range record.AccessProbes {
+				record.AccessProbes[k].URL = strings.TrimSpace(record.AccessProbes[k].URL)
+				record.AccessProbes[k].Status = strings.TrimSpace(record.AccessProbes[k].Status)
+				record.AccessProbes[k].ErrorKind = strings.TrimSpace(record.AccessProbes[k].ErrorKind)
+			}
+		}
+	}
 	response, err := handler.storageAnalytics.ApplyStorageCleanup(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
 		projectCtx.organization,
 		projectCtx.project,
-		projectCtx.refName,
-		requestBody.GitSubpath,
 		requestBody.SelectedRepoPaths,
 		requestBody.Actions,
-		projectCtx.mirrorPath,
-		projectCtx.repo,
-		projectCtx.hash,
-		true,
+		requestBody.Findings,
 		requestBody.DeleteRepoOrphans,
 		requestBody.DeleteStaleDuplicates,
 		requestBody.DeleteBucketOnlyObjects,
@@ -409,10 +471,34 @@ func normalizeAnalyticsPathList(values []string) []string {
 	return out
 }
 
+func normalizeStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		normalized := strings.TrimSpace(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
 func (handler *Handler) writeGitAnalyticsError(ctx fiber.Ctx, projectID string, ref string, gitSubpath string, err error) error {
 	statusCode := http.StatusBadGateway
 	errorType := "integration_error"
-	if strings.Contains(strings.ToLower(err.Error()), "git tree path") {
+	errorMessage := strings.ToLower(err.Error())
+	if strings.Contains(errorMessage, "storage children cursor") {
+		statusCode = http.StatusBadRequest
+		errorType = "invalid_request"
+	} else if strings.Contains(errorMessage, "cleanup apply") || strings.Contains(errorMessage, "cleanup finding") || strings.Contains(errorMessage, "cleanup action") || strings.Contains(errorMessage, "unsupported cleanup") || strings.Contains(errorMessage, "selected cleanup paths") {
+		statusCode = http.StatusBadRequest
+		errorType = "invalid_request"
+	} else if strings.Contains(errorMessage, "git tree path") {
 		statusCode = http.StatusNotFound
 		errorType = "not_found"
 	}
