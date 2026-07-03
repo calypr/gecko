@@ -21,12 +21,20 @@ import (
 const repoAnalyticsIndexSchemaVersion = 1
 
 var repoAnalyticsIndexCache = &repoAnalyticsIndexMemoryCache{
-	entries: map[string]*repoAnalyticsIndex{},
+	entries:  map[string]*repoAnalyticsIndex{},
+	inflight: map[string]*inflightRepoAnalyticsIndex{},
 }
 
 type repoAnalyticsIndexMemoryCache struct {
-	mu      sync.RWMutex
-	entries map[string]*repoAnalyticsIndex
+	mu       sync.RWMutex
+	entries  map[string]*repoAnalyticsIndex
+	inflight map[string]*inflightRepoAnalyticsIndex
+}
+
+type inflightRepoAnalyticsIndex struct {
+	done  chan struct{}
+	index *repoAnalyticsIndex
+	err   error
 }
 
 type repoAnalyticsIndex struct {
@@ -81,23 +89,45 @@ func PersistRepoAnalyticsIndex(ctx context.Context, mirrorPath string, repo *gog
 }
 
 func loadOrBuildRepoAnalyticsIndex(_ context.Context, mirrorPath string, ref string, repo *gogit.Repository, hash plumbing.Hash) (*repoAnalyticsIndex, error) {
-	if cached := repoAnalyticsIndexCache.get(mirrorPath, hash); cached != nil {
+	cacheKey := repoAnalyticsCacheKey(mirrorPath, hash)
+	repoAnalyticsIndexCache.mu.Lock()
+	if cached := repoAnalyticsIndexCache.entries[cacheKey]; cached != nil {
+		repoAnalyticsIndexCache.mu.Unlock()
 		return cached, nil
 	}
+	if inflight := repoAnalyticsIndexCache.inflight[cacheKey]; inflight != nil {
+		repoAnalyticsIndexCache.mu.Unlock()
+		<-inflight.done
+		return inflight.index, inflight.err
+	}
+	inflight := &inflightRepoAnalyticsIndex{done: make(chan struct{})}
+	repoAnalyticsIndexCache.inflight[cacheKey] = inflight
+	repoAnalyticsIndexCache.mu.Unlock()
+	defer func() {
+		repoAnalyticsIndexCache.mu.Lock()
+		delete(repoAnalyticsIndexCache.inflight, cacheKey)
+		close(inflight.done)
+		repoAnalyticsIndexCache.mu.Unlock()
+	}()
+
 	sidecar, err := readRepoAnalyticsIndexSidecar(mirrorPath)
 	if err == nil && sidecar.SchemaVersion == repoAnalyticsIndexSchemaVersion && sidecar.CommitHash == hash.String() {
 		index := repoAnalyticsIndexFromSidecar(sidecar)
 		repoAnalyticsIndexCache.put(mirrorPath, hash, index)
+		inflight.index = index
 		return index, nil
 	}
 	index, buildErr := buildRepoAnalyticsIndex(ref, repo, hash)
 	if buildErr != nil {
+		inflight.err = buildErr
 		return nil, buildErr
 	}
 	if writeErr := writeRepoAnalyticsIndexSidecar(mirrorPath, index.sidecar); writeErr != nil {
+		inflight.err = writeErr
 		return nil, writeErr
 	}
 	repoAnalyticsIndexCache.put(mirrorPath, hash, index)
+	inflight.index = index
 	return index, nil
 }
 

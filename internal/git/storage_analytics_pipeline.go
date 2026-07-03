@@ -947,7 +947,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 		bucketMatches := matchedBucketObjectURLs(record, index.bucketObjectsByURL)
 		switch classifyStorageFinding(record, index.bucketObjectsByURL) {
 		case storageFindingBrokenBucketMap:
-			findings := buildChainRecordFindings("syfon_broken_bucket_mapping", record, gitPaths, bucketMatches, "Syfon record exists, but its access URL does not resolve to a configured bucket mapping.")
+			findings := buildChainRecordFindings("syfon_broken_bucket_mapping", record, gitPaths, bucketMatches, "Syfon access URL did not resolve through a configured bucket mapping.")
 			acc.findings = append(acc.findings, findings...)
 			acc.addCount("syfon_broken_bucket_mapping", chainPathCount(gitPaths))
 		case storageFindingObjectMissing:
@@ -960,7 +960,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 			acc.add("syfon_missing_bucket_object", buildChainRecordFindings("syfon_missing_bucket_object", record, nil, bucketMatches, "Syfon record points to a mapped bucket location, but the object does not exist.")...)
 		case storageFindingValidationMismatch:
 			if len(gitPaths) > 0 {
-				findings := buildChainRecordFindings("git_syfon_metadata_mismatch", record, gitPaths, bucketMatches, "Bucket object exists, but its metadata does not match what Syfon expects.")
+				findings := buildChainRecordFindings("git_syfon_metadata_mismatch", record, gitPaths, bucketMatches, "Mapped bucket object exists, but object evidence disagrees with the Syfon/Git record.")
 				acc.findings = append(acc.findings, findings...)
 				acc.addCount("git_syfon_metadata_mismatch", len(gitPaths))
 				continue
@@ -988,6 +988,7 @@ func buildGitOriginChainFindings(index storageChainIndex, recordsByChecksum map[
 		if len(allProjectRecords[checksum]) > 0 || len(recordsByChecksum[checksum]) > 0 {
 			continue
 		}
+		actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport("git_only_no_syfon")
 		acc.add("git_only_no_syfon", GitStorageChainFinding{
 			Kind:              "git_only_no_syfon",
 			NormalizedPath:    item.RepoPath,
@@ -997,6 +998,10 @@ func buildGitOriginChainFindings(index storageChainIndex, recordsByChecksum map[
 			RecordCount:       0,
 			SizeBytes:         item.Size,
 			RecommendedAction: "Git checksum has no matching Syfon record. Bucket presence is not claimed by this finding.",
+			Actionability:     actionability,
+			AvailableActions:  availableActions,
+			DefaultAction:     defaultAction,
+			SupportsDryRun:    supportsDryRun,
 			Evidence: &GitAuditEvidence{
 				Checksum:         checksum,
 				SourcePaths:      []string{item.RepoPath},

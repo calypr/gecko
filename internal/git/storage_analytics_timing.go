@@ -23,6 +23,7 @@ type StorageChainAuditOptions struct {
 	ValidationMode      string
 	BucketInventoryMode string
 	BucketPathPrefix    string
+	FindingKind         string
 	FindingLimit        int
 	Timings             *StorageChainAuditTimings
 }

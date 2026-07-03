@@ -182,7 +182,8 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	}
 	projectCtx.applyRequestRef(requestBody.Ref)
 	gitSubpath := normalizeAnalyticsSubpath(requestBody.GitSubpath)
-	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingLimit)
+	findingKind := strings.TrimSpace(requestBody.FindingKind)
+	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_kind=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingKind, findingLimit)
 	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
 	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
@@ -199,6 +200,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 			ValidationMode:      validationMode,
 			BucketInventoryMode: bucketMode,
 			BucketPathPrefix:    bucketPathPrefix,
+			FindingKind:         findingKind,
 			FindingLimit:        findingLimit,
 			Timings:             timings,
 		},
@@ -239,6 +241,11 @@ func (handler *Handler) handleGitProjectStorageCleanupApplyPOST(ctx fiber.Ctx) e
 	projectCtx.applyRequestRef(requestBody.Ref)
 	requestBody.GitSubpath = normalizeAnalyticsSubpath(requestBody.GitSubpath)
 	requestBody.SelectedRepoPaths = normalizeAnalyticsPathList(requestBody.SelectedRepoPaths)
+	for i := range requestBody.Actions {
+		requestBody.Actions[i].NormalizedPath = normalizeAnalyticsSubpath(requestBody.Actions[i].NormalizedPath)
+		requestBody.Actions[i].Kind = strings.TrimSpace(requestBody.Actions[i].Kind)
+		requestBody.Actions[i].Action = strings.TrimSpace(requestBody.Actions[i].Action)
+	}
 	response, err := handler.storageAnalytics.ApplyStorageCleanup(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
@@ -247,6 +254,7 @@ func (handler *Handler) handleGitProjectStorageCleanupApplyPOST(ctx fiber.Ctx) e
 		projectCtx.refName,
 		requestBody.GitSubpath,
 		requestBody.SelectedRepoPaths,
+		requestBody.Actions,
 		projectCtx.mirrorPath,
 		projectCtx.repo,
 		projectCtx.hash,

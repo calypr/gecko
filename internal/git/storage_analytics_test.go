@@ -24,6 +24,7 @@ type fakeStorageAnalyticsBackend struct {
 	bucketScopes                       map[string][]domain.StorageBucketScope
 	projectScopes                      []domain.StorageBucketScope
 	usageByObject                      map[string]gintegrationsyfon.FileUsage
+	bulkChecksums                      []string
 	probeResults                       map[string]gintegrationsyfon.BulkStorageProbeResult
 	listProbeResults                   map[string]gintegrationsyfon.BulkStorageProbeResult
 	bucketObjects                      []gintegrationsyfon.ProjectBucketObject
@@ -38,6 +39,8 @@ type fakeStorageAnalyticsBackend struct {
 	listProjectBucketObjectsPathPrefix string
 	listProjectBucketSummaryCalls      int
 	listProjectBucketSummaryMode       string
+	bulkGetProjectRecordsCalls         int
+	bulkGetDelay                       time.Duration
 	probeCalls                         int
 	probeItems                         []gintegrationsyfon.BulkStorageProbeItem
 	listProbeCalls                     int
@@ -84,6 +87,11 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectScopes(ctx context.Context, 
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error) {
+	fake.bulkGetProjectRecordsCalls++
+	fake.bulkChecksums = append([]string(nil), checksums...)
+	if fake.bulkGetDelay > 0 {
+		time.Sleep(fake.bulkGetDelay)
+	}
 	if fake.bulkRecords != nil {
 		out := make(map[string][]gintegrationsyfon.ProjectRecord, len(fake.bulkRecords))
 		for checksum, records := range fake.bulkRecords {
@@ -320,7 +328,7 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 	assertHasCleanupFinding(t, cleanup.Findings, "broken_access_url_error", "data/c.txt")
 	assertHasCleanupFinding(t, cleanup.Findings, "repo_orphan_stale_record", "s3://bucket/orphan")
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", nil, mirrorPath, repo, hash, true, true, true, false, false, true)
+	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", nil, nil, mirrorPath, repo, hash, true, true, true, false, false, true)
 	if err != nil {
 		t.Fatalf("apply cleanup dry run: %v", err)
 	}
@@ -389,7 +397,7 @@ func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"data/a.txt", "data/b.txt"}, mirrorPath, repo, hash, true, false, false, false, true, false)
+	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"data/a.txt", "data/b.txt"}, nil, mirrorPath, repo, hash, true, false, false, false, true, false)
 	if err != nil {
 		t.Fatalf("apply cleanup broken bucket mapping repair: %v", err)
 	}
@@ -435,7 +443,7 @@ func TestApplyStorageCleanupDeletesBucketOnlyObjects(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"s3://bucket/orphan"}, mirrorPath, repo, hash, true, false, false, true, false, false)
+	applyResult, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", refName, "data", []string{"s3://bucket/orphan"}, nil, mirrorPath, repo, hash, true, false, false, true, false, false)
 	if err != nil {
 		t.Fatalf("apply cleanup bucket only delete: %v", err)
 	}
@@ -508,6 +516,127 @@ func TestBuildStorageCleanupAuditReportsStorageProbeFailures(t *testing.T) {
 		mismatchFinding.Evidence.ProbeStatuses[0] != "present" ||
 		mismatchFinding.Evidence.BucketEvaluation != "probed" {
 		t.Fatalf("expected storage evidence on mismatch finding, got %+v", mismatchFinding)
+	}
+	if mismatchFinding.Actionability != "manual_choice" ||
+		!contains(mismatchFinding.AvailableActions, "delete_syfon_record") ||
+		!contains(mismatchFinding.AvailableActions, "delete_bucket_object") ||
+		!contains(mismatchFinding.AvailableActions, "delete_both") ||
+		mismatchFinding.DefaultAction != "" ||
+		!mismatchFinding.SupportsDryRun {
+		t.Fatalf("expected mismatch action metadata, got %+v", mismatchFinding)
+	}
+}
+
+func TestApplyStorageCleanupSupportsMetadataMismatchActions(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-b", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, UpdatedAt: &now, AccessURLs: []string{"s3://bucket/b"}},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey("s3://bucket/b", 200, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"): {
+				ID:                   storageProbeRequestKey("s3://bucket/b", 200, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+				ObjectURL:            "s3://bucket/b",
+				Bucket:               "bucket",
+				Key:                  "b",
+				Status:               "present",
+				Exists:               true,
+				ValidationStatus:     "mismatched",
+				ValidationMismatches: []string{"size_mismatch"},
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	deleteRecordOnly, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"data",
+		[]string{"data/b.txt"},
+		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_syfon_record"}},
+		mirrorPath,
+		repo,
+		hash,
+		true,
+		false,
+		false,
+		false,
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup delete syfon record dry run: %v", err)
+	}
+	if len(deleteRecordOnly.DeletedRecordIDs) != 1 || deleteRecordOnly.DeletedRecordIDs[0] != "obj-b" {
+		t.Fatalf("expected mismatch delete-record action to select Syfon record, got %+v", deleteRecordOnly)
+	}
+	if len(deleteRecordOnly.DeletedBucketObjectURLs) != 0 {
+		t.Fatalf("expected record-only action to avoid bucket delete, got %+v", deleteRecordOnly)
+	}
+
+	deleteBucketOnly, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"data",
+		[]string{"data/b.txt"},
+		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_bucket_object"}},
+		mirrorPath,
+		repo,
+		hash,
+		true,
+		false,
+		false,
+		false,
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup delete bucket object dry run: %v", err)
+	}
+	if len(deleteBucketOnly.DeletedRecordIDs) != 0 {
+		t.Fatalf("expected bucket-only action to avoid Syfon delete, got %+v", deleteBucketOnly)
+	}
+	if len(deleteBucketOnly.DeletedBucketObjectURLs) != 1 || deleteBucketOnly.DeletedBucketObjectURLs[0] != "s3://bucket/b" {
+		t.Fatalf("expected mismatch delete-bucket action to select bucket object, got %+v", deleteBucketOnly)
+	}
+
+	deleteBoth, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"data",
+		[]string{"data/b.txt"},
+		[]GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/b.txt", Action: "delete_both"}},
+		mirrorPath,
+		repo,
+		hash,
+		true,
+		false,
+		false,
+		false,
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup delete both dry run: %v", err)
+	}
+	if len(deleteBoth.DeletedRecordIDs) != 1 || deleteBoth.DeletedRecordIDs[0] != "obj-b" {
+		t.Fatalf("expected dual delete action to include Syfon record, got %+v", deleteBoth)
+	}
+	if len(deleteBoth.DeletedBucketObjectURLs) != 1 || deleteBoth.DeletedBucketObjectURLs[0] != "s3://bucket/b" {
+		t.Fatalf("expected dual delete action to include bucket object, got %+v", deleteBoth)
 	}
 }
 
@@ -600,7 +729,7 @@ func TestBuildStorageCleanupAuditReportsBrokenBucketMappingSeparately(t *testing
 	assertHasCleanupFinding(t, cleanup.Findings, "broken_bucket_mapping", "data/a.txt")
 	for _, finding := range cleanup.Findings {
 		if finding.Kind == "broken_bucket_mapping" && finding.NormalizedPath == "data/a.txt" {
-			if len(finding.Records) != 1 || finding.Records[0].Error != "no Syfon bucket mapping is configured for this access URL" {
+			if len(finding.Records) != 1 || finding.Records[0].Error != "Syfon access URL did not resolve through a configured bucket mapping" {
 				t.Fatalf("expected broken bucket mapping detail, got %+v", finding)
 			}
 			if finding.Evidence == nil ||
@@ -610,6 +739,12 @@ func TestBuildStorageCleanupAuditReportsBrokenBucketMappingSeparately(t *testing
 				finding.Evidence.ErrorKinds[0] != "credential_missing" ||
 				finding.Evidence.BucketEvaluation != "probed" {
 				t.Fatalf("expected broken bucket mapping evidence, got %+v", finding)
+			}
+			if finding.Actionability != "auto_repair" ||
+				!contains(finding.AvailableActions, "remove_broken_access_urls") ||
+				finding.DefaultAction != "remove_broken_access_urls" ||
+				!finding.SupportsDryRun {
+				t.Fatalf("expected broken mapping action metadata, got %+v", finding)
 			}
 			return
 		}
@@ -1065,6 +1200,62 @@ func TestBuildStorageChainAuditCachesProjectRecordsPerPathPrefix(t *testing.T) {
 	}
 }
 
+func TestStorageSummaryAndChildrenShareInflightJoinWork(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, UpdatedAt: &now, AccessURLs: []string{"s3://bucket/a"}},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{
+			"obj-a": {ObjectID: "obj-a", DownloadCount: 1},
+		},
+		bulkGetDelay: 75 * time.Millisecond,
+	}
+	service := NewStorageAnalyticsService(backend)
+	errCh := make(chan error, 2)
+	go func() {
+		_, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+		errCh <- err
+	}()
+	go func() {
+		_, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1000, "bytes", "desc")
+		errCh <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("expected concurrent storage analytics request to succeed, got %v", err)
+		}
+	}
+	if backend.bulkGetProjectRecordsCalls != 1 {
+		t.Fatalf("expected concurrent summary/children requests to share one checksum lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	}
+	if backend.listProjectFileUsageCalls != 1 {
+		t.Fatalf("expected concurrent summary/children requests to share one usage lookup, got %d", backend.listProjectFileUsageCalls)
+	}
+}
+
+func TestLoadProjectJoinCacheDeduplicatesChecksums(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/b.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/a"}},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	if _, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash); err != nil {
+		t.Fatalf("build storage summary: %v", err)
+	}
+	if len(backend.bulkChecksums) != 1 {
+		t.Fatalf("expected duplicate file checksums to be deduplicated before backend lookup, got %+v", backend.bulkChecksums)
+	}
+}
+
 func TestBuildStorageChainAuditForwardsBucketPathPrefixForExplicitInventory(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"README.md": "fixture",
@@ -1141,6 +1332,77 @@ func TestBuildStorageChainAuditSurfacesMetadataMismatchAndEvidence(t *testing.T)
 		len(finding.Evidence.ValidationStates) != 1 ||
 		finding.Evidence.ValidationStates[0] != "mismatched" {
 		t.Fatalf("expected metadata mismatch evidence, got %+v", finding)
+	}
+	if finding.Actionability != "manual_choice" ||
+		!contains(finding.AvailableActions, "delete_syfon_record") ||
+		!contains(finding.AvailableActions, "delete_bucket_object") ||
+		!contains(finding.AvailableActions, "delete_both") ||
+		finding.DefaultAction != "" ||
+		!finding.SupportsDryRun {
+		t.Fatalf("expected metadata mismatch chain actions, got %+v", finding)
+	}
+}
+
+func TestBuildStorageChainAuditFiltersFindingsByKind(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt":       lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/bad-map.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, UpdatedAt: &now, AccessURLs: []string{"s3://bucket/a"}},
+			{ObjectID: "obj-bad-map", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, UpdatedAt: &now, AccessURLs: []string{"s3://legacy-bucket/bad-map.txt"}},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/a", Bucket: "bucket", Key: "a", Path: "a", SizeBytes: 999},
+		},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey("s3://bucket/a", 100, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"): {
+				ID:                   storageProbeRequestKey("s3://bucket/a", 100, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+				ObjectURL:            "s3://bucket/a",
+				Bucket:               "bucket",
+				Key:                  "a",
+				Status:               "present",
+				Exists:               true,
+				ValidationStatus:     "mismatched",
+				ValidationMismatches: []string{"size_mismatch"},
+			},
+			storageProbeRequestKey("s3://legacy-bucket/bad-map.txt", 200, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"): {
+				ID:               storageProbeRequestKey("s3://legacy-bucket/bad-map.txt", 200, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+				ObjectURL:        "s3://legacy-bucket/bad-map.txt",
+				Status:           "error",
+				Exists:           false,
+				ErrorKind:        "credential_missing",
+				Error:            `no stored bucket credential found for bucket "legacy-bucket"`,
+				ValidationStatus: "unverifiable",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		FindingKind:  "syfon_broken_bucket_mapping",
+		FindingLimit: 1,
+	})
+	if err != nil {
+		t.Fatalf("build filtered chain audit: %v", err)
+	}
+	if chain.Summary.TotalFindings != 1 || chain.Summary.ReturnedFindings != 1 || chain.Summary.FindingsTruncated {
+		t.Fatalf("expected one filtered finding without truncation, got %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
+		t.Fatalf("expected filtered broken mapping count, got %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["git_syfon_metadata_mismatch"]; got != 0 {
+		t.Fatalf("expected mismatch count to be excluded from filtered response, got %+v", chain.Summary)
+	}
+	if len(chain.Groups) != 1 || chain.Groups[0].Kind != "syfon_broken_bucket_mapping" {
+		t.Fatalf("expected one filtered group, got %+v", chain.Groups)
+	}
+	if len(chain.Findings) != 1 || chain.Findings[0].Kind != "syfon_broken_bucket_mapping" || chain.Findings[0].NormalizedPath != "data/bad-map.txt" {
+		t.Fatalf("expected filtered broken mapping detail row, got %+v", chain.Findings)
 	}
 }
 

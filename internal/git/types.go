@@ -398,6 +398,7 @@ type GitStorageChainAuditRequest struct {
 	ValidationMode      string `json:"validation_mode,omitempty"`
 	BucketInventoryMode string `json:"bucket_inventory_mode,omitempty"`
 	BucketPathPrefix    string `json:"bucket_path_prefix,omitempty"`
+	FindingKind         string `json:"finding_kind,omitempty"`
 	FindingLimit        int    `json:"finding_limit,omitempty"`
 }
 
@@ -417,6 +418,10 @@ type GitStorageChainFinding struct {
 	RecordCount       int               `json:"record_count"`
 	SizeBytes         int64             `json:"size_bytes,omitempty"`
 	RecommendedAction string            `json:"recommended_action"`
+	Actionability     string            `json:"actionability,omitempty"`
+	AvailableActions  []string          `json:"available_actions,omitempty"`
+	DefaultAction     string            `json:"default_action,omitempty"`
+	SupportsDryRun    bool              `json:"supports_dry_run,omitempty"`
 	Evidence          *GitAuditEvidence `json:"evidence,omitempty"`
 }
 
@@ -503,7 +508,17 @@ type GitStorageCleanupFinding struct {
 	LastUpdated         string                         `json:"last_updated,omitempty"`
 	DownloadCount       int64                          `json:"download_count,omitempty"`
 	LastDownload        string                         `json:"last_download_time,omitempty"`
+	Actionability       string                         `json:"actionability,omitempty"`
+	AvailableActions    []string                       `json:"available_actions,omitempty"`
+	DefaultAction       string                         `json:"default_action,omitempty"`
+	SupportsDryRun      bool                           `json:"supports_dry_run,omitempty"`
 	Evidence            *GitAuditEvidence              `json:"evidence,omitempty"`
+}
+
+type GitStorageCleanupApplyAction struct {
+	Action         string `json:"action"`
+	Kind           string `json:"kind,omitempty"`
+	NormalizedPath string `json:"normalized_path,omitempty"`
 }
 
 type GitStorageCleanupAuditSummary struct {
@@ -524,14 +539,15 @@ type GitStorageCleanupAuditResponse struct {
 }
 
 type GitStorageCleanupApplyRequest struct {
-	GitSubpath                 string   `json:"git_subpath,omitempty"`
-	Ref                        string   `json:"ref,omitempty"`
-	DeleteRepoOrphans          bool     `json:"delete_repo_orphans,omitempty"`
-	DeleteStaleDuplicates      bool     `json:"delete_stale_duplicates,omitempty"`
-	DeleteBucketOnlyObjects    bool     `json:"delete_bucket_only_objects,omitempty"`
-	RepairBrokenBucketMappings bool     `json:"repair_broken_bucket_mappings,omitempty"`
-	DryRun                     bool     `json:"dry_run,omitempty"`
-	SelectedRepoPaths          []string `json:"selected_repo_paths,omitempty"`
+	GitSubpath                 string                         `json:"git_subpath,omitempty"`
+	Ref                        string                         `json:"ref,omitempty"`
+	DeleteRepoOrphans          bool                           `json:"delete_repo_orphans,omitempty"`
+	DeleteStaleDuplicates      bool                           `json:"delete_stale_duplicates,omitempty"`
+	DeleteBucketOnlyObjects    bool                           `json:"delete_bucket_only_objects,omitempty"`
+	RepairBrokenBucketMappings bool                           `json:"repair_broken_bucket_mappings,omitempty"`
+	DryRun                     bool                           `json:"dry_run,omitempty"`
+	SelectedRepoPaths          []string                       `json:"selected_repo_paths,omitempty"`
+	Actions                    []GitStorageCleanupApplyAction `json:"actions,omitempty"`
 }
 
 type GitStorageCleanupPurgeResult struct {
