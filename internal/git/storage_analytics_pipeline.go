@@ -947,9 +947,9 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 		bucketMatches := matchedBucketObjectURLs(record, index.bucketObjectsByURL)
 		switch classifyStorageFinding(record, index.bucketObjectsByURL) {
 		case storageFindingBrokenBucketMap:
-			findings := buildChainRecordFindings("syfon_broken_bucket_mapping", record, gitPaths, bucketMatches, "Syfon access URL did not resolve through a configured bucket mapping.")
+			findings := buildChainRecordFindingsWithOptions("syfon_broken_bucket_mapping", record, gitPaths, bucketMatches, "Syfon access URL did not resolve through a configured bucket mapping.", true)
 			acc.findings = append(acc.findings, findings...)
-			acc.addCount("syfon_broken_bucket_mapping", chainPathCount(gitPaths))
+			acc.addCount("syfon_broken_bucket_mapping", len(findings))
 		case storageFindingObjectMissing:
 			if len(gitPaths) > 0 {
 				findings := buildChainRecordFindings("syfon_git_no_bucket", record, gitPaths, bucketMatches, "Git and Syfon matched, but the mapped bucket object does not exist.")

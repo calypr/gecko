@@ -21,10 +21,11 @@ const defaultStorageChildrenLimit = 100
 const maxStorageChildrenLimit = 1000
 
 type storageChildrenRequestOptions struct {
-	limit     int
-	cursor    string
-	sortBy    string
-	sortOrder string
+	limit       int
+	cursor      string
+	sortBy      string
+	sortOrder   string
+	summaryMode string
 }
 
 func (handler *Handler) handleGitProjectStorageSummaryGET(ctx fiber.Ctx) error {
@@ -73,16 +74,38 @@ func (handler *Handler) handleGitProjectStorageChildrenGET(ctx fiber.Ctx) error 
 }
 
 func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
+	resolveStart := time.Now()
 	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
+	resolveDuration := time.Since(resolveStart)
 	gitSubpath := normalizeAnalyticsSubpath(strings.TrimSpace(ctx.Query("git_subpath")))
 	options, errResponse := parseStorageChildrenRequestOptions(ctx, projectCtx.projectID)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
+	summaryMode := strings.TrimSpace(options.summaryMode)
+	if summaryMode == "" {
+		summaryMode = "fast"
+	}
+	timings := &gitcore.StorageFolderTimings{
+		DebugPrefix: fmt.Sprintf(
+			"project_id=%s ref=%s git_subpath=%q limit=%d sort_by=%q sort_order=%q cursor=%t summary_mode=%s",
+			projectCtx.projectID,
+			projectCtx.refName,
+			gitSubpath,
+			options.limit,
+			options.sortBy,
+			options.sortOrder,
+			options.cursor != "",
+			summaryMode,
+		),
+		Logf: handler.logger.Info,
+	}
+	timings.Record("resolve_git_context", resolveDuration)
+	buildStart := time.Now()
 	response, err := handler.storageAnalytics.BuildStorageFolder(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
@@ -97,11 +120,18 @@ func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
 		options.sortBy,
 		options.sortOrder,
 		options.cursor,
+		options.summaryMode,
+		timings,
 	)
+	timings.Record("build_folder", time.Since(buildStart))
 	if err != nil {
 		return handler.writeGitAnalyticsError(ctx, projectCtx.projectID, projectCtx.refName, gitSubpath, err)
 	}
-	return httputil.JSON(response, http.StatusOK).Write(ctx)
+	writeStart := time.Now()
+	writeErr := httputil.JSON(response, http.StatusOK).Write(ctx)
+	timings.Record("write_response", time.Since(writeStart))
+	handler.logger.Info("storage_folder_request_complete %s", timings.DebugPrefix)
+	return writeErr
 }
 
 func parseStorageChildrenRequestOptions(ctx fiber.Ctx, projectID string) (storageChildrenRequestOptions, *httputil.ErrorResponse) {
@@ -110,10 +140,11 @@ func parseStorageChildrenRequestOptions(ctx fiber.Ctx, projectID string) (storag
 		return storageChildrenRequestOptions{}, httputil.NewError("invalid_request", err.Error(), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
 	}
 	return storageChildrenRequestOptions{
-		limit:     limit,
-		cursor:    strings.TrimSpace(ctx.Query("cursor")),
-		sortBy:    strings.TrimSpace(ctx.Query("sort_by")),
-		sortOrder: strings.TrimSpace(ctx.Query("sort_order")),
+		limit:       limit,
+		cursor:      strings.TrimSpace(ctx.Query("cursor")),
+		sortBy:      strings.TrimSpace(ctx.Query("sort_by")),
+		sortOrder:   strings.TrimSpace(ctx.Query("sort_order")),
+		summaryMode: strings.TrimSpace(ctx.Query("summary_mode")),
 	}, nil
 }
 

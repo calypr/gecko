@@ -20,6 +20,7 @@ const cleanupInactiveDays = 30
 const projectJoinCacheTTL = 45 * time.Second
 const chainInputCacheTTL = 45 * time.Second
 const storageChainValidationDebugSampleLimit = 20
+const StorageFolderSummaryModeExact = "exact"
 
 const (
 	storageActionabilityAutoRepair   = "auto_repair"
@@ -105,6 +106,18 @@ type StorageAnalyticsService struct {
 	projectJoinWork  map[string]*inflightProjectJoinState
 	chainInputMu     sync.RWMutex
 	chainInputCache  map[string]cachedChainInputState
+}
+
+type StorageFolderTimings struct {
+	DebugPrefix string
+	Logf        func(format string, args ...any)
+}
+
+func (timings *StorageFolderTimings) Record(stage string, duration time.Duration) {
+	if timings == nil || timings.Logf == nil {
+		return
+	}
+	timings.Logf("storage_folder_stage %s stage=%s duration_ms=%d", timings.DebugPrefix, stage, duration.Milliseconds())
 }
 
 func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyticsService {
@@ -267,35 +280,87 @@ func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context
 	}, nil
 }
 
-func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string) (*GitStorageFolderResponse, error) {
-	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string, summaryMode string, timings *StorageFolderTimings) (*GitStorageFolderResponse, error) {
+	if strings.EqualFold(strings.TrimSpace(summaryMode), StorageFolderSummaryModeExact) {
+		exactStart := time.Now()
+		index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+		timings.Record("exact_join", time.Since(exactStart))
+		if err != nil {
+			return nil, err
+		}
+		directoryStart := time.Now()
+		directory, err := repoDirectoryAggregate(index, gitSubpath)
+		timings.Record("directory_aggregate", time.Since(directoryStart))
+		if err != nil {
+			return nil, err
+		}
+		summaryAgg := summarizeSubtree(gitSubpath, inventory, recordsByChecksum, usageByObjectID, directory.DirectChildCount)
+		pageStart := time.Now()
+		aggregates := cloneDirectoryChildren(directory.Children)
+		sortStorageAggregates(aggregates, sortBy, sortOrder)
+		page, err := storageChildrenPageForRequest(aggregates, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
+		timings.Record("child_pagination", time.Since(pageStart))
+		if err != nil {
+			return nil, err
+		}
+		enrichStart := time.Now()
+		pageInventory := filterInventoryForStorageChildren(inventory, page.items)
+		enriched := aggregateImmediateChildren(gitSubpath, pageInventory, recordsByChecksum, usageByObjectID, page.items)
+		timings.Record("enrich_children_page", time.Since(enrichStart))
+		return &GitStorageFolderResponse{
+			Summary: GitStorageSummaryResponse{
+				Path:               summaryAgg.path,
+				FileCount:          summaryAgg.fileCount,
+				RecordCount:        summaryAgg.recordCount,
+				DirectChildCount:   directory.DirectChildCount,
+				TotalBytes:         summaryAgg.totalBytes,
+				DownloadCount:      summaryAgg.downloadCount,
+				LastDownloadTime:   formatOptionalTime(summaryAgg.lastDownload),
+				LatestUpdateTime:   formatOptionalTime(summaryAgg.latestUpdate),
+				DuplicatePathCount: summaryAgg.duplicateCount,
+			},
+			Children: GitStorageChildrenResponse{
+				Items:      storageChildrenItemsFromAggregates(enriched),
+				HasMore:    page.hasMore,
+				NextCursor: page.nextCursor,
+			},
+		}, nil
+	}
+
+	indexStart := time.Now()
+	index, err := loadOrBuildRepoAnalyticsIndex(ctx, mirrorPath, ref, repo, hash)
+	timings.Record("load_repo_index", time.Since(indexStart))
 	if err != nil {
 		return nil, err
 	}
+	directoryStart := time.Now()
 	directory, err := repoDirectoryAggregate(index, gitSubpath)
+	timings.Record("directory_aggregate", time.Since(directoryStart))
 	if err != nil {
 		return nil, err
 	}
-	summaryAgg := summarizeSubtree(gitSubpath, inventory, recordsByChecksum, usageByObjectID, directory.DirectChildCount)
+	pageStart := time.Now()
 	aggregates := cloneDirectoryChildren(directory.Children)
 	sortStorageAggregates(aggregates, sortBy, sortOrder)
 	page, err := storageChildrenPageForRequest(aggregates, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
+	timings.Record("child_pagination", time.Since(pageStart))
 	if err != nil {
 		return nil, err
 	}
-	pageInventory := filterInventoryForStorageChildren(inventory, page.items)
-	enriched := aggregateImmediateChildren(gitSubpath, pageInventory, recordsByChecksum, usageByObjectID, page.items)
+	enrichStart := time.Now()
+	pageInventory := filterInventoryForStorageChildren(index.sidecar.Files, page.items)
+	enriched, err := service.enrichStorageChildrenPage(ctx, authorizationHeader, organization, project, gitSubpath, pageInventory, page.items)
+	timings.Record("enrich_children_page", time.Since(enrichStart))
+	if err != nil {
+		return nil, err
+	}
+	normalizedPath := normalizeRepoSubpath(gitSubpath)
 	return &GitStorageFolderResponse{
 		Summary: GitStorageSummaryResponse{
-			Path:               summaryAgg.path,
-			FileCount:          summaryAgg.fileCount,
-			RecordCount:        summaryAgg.recordCount,
-			DirectChildCount:   directory.DirectChildCount,
-			TotalBytes:         summaryAgg.totalBytes,
-			DownloadCount:      summaryAgg.downloadCount,
-			LastDownloadTime:   formatOptionalTime(summaryAgg.lastDownload),
-			LatestUpdateTime:   formatOptionalTime(summaryAgg.latestUpdate),
-			DuplicatePathCount: summaryAgg.duplicateCount,
+			Path:             normalizedPath,
+			FileCount:        directory.FileCount,
+			DirectChildCount: directory.DirectChildCount,
+			TotalBytes:       directory.TotalBytes,
 		},
 		Children: GitStorageChildrenResponse{
 			Items:      storageChildrenItemsFromAggregates(enriched),

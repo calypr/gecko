@@ -473,7 +473,7 @@ func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build storage children: %v", err)
 	}
-	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", "")
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", "", StorageFolderSummaryModeExact, nil)
 	if err != nil {
 		t.Fatalf("build storage folder: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
 		}
 	}
 
-	next, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", folder.Children.NextCursor)
+	next, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", folder.Children.NextCursor, StorageFolderSummaryModeExact, nil)
 	if err != nil {
 		t.Fatalf("build storage folder next page: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
 	}
 }
 
-func TestBuildStorageFolderSharesSummaryJoinWork(t *testing.T) {
+func TestBuildStorageFolderFastModeEnrichesOnlySelectedPage(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
@@ -518,18 +518,28 @@ func TestBuildStorageFolderSharesSummaryJoinWork(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "")
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "", "", nil)
 	if err != nil {
 		t.Fatalf("build storage folder: %v", err)
 	}
 	if folder.Summary.FileCount != 2 || len(folder.Children.Items) != 1 || !folder.Children.HasMore {
 		t.Fatalf("unexpected folder response: %+v", folder)
 	}
-	if backend.bulkGetProjectRecordsCalls != 1 {
-		t.Fatalf("expected one joined Syfon record lookup for summary plus first page, got %d", backend.bulkGetProjectRecordsCalls)
+	if folder.Summary.RecordCount != 0 || folder.Summary.DownloadCount != 0 || folder.Summary.DuplicatePathCount != 0 {
+		t.Fatalf("fast folder summary should not fake exact Syfon totals, got %+v", folder.Summary)
 	}
-	if backend.listProjectFileUsageCalls != 1 {
-		t.Fatalf("expected one project usage lookup for exact summary totals, got %d", backend.listProjectFileUsageCalls)
+	if folder.Children.Items[0].Path != "data/b.txt" || folder.Children.Items[0].RecordCount != 1 {
+		t.Fatalf("expected first page to be enriched with selected child record count, got %+v", folder.Children.Items)
+	}
+	if backend.bulkGetProjectRecordsCalls != 1 {
+		t.Fatalf("expected one page-scoped Syfon record lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	}
+	expectedChecksums := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	if strings.Join(backend.bulkChecksums, ",") != strings.Join(expectedChecksums, ",") {
+		t.Fatalf("expected page-scoped checksums %v, got %v", expectedChecksums, backend.bulkChecksums)
+	}
+	if backend.listProjectFileUsageCalls != 0 {
+		t.Fatalf("expected fast folder to skip project usage lookup, got %d calls", backend.listProjectFileUsageCalls)
 	}
 }
 
