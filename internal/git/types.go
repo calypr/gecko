@@ -307,6 +307,7 @@ type GitRepoAnalyticsIndexSidecar struct {
 
 type GitStorageSummaryResponse struct {
 	Path               string `json:"path"`
+	Source             string `json:"source,omitempty"`
 	FileCount          int    `json:"file_count"`
 	RecordCount        int    `json:"record_count"`
 	DirectChildCount   int    `json:"direct_child_count"`

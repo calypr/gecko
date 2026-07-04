@@ -38,8 +38,17 @@ type inflightRepoAnalyticsIndex struct {
 }
 
 type repoAnalyticsIndex struct {
-	sidecar         GitRepoAnalyticsIndexSidecar
-	directoryLookup map[string]GitRepoAnalyticsDirectory
+	sidecar          GitRepoAnalyticsIndexSidecar
+	directoryLookup  map[string]GitRepoAnalyticsDirectory
+	directoryServing map[string]repoAnalyticsDirectoryServingIndex
+}
+
+type repoAnalyticsDirectoryServingIndex struct {
+	directory GitRepoAnalyticsDirectory
+	bytesAsc  []int
+	bytesDesc []int
+	nameAsc   []int
+	nameDesc  []int
 }
 
 func repoAnalyticsCacheKey(mirrorPath string, hash plumbing.Hash) string {
@@ -88,16 +97,23 @@ func PersistRepoAnalyticsIndex(ctx context.Context, mirrorPath string, repo *gog
 	return nil
 }
 
-func loadOrBuildRepoAnalyticsIndex(_ context.Context, mirrorPath string, ref string, repo *gogit.Repository, hash plumbing.Hash) (*repoAnalyticsIndex, error) {
+func loadOrBuildRepoAnalyticsIndex(ctx context.Context, mirrorPath string, ref string, repo *gogit.Repository, hash plumbing.Hash) (*repoAnalyticsIndex, error) {
+	return loadOrBuildRepoAnalyticsIndexWithTimings(ctx, mirrorPath, ref, repo, hash, nil)
+}
+
+func loadOrBuildRepoAnalyticsIndexWithTimings(_ context.Context, mirrorPath string, ref string, repo *gogit.Repository, hash plumbing.Hash, timings *StorageFolderTimings) (*repoAnalyticsIndex, error) {
 	cacheKey := repoAnalyticsCacheKey(mirrorPath, hash)
 	repoAnalyticsIndexCache.mu.Lock()
 	if cached := repoAnalyticsIndexCache.entries[cacheKey]; cached != nil {
 		repoAnalyticsIndexCache.mu.Unlock()
+		timings.Record("repo_index_memory_cache_hit", 0)
 		return cached, nil
 	}
 	if inflight := repoAnalyticsIndexCache.inflight[cacheKey]; inflight != nil {
 		repoAnalyticsIndexCache.mu.Unlock()
+		waitStart := time.Now()
 		<-inflight.done
+		timings.Record("repo_index_inflight_wait", time.Since(waitStart))
 		return inflight.index, inflight.err
 	}
 	inflight := &inflightRepoAnalyticsIndex{done: make(chan struct{})}
@@ -110,22 +126,31 @@ func loadOrBuildRepoAnalyticsIndex(_ context.Context, mirrorPath string, ref str
 		repoAnalyticsIndexCache.mu.Unlock()
 	}()
 
+	sidecarStart := time.Now()
 	sidecar, err := readRepoAnalyticsIndexSidecar(mirrorPath)
+	timings.Record("repo_index_sidecar_read_decode", time.Since(sidecarStart))
 	if err == nil && sidecar.SchemaVersion == repoAnalyticsIndexSchemaVersion && sidecar.CommitHash == hash.String() {
+		servingStart := time.Now()
 		index := repoAnalyticsIndexFromSidecar(sidecar)
+		timings.Record("repo_index_sorted_order_build", time.Since(servingStart))
 		repoAnalyticsIndexCache.put(mirrorPath, hash, index)
 		inflight.index = index
 		return index, nil
 	}
+	buildStart := time.Now()
 	index, buildErr := buildRepoAnalyticsIndex(ref, repo, hash)
+	timings.Record("repo_index_git_tree_rebuild", time.Since(buildStart))
 	if buildErr != nil {
 		inflight.err = buildErr
 		return nil, buildErr
 	}
+	writeStart := time.Now()
 	if writeErr := writeRepoAnalyticsIndexSidecar(mirrorPath, index.sidecar); writeErr != nil {
+		timings.Record("repo_index_sidecar_write", time.Since(writeStart))
 		inflight.err = writeErr
 		return nil, writeErr
 	}
+	timings.Record("repo_index_sidecar_write", time.Since(writeStart))
 	repoAnalyticsIndexCache.put(mirrorPath, hash, index)
 	inflight.index = index
 	return index, nil
@@ -165,13 +190,61 @@ func writeRepoAnalyticsIndexSidecar(mirrorPath string, sidecar GitRepoAnalyticsI
 
 func repoAnalyticsIndexFromSidecar(sidecar GitRepoAnalyticsIndexSidecar) *repoAnalyticsIndex {
 	directoryLookup := make(map[string]GitRepoAnalyticsDirectory, len(sidecar.Directories))
+	directoryServing := make(map[string]repoAnalyticsDirectoryServingIndex, len(sidecar.Directories))
 	for _, directory := range sidecar.Directories {
 		directoryLookup[directory.Path] = directory
+		directoryServing[directory.Path] = buildRepoAnalyticsDirectoryServingIndex(directory)
 	}
 	return &repoAnalyticsIndex{
-		sidecar:         sidecar,
-		directoryLookup: directoryLookup,
+		sidecar:          sidecar,
+		directoryLookup:  directoryLookup,
+		directoryServing: directoryServing,
 	}
+}
+
+func buildRepoAnalyticsDirectoryServingIndex(directory GitRepoAnalyticsDirectory) repoAnalyticsDirectoryServingIndex {
+	return repoAnalyticsDirectoryServingIndex{
+		directory: directory,
+		bytesAsc:  sortedChildIndexes(directory.Children, "bytes", "asc"),
+		bytesDesc: sortedChildIndexes(directory.Children, "bytes", "desc"),
+		nameAsc:   sortedChildIndexes(directory.Children, "name", "asc"),
+		nameDesc:  sortedChildIndexes(directory.Children, "name", "desc"),
+	}
+}
+
+func sortedChildIndexes(children []GitRepoAnalyticsChild, sortBy string, sortOrder string) []int {
+	indexes := make([]int, len(children))
+	for index := range children {
+		indexes[index] = index
+	}
+	desc := !strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "name":
+		sort.Slice(indexes, func(i, j int) bool {
+			left := strings.ToLower(children[indexes[i]].Name)
+			right := strings.ToLower(children[indexes[j]].Name)
+			if desc {
+				return left > right
+			}
+			return left < right
+		})
+	default:
+		sort.Slice(indexes, func(i, j int) bool {
+			left := children[indexes[i]]
+			right := children[indexes[j]]
+			if left.TotalBytes != right.TotalBytes {
+				if desc {
+					return left.TotalBytes > right.TotalBytes
+				}
+				return left.TotalBytes < right.TotalBytes
+			}
+			if left.Type != right.Type {
+				return left.Type == "directory"
+			}
+			return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+		})
+	}
+	return indexes
 }
 
 func buildRepoAnalyticsIndex(ref string, repo *gogit.Repository, hash plumbing.Hash) (*repoAnalyticsIndex, error) {
@@ -302,6 +375,15 @@ func repoDirectoryAggregate(index *repoAnalyticsIndex, gitSubpath string) (GitRe
 	directory, ok := index.directoryLookup[normalizedPath]
 	if !ok {
 		return GitRepoAnalyticsDirectory{}, fmt.Errorf("load git tree path %s: directory not found", normalizedPath)
+	}
+	return directory, nil
+}
+
+func repoDirectoryServingIndex(index *repoAnalyticsIndex, gitSubpath string) (repoAnalyticsDirectoryServingIndex, error) {
+	normalizedPath := normalizeRepoSubpath(gitSubpath)
+	directory, ok := index.directoryServing[normalizedPath]
+	if !ok {
+		return repoAnalyticsDirectoryServingIndex{}, fmt.Errorf("load git tree path %s: directory not found", normalizedPath)
 	}
 	return directory, nil
 }

@@ -88,7 +88,7 @@ func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
 	}
 	summaryMode := strings.TrimSpace(options.summaryMode)
 	if summaryMode == "" {
-		summaryMode = "fast"
+		summaryMode = gitcore.StorageFolderSummarySourceGitIndex
 	}
 	timings := &gitcore.StorageFolderTimings{
 		DebugPrefix: fmt.Sprintf(

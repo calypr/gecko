@@ -62,21 +62,9 @@ func storageChildrenPageForRequest(items []storageAggregate, hash plumbing.Hash,
 	if limit <= 0 {
 		limit = len(items)
 	}
-	cursor, err := decodeStorageChildrenCursor(rawCursor)
+	offset, err := storageChildrenCursorOffset(hash, gitSubpath, sortBy, sortOrder, rawCursor)
 	if err != nil {
 		return storageChildrenPage{}, err
-	}
-	offset := cursor.Offset
-	if strings.TrimSpace(rawCursor) != "" {
-		expected := storageChildrenCursor{
-			CommitHash: hash.String(),
-			GitSubpath: normalizeRepoSubpath(gitSubpath),
-			SortBy:     strings.TrimSpace(sortBy),
-			SortOrder:  strings.TrimSpace(sortOrder),
-		}
-		if cursor.CommitHash != expected.CommitHash || cursor.GitSubpath != expected.GitSubpath || cursor.SortBy != expected.SortBy || cursor.SortOrder != expected.SortOrder {
-			return storageChildrenPage{}, fmt.Errorf("storage children cursor does not match current request")
-		}
 	}
 	if offset > len(items) {
 		offset = len(items)
@@ -94,6 +82,79 @@ func storageChildrenPageForRequest(items []storageAggregate, hash plumbing.Hash,
 		page.nextCursor = buildStorageChildrenCursor(hash, gitSubpath, sortBy, sortOrder, end)
 	}
 	return page, nil
+}
+
+func storageChildrenCursorOffset(hash plumbing.Hash, gitSubpath string, sortBy string, sortOrder string, rawCursor string) (int, error) {
+	cursor, err := decodeStorageChildrenCursor(rawCursor)
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(rawCursor) == "" {
+		return 0, nil
+	}
+	expected := storageChildrenCursor{
+		CommitHash: hash.String(),
+		GitSubpath: normalizeRepoSubpath(gitSubpath),
+		SortBy:     strings.TrimSpace(sortBy),
+		SortOrder:  strings.TrimSpace(sortOrder),
+	}
+	if cursor.CommitHash != expected.CommitHash || cursor.GitSubpath != expected.GitSubpath || cursor.SortBy != expected.SortBy || cursor.SortOrder != expected.SortOrder {
+		return 0, fmt.Errorf("storage children cursor does not match current request")
+	}
+	return cursor.Offset, nil
+}
+
+func storageChildrenResponseForServingIndex(directory repoAnalyticsDirectoryServingIndex, hash plumbing.Hash, gitSubpath string, sortBy string, sortOrder string, limit int, rawCursor string) (GitStorageChildrenResponse, error) {
+	order := sortedOrderForStorageChildrenRequest(directory, sortBy, sortOrder)
+	if limit <= 0 {
+		limit = len(order)
+	}
+	offset, err := storageChildrenCursorOffset(hash, gitSubpath, sortBy, sortOrder, rawCursor)
+	if err != nil {
+		return GitStorageChildrenResponse{}, err
+	}
+	if offset > len(order) {
+		offset = len(order)
+	}
+	end := offset + limit
+	if end > len(order) {
+		end = len(order)
+	}
+	items := make([]GitStorageChildResponseItem, 0, end-offset)
+	for _, childIndex := range order[offset:end] {
+		child := directory.directory.Children[childIndex]
+		items = append(items, GitStorageChildResponseItem{
+			Name:       child.Name,
+			Path:       child.Path,
+			Type:       child.Type,
+			FileCount:  child.FileCount,
+			TotalBytes: child.TotalBytes,
+		})
+	}
+	response := GitStorageChildrenResponse{
+		Items:   items,
+		HasMore: end < len(order),
+	}
+	if response.HasMore {
+		response.NextCursor = buildStorageChildrenCursor(hash, gitSubpath, sortBy, sortOrder, end)
+	}
+	return response, nil
+}
+
+func sortedOrderForStorageChildrenRequest(directory repoAnalyticsDirectoryServingIndex, sortBy string, sortOrder string) []int {
+	desc := !strings.EqualFold(strings.TrimSpace(sortOrder), "asc")
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "name":
+		if desc {
+			return directory.nameDesc
+		}
+		return directory.nameAsc
+	default:
+		if desc {
+			return directory.bytesDesc
+		}
+		return directory.bytesAsc
+	}
 }
 
 func filterInventoryForStorageChildren(inventory []RepoInventoryFile, children []storageAggregate) []RepoInventoryFile {

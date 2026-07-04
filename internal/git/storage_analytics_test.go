@@ -477,7 +477,9 @@ func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build storage folder: %v", err)
 	}
-	if folder.Summary != *summary {
+	expectedSummary := *summary
+	expectedSummary.Source = StorageFolderSummarySourceExactJoin
+	if folder.Summary != expectedSummary {
 		t.Fatalf("expected folder summary to match summary endpoint\nfolder=%+v\nsummary=%+v", folder.Summary, *summary)
 	}
 	if len(folder.Children.Items) != len(children.Items) || folder.Children.HasMore != children.HasMore || folder.Children.NextCursor != children.NextCursor {
@@ -501,46 +503,136 @@ func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
 	}
 }
 
-func TestBuildStorageFolderFastModeEnrichesOnlySelectedPage(t *testing.T) {
+func TestBuildStorageFolderDefaultModeUsesGitIndexOnly(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
-		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
-		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+		"data/a.txt":  lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/b.txt":  lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+		"other/c.txt": lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 50),
 	})
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
 			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj"},
 			{ObjectID: "obj-b", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-c", Checksum: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Organization: "org", Project: "proj"},
 		},
 		usageByObject: map[string]gintegrationsyfon.FileUsage{
 			"obj-a": {ObjectID: "obj-a", DownloadCount: 1},
 			"obj-b": {ObjectID: "obj-b", DownloadCount: 1},
+			"obj-c": {ObjectID: "obj-c", DownloadCount: 1},
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "", "", nil)
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, 1, "bytes", "desc", "", "", nil)
 	if err != nil {
 		t.Fatalf("build storage folder: %v", err)
 	}
-	if folder.Summary.FileCount != 2 || len(folder.Children.Items) != 1 || !folder.Children.HasMore {
+	if folder.Summary.Source != StorageFolderSummarySourceGitIndex {
+		t.Fatalf("expected default folder summary source %q, got %+v", StorageFolderSummarySourceGitIndex, folder.Summary)
+	}
+	if folder.Summary.FileCount != 3 || folder.Summary.RecordCount != 0 || folder.Summary.DownloadCount != 0 || folder.Summary.DuplicatePathCount != 0 {
+		t.Fatalf("git-index folder summary should not fake exact Syfon totals, got %+v", folder.Summary)
+	}
+	if len(folder.Children.Items) != 1 || !folder.Children.HasMore {
 		t.Fatalf("unexpected folder response: %+v", folder)
 	}
-	if folder.Summary.RecordCount != 0 || folder.Summary.DownloadCount != 0 || folder.Summary.DuplicatePathCount != 0 {
-		t.Fatalf("fast folder summary should not fake exact Syfon totals, got %+v", folder.Summary)
+	first := folder.Children.Items[0]
+	if first.Path != "data" || first.Type != "directory" || first.FileCount != 2 || first.TotalBytes != 300 {
+		t.Fatalf("expected first page to use Git directory aggregate, got %+v", folder.Children.Items)
 	}
-	if folder.Children.Items[0].Path != "data/b.txt" || folder.Children.Items[0].RecordCount != 1 {
-		t.Fatalf("expected first page to be enriched with selected child record count, got %+v", folder.Children.Items)
+	if first.RecordCount != 0 || first.DownloadCount != 0 || first.LastDownloadTime != "" {
+		t.Fatalf("git-index child should not include Syfon/download enrichment, got %+v", first)
 	}
-	if backend.bulkGetProjectRecordsCalls != 1 {
-		t.Fatalf("expected one page-scoped Syfon record lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected default folder mode to skip Syfon record lookup, got %d", backend.bulkGetProjectRecordsCalls)
 	}
-	expectedChecksums := []string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	if strings.Join(backend.bulkChecksums, ",") != strings.Join(expectedChecksums, ",") {
-		t.Fatalf("expected page-scoped checksums %v, got %v", expectedChecksums, backend.bulkChecksums)
+	if len(backend.bulkChecksums) != 0 {
+		t.Fatalf("expected default folder mode to avoid descendant checksum expansion, got %v", backend.bulkChecksums)
 	}
 	if backend.listProjectFileUsageCalls != 0 {
-		t.Fatalf("expected fast folder to skip project usage lookup, got %d calls", backend.listProjectFileUsageCalls)
+		t.Fatalf("expected default folder mode to skip project usage lookup, got %d calls", backend.listProjectFileUsageCalls)
 	}
+	if backend.listProjectBucketObjectsCalls != 0 || backend.listProjectBucketSummaryCalls != 0 || backend.probeCalls != 0 {
+		t.Fatalf("expected default folder mode to skip bucket APIs, got objects=%d summary=%d probes=%d", backend.listProjectBucketObjectsCalls, backend.listProjectBucketSummaryCalls, backend.probeCalls)
+	}
+}
+
+func TestBuildStorageFolderDefaultModeUsesPreSortedServingIndex(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/alpha.txt":   lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 300),
+		"data/bravo.txt":   lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100),
+		"data/charlie.txt": lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 200),
+	})
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+
+	tests := map[string]struct {
+		sortBy    string
+		sortOrder string
+		expected  []string
+	}{
+		"bytes desc": {sortBy: "bytes", sortOrder: "desc", expected: []string{"data/alpha.txt", "data/charlie.txt", "data/bravo.txt"}},
+		"bytes asc":  {sortBy: "bytes", sortOrder: "asc", expected: []string{"data/bravo.txt", "data/charlie.txt", "data/alpha.txt"}},
+		"name asc":   {sortBy: "name", sortOrder: "asc", expected: []string{"data/alpha.txt", "data/bravo.txt", "data/charlie.txt"}},
+		"name desc":  {sortBy: "name", sortOrder: "desc", expected: []string{"data/charlie.txt", "data/bravo.txt", "data/alpha.txt"}},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, test.sortBy, test.sortOrder, "", "", nil)
+			if err != nil {
+				t.Fatalf("build storage folder: %v", err)
+			}
+			if got := storageChildResponsePaths(folder.Children.Items); strings.Join(got, ",") != strings.Join(test.expected[:2], ",") {
+				t.Fatalf("unexpected first page order: got %v want %v", got, test.expected[:2])
+			}
+			if !folder.Children.HasMore || folder.Children.NextCursor == "" {
+				t.Fatalf("expected first page cursor, got %+v", folder.Children)
+			}
+			next, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, test.sortBy, test.sortOrder, folder.Children.NextCursor, "", nil)
+			if err != nil {
+				t.Fatalf("build storage folder next page: %v", err)
+			}
+			if got := storageChildResponsePaths(next.Children.Items); strings.Join(got, ",") != test.expected[2] {
+				t.Fatalf("unexpected next page order: got %v want %v", got, test.expected[2:])
+			}
+			if next.Children.HasMore || next.Children.NextCursor != "" {
+				t.Fatalf("expected final page without cursor, got %+v", next.Children)
+			}
+		})
+	}
+}
+
+func TestBuildStorageFolderDefaultModeUsesSidecarServingIndex(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	if err := PersistRepoAnalyticsIndex(context.Background(), mirrorPath, repo, refName, hash); err != nil {
+		t.Fatalf("persist repo analytics index: %v", err)
+	}
+	repoAnalyticsIndexCache.mu.Lock()
+	repoAnalyticsIndexCache.entries = map[string]*repoAnalyticsIndex{}
+	repoAnalyticsIndexCache.inflight = map[string]*inflightRepoAnalyticsIndex{}
+	repoAnalyticsIndexCache.mu.Unlock()
+
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "", "", nil)
+	if err != nil {
+		t.Fatalf("build storage folder from sidecar: %v", err)
+	}
+	if got := storageChildResponsePaths(folder.Children.Items); strings.Join(got, ",") != "data/b.txt" {
+		t.Fatalf("expected sidecar serving index to preserve bytes desc order, got %v", got)
+	}
+	if !folder.Children.HasMore || folder.Children.NextCursor == "" {
+		t.Fatalf("expected sidecar serving index cursor, got %+v", folder.Children)
+	}
+}
+
+func storageChildResponsePaths(items []GitStorageChildResponseItem) []string {
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		paths = append(paths, item.Path)
+	}
+	return paths
 }
 
 func TestBuildStorageChildrenRejectsStaleCursor(t *testing.T) {
@@ -1969,6 +2061,84 @@ func TestBuildStorageChainAuditFiltersFindingsByKind(t *testing.T) {
 	}
 }
 
+func TestBuildStorageChainAuditFilteredBrokenMappingBypassesDefaultTruncation(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/unrelated.txt": lfsPointer("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 1),
+	})
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	records := make([]gintegrationsyfon.ProjectRecord, 0, 2)
+	probeResults := make(map[string]gintegrationsyfon.BulkStorageProbeResult)
+	for i := 0; i < 2; i++ {
+		checksum := fmt.Sprintf("%064x", i+1)
+		objectID := fmt.Sprintf("obj-broken-%03d", i)
+		objectURL := fmt.Sprintf("s3://legacy-bucket/broken-%03d.txt", i)
+		records = append(records, gintegrationsyfon.ProjectRecord{
+			ObjectID:     objectID,
+			Checksum:     checksum,
+			Organization: "org",
+			Project:      "proj",
+			Size:         100 + int64(i),
+			UpdatedAt:    &now,
+			AccessURLs:   []string{objectURL},
+		})
+		probeResults[storageProbeRequestKey(objectURL, 100+int64(i), checksum)] = gintegrationsyfon.BulkStorageProbeResult{
+			ID:               storageProbeRequestKey(objectURL, 100+int64(i), checksum),
+			ObjectURL:        objectURL,
+			Status:           "error",
+			Exists:           false,
+			ErrorKind:        "credential_missing",
+			Error:            `no stored bucket credential found for bucket "legacy-bucket"`,
+			ValidationStatus: "unverifiable",
+		}
+	}
+	bucketObjects := make([]gintegrationsyfon.ProjectBucketObject, 0, 501)
+	for i := 0; i < 501; i++ {
+		bucketObjects = append(bucketObjects, gintegrationsyfon.ProjectBucketObject{
+			ObjectURL: fmt.Sprintf("s3://bucket/loose-%03d.txt", i),
+			Bucket:    "bucket",
+			Key:       fmt.Sprintf("loose-%03d.txt", i),
+			Path:      fmt.Sprintf("loose-%03d.txt", i),
+			SizeBytes: 10,
+		})
+	}
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: records,
+		bucketObjects:  bucketObjects,
+		probeResults:   probeResults,
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	truncated, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		FindingLimit: 500,
+	})
+	if err != nil {
+		t.Fatalf("build truncated chain audit: %v", err)
+	}
+	if !truncated.Summary.FindingsTruncated || truncated.Summary.ReturnedFindings != 500 {
+		t.Fatalf("expected default-like truncated response, got %+v", truncated.Summary)
+	}
+	if got := truncated.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 2 {
+		t.Fatalf("expected summary to retain broken mapping count, got %+v", truncated.Summary)
+	}
+	assertNoChainFinding(t, truncated.Findings, "syfon_broken_bucket_mapping")
+
+	filtered, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		FindingKind:  "syfon_broken_bucket_mapping",
+		FindingLimit: -1,
+	})
+	if err != nil {
+		t.Fatalf("build filtered chain audit: %v", err)
+	}
+	if filtered.Summary.FindingsTruncated || filtered.Summary.ReturnedFindings != 2 {
+		t.Fatalf("expected full filtered response, got %+v", filtered.Summary)
+	}
+	if len(filtered.Findings) != 2 {
+		t.Fatalf("expected filtered broken mapping detail rows, got %+v", filtered.Findings)
+	}
+	assertHasChainFinding(t, filtered.Findings, "syfon_broken_bucket_mapping", "syfon/obj-broken-000")
+	assertHasChainFinding(t, filtered.Findings, "syfon_broken_bucket_mapping", "syfon/obj-broken-001")
+}
+
 func TestBuildStorageChainAuditUsesScopedProjectRecordsForGitJoin(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
@@ -2550,6 +2720,49 @@ func TestPersistRepoAnalyticsIndexAndLoadExistingDirectoryWithoutLFSFiles(t *tes
 	}
 	if len(filtered) != 0 {
 		t.Fatalf("expected no lfs files under plain directory, got %+v", filtered)
+	}
+}
+
+func BenchmarkBuildStorageFolderDefaultModeLargeDirectoryPage(b *testing.B) {
+	children := make([]GitRepoAnalyticsChild, 1000)
+	for index := 0; index < 1000; index++ {
+		children[index] = GitRepoAnalyticsChild{
+			Name:       fmt.Sprintf("file-%04d.txt", index),
+			Path:       fmt.Sprintf("data/file-%04d.txt", index),
+			Type:       "file",
+			FileCount:  1,
+			TotalBytes: int64(index + 1),
+		}
+	}
+	hash := plumbing.NewHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	mirrorPath := filepath.Join(b.TempDir(), "mirror.git")
+	index := repoAnalyticsIndexFromSidecar(GitRepoAnalyticsIndexSidecar{
+		SchemaVersion: repoAnalyticsIndexSchemaVersion,
+		CommitHash:    hash.String(),
+		RefName:       "main",
+		GeneratedAt:   time.Now().UTC(),
+		Directories: []GitRepoAnalyticsDirectory{
+			{
+				Path:             "data",
+				DirectChildCount: len(children),
+				FileCount:        len(children),
+				TotalBytes:       500500,
+				Children:         children,
+			},
+		},
+	})
+	repoAnalyticsIndexCache.put(mirrorPath, hash, index)
+	service := NewStorageAnalyticsService(&fakeStorageAnalyticsBackend{})
+	if _, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", "main", "data", mirrorPath, nil, hash, 100, "bytes", "desc", "", "", nil); err != nil {
+		b.Fatalf("warm storage folder index: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", "main", "data", mirrorPath, nil, hash, 100, "bytes", "desc", "", "", nil); err != nil {
+			b.Fatalf("build storage folder: %v", err)
+		}
 	}
 }
 

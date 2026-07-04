@@ -21,6 +21,8 @@ const projectJoinCacheTTL = 45 * time.Second
 const chainInputCacheTTL = 45 * time.Second
 const storageChainValidationDebugSampleLimit = 20
 const StorageFolderSummaryModeExact = "exact"
+const StorageFolderSummarySourceGitIndex = "git_index"
+const StorageFolderSummarySourceExactJoin = "exact_join"
 
 const (
 	storageActionabilityAutoRepair   = "auto_repair"
@@ -310,6 +312,7 @@ func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, 
 		return &GitStorageFolderResponse{
 			Summary: GitStorageSummaryResponse{
 				Path:               summaryAgg.path,
+				Source:             StorageFolderSummarySourceExactJoin,
 				FileCount:          summaryAgg.fileCount,
 				RecordCount:        summaryAgg.recordCount,
 				DirectChildCount:   directory.DirectChildCount,
@@ -328,45 +331,34 @@ func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, 
 	}
 
 	indexStart := time.Now()
-	index, err := loadOrBuildRepoAnalyticsIndex(ctx, mirrorPath, ref, repo, hash)
+	index, err := loadOrBuildRepoAnalyticsIndexWithTimings(ctx, mirrorPath, ref, repo, hash, timings)
 	timings.Record("load_repo_index", time.Since(indexStart))
 	if err != nil {
 		return nil, err
 	}
 	directoryStart := time.Now()
-	directory, err := repoDirectoryAggregate(index, gitSubpath)
+	directory, err := repoDirectoryServingIndex(index, gitSubpath)
 	timings.Record("directory_aggregate", time.Since(directoryStart))
 	if err != nil {
 		return nil, err
 	}
 	pageStart := time.Now()
-	aggregates := cloneDirectoryChildren(directory.Children)
-	sortStorageAggregates(aggregates, sortBy, sortOrder)
-	page, err := storageChildrenPageForRequest(aggregates, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
+	children, err := storageChildrenResponseForServingIndex(directory, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
 	timings.Record("child_pagination", time.Since(pageStart))
 	if err != nil {
 		return nil, err
 	}
-	enrichStart := time.Now()
-	pageInventory := filterInventoryForStorageChildren(index.sidecar.Files, page.items)
-	enriched, err := service.enrichStorageChildrenPage(ctx, authorizationHeader, organization, project, gitSubpath, pageInventory, page.items)
-	timings.Record("enrich_children_page", time.Since(enrichStart))
-	if err != nil {
-		return nil, err
-	}
+	timings.Record("git_index_remote_enrichment", 0)
 	normalizedPath := normalizeRepoSubpath(gitSubpath)
 	return &GitStorageFolderResponse{
 		Summary: GitStorageSummaryResponse{
 			Path:             normalizedPath,
-			FileCount:        directory.FileCount,
-			DirectChildCount: directory.DirectChildCount,
-			TotalBytes:       directory.TotalBytes,
+			Source:           StorageFolderSummarySourceGitIndex,
+			FileCount:        directory.directory.FileCount,
+			DirectChildCount: directory.directory.DirectChildCount,
+			TotalBytes:       directory.directory.TotalBytes,
 		},
-		Children: GitStorageChildrenResponse{
-			Items:      storageChildrenItemsFromAggregates(enriched),
-			HasMore:    page.hasMore,
-			NextCursor: page.nextCursor,
-		},
+		Children: children,
 	}, nil
 }
 
