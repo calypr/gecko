@@ -335,6 +335,11 @@ type GitStorageChildrenResponse struct {
 	NextCursor string                        `json:"next_cursor,omitempty"`
 }
 
+type GitStorageFolderResponse struct {
+	Summary  GitStorageSummaryResponse  `json:"summary"`
+	Children GitStorageChildrenResponse `json:"children"`
+}
+
 type GitProjectDiffAuditRequest struct {
 	GitSubpath string `json:"git_subpath,omitempty"`
 	Ref        string `json:"ref,omitempty"`

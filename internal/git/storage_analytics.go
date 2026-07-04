@@ -267,6 +267,44 @@ func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context
 	}, nil
 }
 
+func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string) (*GitStorageFolderResponse, error) {
+	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+	if err != nil {
+		return nil, err
+	}
+	directory, err := repoDirectoryAggregate(index, gitSubpath)
+	if err != nil {
+		return nil, err
+	}
+	summaryAgg := summarizeSubtree(gitSubpath, inventory, recordsByChecksum, usageByObjectID, directory.DirectChildCount)
+	aggregates := cloneDirectoryChildren(directory.Children)
+	sortStorageAggregates(aggregates, sortBy, sortOrder)
+	page, err := storageChildrenPageForRequest(aggregates, hash, gitSubpath, sortBy, sortOrder, limit, cursor)
+	if err != nil {
+		return nil, err
+	}
+	pageInventory := filterInventoryForStorageChildren(inventory, page.items)
+	enriched := aggregateImmediateChildren(gitSubpath, pageInventory, recordsByChecksum, usageByObjectID, page.items)
+	return &GitStorageFolderResponse{
+		Summary: GitStorageSummaryResponse{
+			Path:               summaryAgg.path,
+			FileCount:          summaryAgg.fileCount,
+			RecordCount:        summaryAgg.recordCount,
+			DirectChildCount:   directory.DirectChildCount,
+			TotalBytes:         summaryAgg.totalBytes,
+			DownloadCount:      summaryAgg.downloadCount,
+			LastDownloadTime:   formatOptionalTime(summaryAgg.lastDownload),
+			LatestUpdateTime:   formatOptionalTime(summaryAgg.latestUpdate),
+			DuplicatePathCount: summaryAgg.duplicateCount,
+		},
+		Children: GitStorageChildrenResponse{
+			Items:      storageChildrenItemsFromAggregates(enriched),
+			HasMore:    page.hasMore,
+			NextCursor: page.nextCursor,
+		},
+	}, nil
+}
+
 func (service *StorageAnalyticsService) BuildProjectDiffAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitProjectDiffAuditResponse, error) {
 	_, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
 	if err != nil {
@@ -395,6 +433,7 @@ func filterStorageChainSummary(summary GitStorageChainAuditSummary, findings []G
 	for kind := range summary.CountsByKind {
 		filteredCounts[kind] = 0
 	}
+	filteredCounts["bucket_syfon_git_complete"] = summary.CountsByKind["bucket_syfon_git_complete"]
 	for _, finding := range findings {
 		filteredCounts[finding.Kind]++
 	}

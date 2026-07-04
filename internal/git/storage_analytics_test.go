@@ -445,6 +445,94 @@ func TestBuildStorageChildrenCursorPagination(t *testing.T) {
 	}
 }
 
+func TestBuildStorageFolderCombinesSummaryAndChildren(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 300),
+		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+		"data/c.txt": lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-b", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-c", Checksum: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Organization: "org", Project: "proj"},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{
+			"obj-a": {ObjectID: "obj-a", DownloadCount: 3},
+			"obj-b": {ObjectID: "obj-b", DownloadCount: 2},
+			"obj-c": {ObjectID: "obj-c", DownloadCount: 1},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	summary, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	if err != nil {
+		t.Fatalf("build storage summary: %v", err)
+	}
+	children, err := service.BuildStorageChildren(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", "")
+	if err != nil {
+		t.Fatalf("build storage children: %v", err)
+	}
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", "")
+	if err != nil {
+		t.Fatalf("build storage folder: %v", err)
+	}
+	if folder.Summary != *summary {
+		t.Fatalf("expected folder summary to match summary endpoint\nfolder=%+v\nsummary=%+v", folder.Summary, *summary)
+	}
+	if len(folder.Children.Items) != len(children.Items) || folder.Children.HasMore != children.HasMore || folder.Children.NextCursor != children.NextCursor {
+		t.Fatalf("expected folder children page shape to match children endpoint\nfolder=%+v\nchildren=%+v", folder.Children, *children)
+	}
+	for i := range children.Items {
+		if folder.Children.Items[i].Path != children.Items[i].Path || folder.Children.Items[i].Type != children.Items[i].Type {
+			t.Fatalf("expected folder child ordering to match children endpoint\nfolder=%+v\nchildren=%+v", folder.Children, *children)
+		}
+	}
+
+	next, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 2, "bytes", "desc", folder.Children.NextCursor)
+	if err != nil {
+		t.Fatalf("build storage folder next page: %v", err)
+	}
+	if len(next.Children.Items) != 1 || next.Children.Items[0].Path != "data/c.txt" {
+		t.Fatalf("unexpected next folder page: %+v", next.Children)
+	}
+	if next.Children.HasMore || next.Children.NextCursor != "" {
+		t.Fatalf("expected final folder page without cursor, got %+v", next.Children)
+	}
+}
+
+func TestBuildStorageFolderSharesSummaryJoinWork(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj"},
+			{ObjectID: "obj-b", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj"},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{
+			"obj-a": {ObjectID: "obj-a", DownloadCount: 1},
+			"obj-b": {ObjectID: "obj-b", DownloadCount: 1},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	folder, err := service.BuildStorageFolder(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, 1, "bytes", "desc", "")
+	if err != nil {
+		t.Fatalf("build storage folder: %v", err)
+	}
+	if folder.Summary.FileCount != 2 || len(folder.Children.Items) != 1 || !folder.Children.HasMore {
+		t.Fatalf("unexpected folder response: %+v", folder)
+	}
+	if backend.bulkGetProjectRecordsCalls != 1 {
+		t.Fatalf("expected one joined Syfon record lookup for summary plus first page, got %d", backend.bulkGetProjectRecordsCalls)
+	}
+	if backend.listProjectFileUsageCalls != 1 {
+		t.Fatalf("expected one project usage lookup for exact summary totals, got %d", backend.listProjectFileUsageCalls)
+	}
+}
+
 func TestBuildStorageChildrenRejectsStaleCursor(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 300),
@@ -914,6 +1002,34 @@ func TestStorageRepairPolicyCoversFindingKinds(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterStorageChainSummaryPreservesCleanJoinCount(t *testing.T) {
+	summary := GitStorageChainAuditSummary{
+		CountsByKind: map[string]int{
+			"bucket_syfon_git_complete":   7,
+			"git_syfon_metadata_mismatch": 3,
+			"syfon_broken_bucket_mapping": 2,
+		},
+		BucketObjectCount:   10,
+		SyfonRecordCount:    10,
+		GitTrackedFileCount: 10,
+	}
+	findings := []GitStorageChainFinding{
+		{Kind: "git_syfon_metadata_mismatch", NormalizedPath: "data/a.txt"},
+	}
+
+	filtered := filterStorageChainSummary(summary, findings)
+
+	if got := filtered.CountsByKind["bucket_syfon_git_complete"]; got != 7 {
+		t.Fatalf("expected clean-chain count to survive filtering, got %d in %+v", got, filtered)
+	}
+	if got := filtered.CountsByKind["git_syfon_metadata_mismatch"]; got != 1 {
+		t.Fatalf("expected filtered mismatch count from findings, got %d in %+v", got, filtered)
+	}
+	if got := filtered.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
+		t.Fatalf("expected filtered broken-mapping count to reset, got %d in %+v", got, filtered)
 	}
 }
 

@@ -72,6 +72,38 @@ func (handler *Handler) handleGitProjectStorageChildrenGET(ctx fiber.Ctx) error 
 	return httputil.JSON(response, http.StatusOK).Write(ctx)
 }
 
+func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
+	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
+	if errResponse != nil {
+		return errResponse.Write(ctx)
+	}
+	gitSubpath := normalizeAnalyticsSubpath(strings.TrimSpace(ctx.Query("git_subpath")))
+	options, errResponse := parseStorageChildrenRequestOptions(ctx, projectCtx.projectID)
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	response, err := handler.storageAnalytics.BuildStorageFolder(
+		ctx.Context(),
+		projectCtx.authorizationHeader,
+		projectCtx.organization,
+		projectCtx.project,
+		projectCtx.refName,
+		gitSubpath,
+		projectCtx.mirrorPath,
+		projectCtx.repo,
+		projectCtx.hash,
+		options.limit,
+		options.sortBy,
+		options.sortOrder,
+		options.cursor,
+	)
+	if err != nil {
+		return handler.writeGitAnalyticsError(ctx, projectCtx.projectID, projectCtx.refName, gitSubpath, err)
+	}
+	return httputil.JSON(response, http.StatusOK).Write(ctx)
+}
+
 func parseStorageChildrenRequestOptions(ctx fiber.Ctx, projectID string) (storageChildrenRequestOptions, *httputil.ErrorResponse) {
 	limit, err := parseStorageChildrenLimit(strings.TrimSpace(ctx.Query("limit")))
 	if err != nil {
