@@ -304,6 +304,12 @@ func (service *StorageAnalyticsService) loadProjectChainScopeMappings(ctx contex
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project scopes: %w", err)
 	}
+	if len(scopes) == 0 {
+		scopes, err = service.loadProjectStorageScopes(ctx, authorizationHeader, organization, project)
+		if err != nil {
+			return nil, err
+		}
+	}
 	sort.SliceStable(scopes, func(i, j int) bool {
 		iProject := strings.TrimSpace(scopes[i].ProjectID)
 		jProject := strings.TrimSpace(scopes[j].ProjectID)
@@ -321,11 +327,11 @@ func (service *StorageAnalyticsService) loadProjectChainScopeMappings(ctx contex
 	return scopes, nil
 }
 
-func applyScopeCanonicalization(recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope) *storageAuditRecordSet {
+func applyScopeCanonicalization(recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, organization string, project string) *storageAuditRecordSet {
 	if recordSet == nil {
 		return nil
 	}
-	recordsByChecksum, allProjectRecords := applyScopedStorageMappings(recordSet.recordsByChecksum, recordSet.allProjectRecords, scopes)
+	recordsByChecksum, allProjectRecords := applyScopedStorageMappings(recordSet.recordsByChecksum, recordSet.allProjectRecords, scopes, organization, project)
 	return &storageAuditRecordSet{
 		recordsByChecksum: recordsByChecksum,
 		allProjectRecords: allProjectRecords,
@@ -443,14 +449,14 @@ func projectAuditRecordValidatorFromSummary(summary gintegrationsyfon.ProjectMet
 	}
 }
 
-func filterProjectAuditRecordSet(recordSet *storageAuditRecordSet, pathPrefix string, scopes []domain.StorageBucketScope) *storageAuditRecordSet {
+func filterProjectAuditRecordSet(recordSet *storageAuditRecordSet, pathPrefix string, scopes []domain.StorageBucketScope, organization string, project string) *storageAuditRecordSet {
 	if recordSet == nil || normalizeRepoSubpath(pathPrefix) == "" {
 		return recordSet
 	}
 	filtered := make(map[string][]projectRecordState, len(recordSet.allProjectRecords))
 	for checksum, group := range recordSet.allProjectRecords {
 		for _, record := range group {
-			if projectAuditRecordMatchesPathPrefix(record.ProjectRecord, pathPrefix, scopes) {
+			if projectAuditRecordMatchesPathPrefix(record.ProjectRecord, pathPrefix, scopes, organization, project) {
 				filtered[checksum] = append(filtered[checksum], record)
 			}
 		}
@@ -461,12 +467,12 @@ func filterProjectAuditRecordSet(recordSet *storageAuditRecordSet, pathPrefix st
 	}
 }
 
-func projectAuditRecordMatchesPathPrefix(record gintegrationsyfon.ProjectRecord, pathPrefix string, scopes []domain.StorageBucketScope) bool {
+func projectAuditRecordMatchesPathPrefix(record gintegrationsyfon.ProjectRecord, pathPrefix string, scopes []domain.StorageBucketScope, organization string, project string) bool {
 	normalizedPrefix := normalizeRepoSubpath(pathPrefix)
 	if normalizedPrefix == "" {
 		return true
 	}
-	for _, accessURL := range projectAuditRecordPathURLs(record, scopes) {
+	for _, accessURL := range projectAuditRecordPathURLs(record, scopes, organization, project) {
 		_, key, ok := parseStorageURL(accessURL)
 		if !ok {
 			continue
@@ -479,7 +485,7 @@ func projectAuditRecordMatchesPathPrefix(record gintegrationsyfon.ProjectRecord,
 	return false
 }
 
-func projectAuditRecordPathURLs(record gintegrationsyfon.ProjectRecord, scopes []domain.StorageBucketScope) []string {
+func projectAuditRecordPathURLs(record gintegrationsyfon.ProjectRecord, scopes []domain.StorageBucketScope, organization string, project string) []string {
 	out := make([]string, 0, len(record.AccessURLs)+len(record.AccessMethods)*2)
 	out = append(out, record.AccessURLs...)
 	for _, method := range record.AccessMethods {
@@ -487,7 +493,7 @@ func projectAuditRecordPathURLs(record gintegrationsyfon.ProjectRecord, scopes [
 			out = append(out, trimmed)
 		}
 	}
-	out = append(out, canonicalizeRecordAccessURLs(out, scopes, record.Organization, record.Project)...)
+	out = append(out, canonicalizeRecordAccessURLs(out, scopes, organization, project)...)
 	return uniqueStrings(out)
 }
 
@@ -708,36 +714,59 @@ func (service *StorageAnalyticsService) attachProjectStorageListValidations(ctx 
 	}, nil
 }
 
-func attachProjectStorageInventoryValidations(recordSet *storageAuditRecordSet, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) *storageAuditRecordSet {
+func attachProjectStorageInventoryValidations(recordSet *storageAuditRecordSet, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string) (*storageAuditRecordSet, error) {
 	if recordSet == nil {
-		return nil
+		return nil, nil
 	}
-	attach := func(input map[string][]projectRecordState) map[string][]projectRecordState {
+	inventoryBuckets := projectInventoryBuckets(bucketObjectsByURL)
+	attach := func(input map[string][]projectRecordState) (map[string][]projectRecordState, error) {
 		out := make(map[string][]projectRecordState, len(input))
 		for checksum, group := range input {
 			states := make([]projectRecordState, 0, len(group))
 			for _, record := range group {
 				clone := record
-				clone.AccessProbes = inventoryValidationProbesForRecord(record, bucketObjectsByURL)
+				probes, err := inventoryValidationProbesForRecord(record, bucketObjectsByURL, inventoryBuckets, scopes, organization, project)
+				if err != nil {
+					return nil, err
+				}
+				clone.AccessProbes = probes
 				states = append(states, clone)
 			}
 			out[checksum] = states
 		}
-		return out
+		return out, nil
+	}
+	recordsByChecksum, err := attach(recordSet.recordsByChecksum)
+	if err != nil {
+		return nil, err
+	}
+	allProjectRecords, err := attach(recordSet.allProjectRecords)
+	if err != nil {
+		return nil, err
 	}
 	return &storageAuditRecordSet{
-		recordsByChecksum: attach(recordSet.recordsByChecksum),
-		allProjectRecords: attach(recordSet.allProjectRecords),
-	}
+		recordsByChecksum: recordsByChecksum,
+		allProjectRecords: allProjectRecords,
+	}, nil
 }
 
-func inventoryValidationProbesForRecord(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) []gintegrationsyfon.BulkStorageProbeResult {
+func inventoryValidationProbesForRecord(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, inventoryBuckets map[string]struct{}, scopes []domain.StorageBucketScope, organization string, project string) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
 	probes := make([]gintegrationsyfon.BulkStorageProbeResult, 0)
 	seen := make(map[string]struct{})
-	for _, accessURL := range probeAccessURLsForRecord(record) {
+	accessURLs, err := canonicalizeRecordAccessURLsForProjectInventory(record.AccessURLs, scopes, organization, project)
+	if err != nil {
+		return nil, err
+	}
+	for _, accessURL := range accessURLs {
 		objectURL := canonicalStorageURL("", "", accessURL)
 		if objectURL == "" {
 			continue
+		}
+		bucket, _, _ := parseStorageURL(objectURL)
+		if len(inventoryBuckets) > 0 {
+			if _, ok := inventoryBuckets[bucket]; !ok {
+				return nil, fmt.Errorf("storage access URL mapped to %q, but bucket %q is not present in project bucket inventory for project %s/%s", objectURL, bucket, strings.TrimSpace(organization), strings.TrimSpace(project))
+			}
 		}
 		if _, ok := seen[objectURL]; ok {
 			continue
@@ -750,7 +779,22 @@ func inventoryValidationProbesForRecord(record projectRecordState, bucketObjects
 		}
 		probes = append(probes, inventoryMissingProbe(record, objectURL, expectedName))
 	}
-	return probes
+	return probes, nil
+}
+
+func projectInventoryBuckets(bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) map[string]struct{} {
+	out := make(map[string]struct{})
+	for objectURL, item := range bucketObjectsByURL {
+		if bucket := strings.TrimSpace(item.Bucket); bucket != "" {
+			out[bucket] = struct{}{}
+			continue
+		}
+		bucket, _, ok := parseStorageURL(objectURL)
+		if ok {
+			out[bucket] = struct{}{}
+		}
+	}
+	return out
 }
 
 func inventoryPresentProbe(record projectRecordState, objectURL string, expectedName string, item gintegrationsyfon.ProjectBucketObject) gintegrationsyfon.BulkStorageProbeResult {
@@ -820,7 +864,7 @@ func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	recordSet = applyScopeCanonicalization(recordSet, scopes)
+	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &storageAuditStorageView{
 		scopes:                   scopes,
 		recordsByChecksum:        recordSet.recordsByChecksum,
@@ -862,7 +906,7 @@ func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context
 }
 
 func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
-	recordSet = applyScopeCanonicalization(recordSet, scopes)
+	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &storageAuditStorageView{
 		scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
 		recordsByChecksum:        recordSet.recordsByChecksum,
@@ -889,7 +933,10 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			}
 			view.bucketObjects, view.bucketObjectsByURL = cloneBucketInventory(validationObjects, validationObjectsByURL)
 			validateStart := time.Now()
-			probedRecordSet := attachProjectStorageInventoryValidations(recordSet, view.bucketObjectsByURL)
+			probedRecordSet, err := attachProjectStorageInventoryValidations(recordSet, view.bucketObjectsByURL, scopes, organization, project)
+			if err != nil {
+				return nil, err
+			}
 			timings.Record("inventory_list_validation", time.Since(validateStart))
 			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL))
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum
@@ -956,7 +1003,7 @@ func (service *StorageAnalyticsService) loadStorageAuditStorageView(ctx context.
 	if err != nil {
 		return nil, err
 	}
-	recordSet = applyScopeCanonicalization(recordSet, scopes)
+	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	if includeProbes {
 		recordSet, err = service.attachProjectStorageProbes(ctx, authorizationHeader, recordSet)
 		if err != nil {

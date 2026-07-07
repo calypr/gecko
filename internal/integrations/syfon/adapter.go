@@ -442,13 +442,9 @@ func (manager *Manager) GetProjectMetricsSummary(ctx context.Context, authorizat
 }
 
 func (manager *Manager) ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error) {
-	requestBody := struct {
-		Organization string `json:"organization,omitempty"`
-		Project      string `json:"project,omitempty"`
-	}{
-		Organization: strings.TrimSpace(organization),
-		Project:      strings.TrimSpace(project),
-	}
+	params := url.Values{}
+	params.Set("organization", strings.TrimSpace(organization))
+	params.Set("project", strings.TrimSpace(project))
 	var response struct {
 		Items []struct {
 			Bucket       string `json:"bucket"`
@@ -457,7 +453,7 @@ func (manager *Manager) ListProjectScopes(ctx context.Context, authorizationHead
 			Path         string `json:"path"`
 		} `json:"items"`
 	}
-	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, "/data/inspect/project-scopes", nil, requestBody, &response); err != nil {
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodGet, "/data/inspect/project-scopes", params, nil, &response); err != nil {
 		return nil, fmt.Errorf("list syfon project scopes: %w", err)
 	}
 	out := make([]domain.StorageBucketScope, 0, len(response.Items))

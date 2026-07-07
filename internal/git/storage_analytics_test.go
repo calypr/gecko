@@ -2458,6 +2458,182 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	}
 }
 
+func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectScopes(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/file.bin": lfsPointer("dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-a",
+				Checksum:     "dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				Organization: "Ellrott_Lab",
+				Project:      "hla2vec",
+				Size:         100,
+				AccessURLs: []string{
+					"s3://EllrottLab/calypr/ff4b54c2-fc50-5850-9fc3-9d662e1f9e44/dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				},
+			},
+		},
+		buckets: map[string]domain.StorageBucket{
+			"gdc-mirror-bucket": {Bucket: "gdc-mirror-bucket", Provider: "s3"},
+		},
+		bucketScopes: map[string][]domain.StorageBucketScope{
+			"gdc-mirror-bucket": {{
+				Bucket:       "gdc-mirror-bucket",
+				Organization: "gdc_mirror",
+				ProjectID:    "gdc_mirror",
+				Path:         "s3://gdc-mirror-bucket/gdc_mirror",
+			}},
+		},
+		projectScopes: []domain.StorageBucketScope{},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL:  "s3://gdc-mirror-bucket/gdc_mirror/calypr/ff4b54c2-fc50-5850-9fc3-9d662e1f9e44/dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				Bucket:     "gdc-mirror-bucket",
+				Key:        "gdc_mirror/calypr/ff4b54c2-fc50-5850-9fc3-9d662e1f9e44/dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				Path:       "dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				SizeBytes:  100,
+				Provider:   "s3",
+				MetaSHA256: "dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"gdc_mirror",
+		"gdc_mirror",
+		refName,
+		"data",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if backend.listBucketScopesCalls == 0 {
+		t.Fatalf("expected audit to fall back to bucket scope enumeration")
+	}
+	if got := chain.Summary.CountsByKind["syfon_missing_bucket_object"]; got != 0 {
+		t.Fatalf("expected stale EllrottLab URL to be canonicalized into the audit project bucket, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected current project bucket object to complete the chain, got summary %+v", chain.Summary)
+	}
+	findings := loadAllChainFindings(t, service, "gdc_mirror", "gdc_mirror", chain)
+	for _, finding := range findings {
+		if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
+			t.Fatalf("did not expect stale EllrottLab bucket to appear in findings: %+v", finding)
+		}
+	}
+}
+
+func TestBuildStorageChainAuditErrorsWhenRecordBucketCannotMapToAuditProjectScope(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/file.bin": lfsPointer("dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-a",
+				Checksum:     "dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935",
+				Organization: "Ellrott_Lab",
+				Project:      "hla2vec",
+				Size:         100,
+				AccessURLs:   []string{"s3://EllrottLab/calypr/file.bin"},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	_, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"gdc_mirror",
+		"gdc_mirror",
+		refName,
+		"data",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err == nil {
+		t.Fatalf("expected unmapped S3 access URL to fail audit")
+	}
+	if !strings.Contains(err.Error(), `storage access URL "s3://EllrottLab/calypr/file.bin" could not be mapped into bucket scopes for project gdc_mirror/gdc_mirror`) {
+		t.Fatalf("expected explicit unmapped URL error, got %v", err)
+	}
+}
+
+func TestBuildStorageChainAuditErrorsWhenProjectScopeBucketDisagreesWithInventory(t *testing.T) {
+	checksum := "ba49c9465b911b950abd60fb333e76032db677b29194ae2268a2a6797402cb4f"
+	did := "0005c5a4-d3cb-57fc-ad83-78a52c950851"
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/file.tsv": lfsPointer(checksum, 4247846),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     did,
+				Checksum:     checksum,
+				Organization: "gdc_mirror",
+				Project:      "gdc_mirror",
+				Size:         4247846,
+				Name:         "186b06a9-0b6c-48fe-83fa-451514703728.rna_seq.augmented_star_gene_counts.tsv",
+				AccessURLs:   []string{"s3://gdcdata/" + did + "/" + checksum},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "EllrottLab",
+				Organization: "gdc_mirror",
+				ProjectID:    "gdc_mirror",
+				Path:         "s3://EllrottLab/calypr",
+			},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL: "s3://gdcdata/" + did + "/" + checksum,
+				Bucket:    "gdcdata",
+				Key:       did + "/" + checksum,
+				Path:      "186b06a9-0b6c-48fe-83fa-451514703728.rna_seq.augmented_star_gene_counts.tsv",
+				SizeBytes: 4247846,
+				Provider:  "s3",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	_, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"gdc_mirror",
+		"gdc_mirror",
+		refName,
+		"data",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err == nil {
+		t.Fatalf("expected scope bucket mismatch to fail audit")
+	}
+	if !strings.Contains(err.Error(), `storage access URL mapped to "s3://EllrottLab/calypr/0005c5a4-d3cb-57fc-ad83-78a52c950851/ba49c9465b911b950abd60fb333e76032db677b29194ae2268a2a6797402cb4f"`) {
+		t.Fatalf("expected mapped EllrottLab URL in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `bucket "EllrottLab" is not present in project bucket inventory for project gdc_mirror/gdc_mirror`) {
+		t.Fatalf("expected inventory bucket mismatch error, got %v", err)
+	}
+}
+
 func TestCanonicalizeScopedStorageURLMatchesSyfonDownloadScopeResolution(t *testing.T) {
 	tests := []struct {
 		name      string

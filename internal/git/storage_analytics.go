@@ -1230,14 +1230,14 @@ func (service *StorageAnalyticsService) loadProjectStorageScopes(ctx context.Con
 	return scopes, nil
 }
 
-func applyScopedStorageMappings(recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, scopes []domain.StorageBucketScope) (map[string][]projectRecordState, map[string][]projectRecordState) {
+func applyScopedStorageMappings(recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, scopes []domain.StorageBucketScope, organization string, project string) (map[string][]projectRecordState, map[string][]projectRecordState) {
 	attach := func(input map[string][]projectRecordState) map[string][]projectRecordState {
 		out := make(map[string][]projectRecordState, len(input))
 		for checksum, group := range input {
 			states := make([]projectRecordState, 0, len(group))
 			for _, record := range group {
 				clone := record
-				clone.CanonicalAccessURLs = canonicalizeRecordAccessURLs(record.AccessURLs, scopes, record.Organization, record.Project)
+				clone.CanonicalAccessURLs = canonicalizeRecordAccessURLs(record.AccessURLs, scopes, organization, project)
 				states = append(states, clone)
 			}
 			out[checksum] = states
@@ -2592,6 +2592,20 @@ func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBu
 		}
 	}
 	return uniqueStrings(out)
+}
+
+func canonicalizeRecordAccessURLsForProjectInventory(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) ([]string, error) {
+	out := make([]string, 0, len(accessURLs))
+	for _, accessURL := range accessURLs {
+		if objectURL := canonicalizeScopedStorageURL(accessURL, scopes, organization, project); objectURL != "" {
+			out = append(out, objectURL)
+			continue
+		}
+		if _, _, ok := parseStorageURL(accessURL); ok {
+			return nil, fmt.Errorf("storage access URL %q could not be mapped into bucket scopes for project %s/%s", strings.TrimSpace(accessURL), strings.TrimSpace(organization), strings.TrimSpace(project))
+		}
+	}
+	return uniqueStrings(out), nil
 }
 
 func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucketScope, organization string, project string) string {
