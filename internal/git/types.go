@@ -9,6 +9,7 @@ import (
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/integrations/fence"
 	gitapi "github.com/calypr/gecko/internal/integrations/github"
 	"github.com/jmoiron/sqlx"
@@ -666,7 +667,7 @@ func NewGitService(config GitServiceConfig) *GitService {
 	}
 	client := config.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = httpclient.NewServiceClient(20 * time.Second)
 	}
 	return &GitService{
 		config:    config,

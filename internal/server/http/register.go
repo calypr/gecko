@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"net/http"
 	"strings"
 
 	"github.com/calypr/gecko/internal/httputil"
@@ -18,7 +17,7 @@ type Dependencies = shared.Dependencies
 
 func Register(app *fiber.App, deps Dependencies) {
 	handler := shared.NewHandler(deps)
-	authzHandler := servermw.NewFenceUserAccessHandler(http.DefaultClient)
+	authzHandler := servermw.NewFenceUserAccessHandler(nil)
 
 	app.Get("/swagger/doc.json", func(ctx fiber.Ctx) error {
 		return ctx.SendFile("./docs/swagger.json")

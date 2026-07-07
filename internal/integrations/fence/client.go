@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
@@ -24,7 +26,7 @@ type Client struct {
 
 func NewClient(client *http.Client, config Config) *Client {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	return &Client{client: client, config: config}
 }

@@ -1,7 +1,6 @@
 package shared
 
 import (
-	"net/http"
 	"os"
 	"strings"
 
@@ -48,7 +47,7 @@ func NewHandler(deps Dependencies) *Handler {
 	var projectSync *git.ReconcileService
 	var storageManager *gintegrationsyfon.Manager
 	if deps.GitService != nil {
-		storageManager = gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), http.DefaultClient)
+		storageManager = gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), nil)
 		projectSetup = git.NewSetupService(deps.DB, deps.GitService, storageManager, servermw.NewFenceUserAccessHandler(nil))
 		projectSync = git.NewReconcileService(
 			deps.DB,

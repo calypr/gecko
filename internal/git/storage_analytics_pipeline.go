@@ -487,7 +487,7 @@ func projectAuditRecordPathURLs(record gintegrationsyfon.ProjectRecord, scopes [
 			out = append(out, trimmed)
 		}
 	}
-	out = append(out, canonicalizeRecordAccessURLs(out, scopes)...)
+	out = append(out, canonicalizeRecordAccessURLs(out, scopes, record.Organization, record.Project)...)
 	return uniqueStrings(out)
 }
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/syfon/apigen/client/bucketapi"
 	drsapi "github.com/calypr/syfon/apigen/client/drs"
 	internalapi "github.com/calypr/syfon/apigen/client/internalapi"
@@ -158,7 +159,7 @@ type ProjectBucketDeleteResult struct {
 func NewManager(baseURL string, client *http.Client) *Manager {
 	httpClient := client
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = httpclient.NewServiceClient(5 * time.Minute)
 	}
 	return &Manager{
 		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),

@@ -1237,7 +1237,7 @@ func applyScopedStorageMappings(recordsByChecksum map[string][]projectRecordStat
 			states := make([]projectRecordState, 0, len(group))
 			for _, record := range group {
 				clone := record
-				clone.CanonicalAccessURLs = canonicalizeRecordAccessURLs(record.AccessURLs, scopes)
+				clone.CanonicalAccessURLs = canonicalizeRecordAccessURLs(record.AccessURLs, scopes, record.Organization, record.Project)
 				states = append(states, clone)
 			}
 			out[checksum] = states
@@ -2451,7 +2451,10 @@ func accessURLsForStorage(record projectRecordState) []string {
 }
 
 func probeAccessURLsForRecord(record projectRecordState) []string {
-	return uniqueStrings(append(rawAccessURLsForRecord(record), accessURLsForStorage(record)...))
+	if len(record.CanonicalAccessURLs) > 0 {
+		return record.CanonicalAccessURLs
+	}
+	return rawAccessURLsForRecord(record)
 }
 
 func rawAccessURLsForRecord(record projectRecordState) []string {
@@ -2577,10 +2580,10 @@ func classifyRawAccessURLFindings(record projectRecordState) storageFindingKind 
 	return storageFindingNone
 }
 
-func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBucketScope) []string {
+func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) []string {
 	out := make([]string, 0, len(accessURLs))
 	for _, accessURL := range accessURLs {
-		if objectURL := canonicalizeScopedStorageURL(accessURL, scopes); objectURL != "" {
+		if objectURL := canonicalizeScopedStorageURL(accessURL, scopes, organization, project); objectURL != "" {
 			out = append(out, objectURL)
 			continue
 		}
@@ -2591,7 +2594,7 @@ func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBu
 	return uniqueStrings(out)
 }
 
-func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucketScope) string {
+func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucketScope, organization string, project string) string {
 	if len(scopes) == 0 {
 		return ""
 	}
@@ -2602,15 +2605,18 @@ func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucke
 	targetBucket := ""
 	prefixes := make([]string, 0, len(scopes))
 	for _, scope := range scopes {
-		bucket, prefix, ok := parseStorageScopePath(scope.Path)
+		if !storageScopeApplies(scope, organization, project) {
+			continue
+		}
+		scopeBucket, scopePrefix, ok := parseStorageScopePath(scope)
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(bucket) != "" {
-			targetBucket = strings.TrimSpace(bucket)
+		if strings.TrimSpace(scopeBucket) != "" {
+			targetBucket = strings.TrimSpace(scopeBucket)
 		}
-		if strings.TrimSpace(prefix) != "" {
-			prefixes = append(prefixes, strings.Trim(strings.TrimSpace(prefix), "/"))
+		if strings.TrimSpace(scopePrefix) != "" {
+			prefixes = append(prefixes, strings.Trim(strings.TrimSpace(scopePrefix), "/"))
 		}
 	}
 	if targetBucket == "" {
@@ -2623,8 +2629,32 @@ func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucke
 	return canonicalStorageURL(targetBucket, normalizedKey, "")
 }
 
-func parseStorageScopePath(raw string) (string, string, bool) {
-	return parseStorageURL(raw)
+func storageScopeApplies(scope domain.StorageBucketScope, organization string, project string) bool {
+	scopeOrg := strings.TrimSpace(scope.Organization)
+	if scopeOrg != "" && !strings.EqualFold(scopeOrg, strings.TrimSpace(organization)) {
+		return false
+	}
+	scopeProject := strings.TrimSpace(scope.ProjectID)
+	return scopeProject == "" || strings.EqualFold(scopeProject, strings.TrimSpace(project))
+}
+
+func parseStorageScopePath(scope domain.StorageBucketScope) (string, string, bool) {
+	bucket := strings.TrimSpace(scope.Bucket)
+	pathValue := strings.TrimSpace(scope.Path)
+	if pathValue == "" {
+		return bucket, "", bucket != ""
+	}
+	if strings.HasPrefix(strings.ToLower(pathValue), "s3://") {
+		parsedBucket, parsedPrefix, ok := parseStorageURLAllowRoot(pathValue)
+		if !ok {
+			return bucket, "", bucket != ""
+		}
+		if bucket == "" {
+			bucket = parsedBucket
+		}
+		return bucket, parsedPrefix, bucket != ""
+	}
+	return bucket, strings.Trim(pathValue, "/"), bucket != ""
 }
 
 func parseStorageURL(raw string) (string, string, bool) {
@@ -2647,6 +2677,27 @@ func parseStorageURL(raw string) (string, string, bool) {
 		return "", "", false
 	}
 	return bucket, key, true
+}
+
+func parseStorageURLAllowRoot(raw string) (string, string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", false
+	}
+	if !strings.HasPrefix(strings.ToLower(trimmed), "s3://") {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(trimmed, "s3://")
+	rest = strings.TrimLeft(rest, "/")
+	parts := strings.SplitN(rest, "/", 2)
+	bucket := strings.TrimSpace(parts[0])
+	if bucket == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return bucket, "", true
+	}
+	return bucket, strings.Trim(strings.TrimSpace(parts[1]), "/"), true
 }
 
 func normalizeScopedStorageKeyForGecko(key string, prefixes []string) string {

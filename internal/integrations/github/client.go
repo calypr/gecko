@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	google_github "github.com/google/go-github/v87/github"
 )
 
@@ -26,7 +28,7 @@ type GitHubRepositoryMetadata struct {
 
 func NewClient(client *http.Client, config Config) *Client {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	if config.APIBase == "" {
 		config.APIBase = "https://api.github.com"

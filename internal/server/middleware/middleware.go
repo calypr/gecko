@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/apierror"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -35,7 +37,7 @@ type FenceUserAccessHandler struct {
 
 func NewFenceUserAccessHandler(client *http.Client) *FenceUserAccessHandler {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	return &FenceUserAccessHandler{client: client}
 }
