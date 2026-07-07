@@ -1,6 +1,8 @@
 package git
 
 import (
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +65,53 @@ func (timings *StorageChainAuditTimings) Record(stage string, duration time.Dura
 	if logf != nil {
 		logf("storage_chain_audit_stage_done %s stage=%s duration_ms=%d", prefix, normalizedStage, duration.Milliseconds())
 	}
+}
+
+func (timings *StorageChainAuditTimings) RecordMemory(stage string, fields ...any) {
+	if timings == nil || timings.Logf == nil {
+		return
+	}
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	prefix := strings.TrimSpace(timings.DebugPrefix)
+	normalizedStage := strings.TrimSpace(stage)
+	extra := formatStorageChainMemoryFields(fields...)
+	timings.Logf(
+		"storage_chain_audit_memory %s stage=%s alloc_mib=%d heap_alloc_mib=%d heap_inuse_mib=%d heap_sys_mib=%d stack_sys_mib=%d sys_mib=%d next_gc_mib=%d num_gc=%d%s",
+		prefix,
+		normalizedStage,
+		bytesToMiB(stats.Alloc),
+		bytesToMiB(stats.HeapAlloc),
+		bytesToMiB(stats.HeapInuse),
+		bytesToMiB(stats.HeapSys),
+		bytesToMiB(stats.StackSys),
+		bytesToMiB(stats.Sys),
+		bytesToMiB(stats.NextGC),
+		stats.NumGC,
+		extra,
+	)
+}
+
+func bytesToMiB(bytes uint64) uint64 {
+	return bytes / 1024 / 1024
+}
+
+func formatStorageChainMemoryFields(fields ...any) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		key := strings.TrimSpace(fmt.Sprint(fields[i]))
+		if key == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%v", key, fields[i+1]))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
 }
 
 func (timings *StorageChainAuditTimings) Snapshot() []StorageChainAuditStageTiming {

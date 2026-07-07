@@ -16,7 +16,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-const defaultStorageChainFindingLimit = 500
 const defaultStorageChildrenLimit = 100
 const maxStorageChildrenLimit = 1000
 
@@ -261,11 +260,8 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 		bucketMode = gitcore.StorageChainBucketModeItems
 	}
 	findingLimit := requestBody.FindingLimit
-	if findingLimit == 0 {
-		findingLimit = defaultStorageChainFindingLimit
-	}
 	if findingLimit < -1 {
-		response := httputil.NewError("invalid_request", "finding_limit must be -1 for all findings or a positive integer", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
+		response := httputil.NewError("invalid_request", "finding_limit must be -1, 0, or a positive integer", http.StatusBadRequest, map[string]any{"project_id": projectCtx.projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
@@ -308,6 +304,14 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	timings.StageStart("json_response")
 	writeErr := httputil.JSON(response, http.StatusOK).Write(ctx)
 	timings.Record("json_response", time.Since(writeStart))
+	timings.RecordMemory(
+		"json_response",
+		"total_findings", response.Summary.TotalFindings,
+		"returned_findings", response.Summary.ReturnedFindings,
+		"bucket_objects", response.Summary.BucketObjectCount,
+		"syfon_records", response.Summary.SyfonRecordCount,
+		"git_files", response.Summary.GitTrackedFileCount,
+	)
 	handler.logStorageChainAuditTimings(projectCtx, gitSubpath, probeMode, bucketMode, response, timings)
 	return writeErr
 }

@@ -3,6 +3,7 @@ package syfon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,30 @@ const refreshAuthzHeader = "X-Syfon-Refresh-Authz"
 const bulkStorageProbeBatchSize = 200
 const bulkStorageProbeConcurrency = 4
 
+type HTTPError struct {
+	Method string
+	Path   string
+	Status int
+	Body   string
+}
+
+func (err HTTPError) Error() string {
+	return fmt.Sprintf("syfon %s %s failed with status %d: %s", err.Method, err.Path, err.Status, strings.TrimSpace(err.Body))
+}
+
+func IsHTTPStatus(err error, statuses ...int) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	for _, status := range statuses {
+		if httpErr.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 type Manager struct {
 	baseURL string
 	client  *http.Client
@@ -50,6 +75,12 @@ type ProjectAccessMethod struct {
 	Type     string
 	URL      string
 	Headers  []string
+}
+
+type ProjectMetricsSummary struct {
+	RecordCount             int
+	RecordLatestUpdatedTime string
+	RecordRevision          string
 }
 
 type BulkStorageProbeItem struct {
@@ -240,6 +271,23 @@ func (manager *Manager) ListBucketScopes(ctx context.Context, authorizationHeade
 	return out, nil
 }
 
+func uniqueNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 func (manager *Manager) CleanupProject(ctx context.Context, authorizationHeader string, organization string, project string) error {
 	dataBaseURL, err := manager.dataAPIBaseURL()
 	if err != nil {
@@ -370,6 +418,28 @@ func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizati
 	return out, nil
 }
 
+func (manager *Manager) GetProjectMetricsSummary(ctx context.Context, authorizationHeader string, organization string, project string) (*ProjectMetricsSummary, error) {
+	params := url.Values{}
+	params.Set("organization", strings.TrimSpace(organization))
+	params.Set("project", strings.TrimSpace(project))
+	var response struct {
+		RecordCount             *int   `json:"record_count"`
+		RecordLatestUpdatedTime string `json:"record_latest_updated_time"`
+		RecordRevision          string `json:"record_revision"`
+	}
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodGet, "/index/v1/metrics/summary", params, nil, &response); err != nil {
+		return nil, fmt.Errorf("get syfon metrics summary: %w", err)
+	}
+	if response.RecordCount == nil {
+		return nil, nil
+	}
+	return &ProjectMetricsSummary{
+		RecordCount:             *response.RecordCount,
+		RecordLatestUpdatedTime: strings.TrimSpace(response.RecordLatestUpdatedTime),
+		RecordRevision:          strings.TrimSpace(response.RecordRevision),
+	}, nil
+}
+
 func (manager *Manager) ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error) {
 	requestBody := struct {
 		Organization string `json:"organization,omitempty"`
@@ -495,6 +565,50 @@ func (manager *Manager) ListProjectFileUsage(ctx context.Context, authorizationH
 			break
 		}
 		offset += len(items)
+	}
+	return out, nil
+}
+
+func (manager *Manager) ListProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]FileUsage, error) {
+	out := make(map[string]FileUsage)
+	ids := uniqueNonEmptyStrings(objectIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	params := url.Values{}
+	params.Set("organization", strings.TrimSpace(organization))
+	params.Set("project", strings.TrimSpace(project))
+	request := struct {
+		ObjectIDs    []string `json:"object_ids"`
+		InactiveDays *int     `json:"inactive_days,omitempty"`
+	}{
+		ObjectIDs: ids,
+	}
+	if inactiveDays > 0 {
+		request.InactiveDays = &inactiveDays
+	}
+	var response metricsapi.MetricsListResponse
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, "/index/v1/metrics/files/bulk", params, request, &response); err != nil {
+		return nil, fmt.Errorf("bulk list syfon metrics files: %w", err)
+	}
+	if response.Data == nil {
+		return out, nil
+	}
+	for _, item := range *response.Data {
+		objectID := strings.TrimSpace(stringValue(item.ObjectId))
+		if objectID == "" {
+			continue
+		}
+		out[objectID] = FileUsage{
+			ObjectID:         objectID,
+			Name:             stringValue(item.Name),
+			Size:             int64Value(item.Size),
+			DownloadCount:    int64Value(item.DownloadCount),
+			UploadCount:      int64Value(item.UploadCount),
+			LastAccessTime:   item.LastAccessTime,
+			LastDownloadTime: item.LastDownloadTime,
+			LastUploadTime:   item.LastUploadTime,
+		}
 	}
 	return out, nil
 }
@@ -862,6 +976,14 @@ func (manager *Manager) ListProjectBucketSummary(ctx context.Context, authorizat
 }
 
 func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+	return manager.listProjectBucketObjects(ctx, authorizationHeader, "/data/inspect/project-bucket", organization, project, pathPrefix)
+}
+
+func (manager *Manager) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+	return manager.listProjectBucketObjects(ctx, authorizationHeader, "/data/inspect/project-bucket/inventory", organization, project, pathPrefix)
+}
+
+func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizationHeader string, requestPath string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
 	requestBody := struct {
 		Organization string `json:"organization,omitempty"`
 		Project      string `json:"project,omitempty"`
@@ -886,7 +1008,7 @@ func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizat
 			LastModified string `json:"last_modified"`
 		} `json:"items"`
 	}
-	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, "/data/inspect/project-bucket", nil, requestBody, &response); err != nil {
+	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, requestPath, nil, requestBody, &response); err != nil {
 		return nil, fmt.Errorf("list syfon project bucket objects: %w", err)
 	}
 	out := make([]ProjectBucketObject, 0, len(response.Items))
@@ -1055,7 +1177,12 @@ func (manager *Manager) requestJSON(ctx context.Context, authorizationHeader str
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("syfon %s %s failed with status %d: %s", method, requestPath, resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return &HTTPError{
+			Method: method,
+			Path:   requestPath,
+			Status: resp.StatusCode,
+			Body:   strings.TrimSpace(string(bodyBytes)),
+		}
 	}
 	if out == nil {
 		return nil

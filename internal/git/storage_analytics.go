@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"path"
 	"sort"
 	"strings"
@@ -19,6 +20,8 @@ import (
 const cleanupInactiveDays = 30
 const projectJoinCacheTTL = 45 * time.Second
 const chainInputCacheTTL = 45 * time.Second
+const chainProjectRecordCacheMaxAge = 30 * time.Minute
+const projectFileUsageBulkChunkSize = 5000
 const storageChainValidationDebugSampleLimit = 20
 const StorageFolderSummaryModeExact = "exact"
 const StorageFolderSummarySourceGitIndex = "git_index"
@@ -89,10 +92,13 @@ type storageAnalyticsBackend interface {
 	ListBucketScopes(ctx context.Context, authorizationHeader string, bucket string) ([]domain.StorageBucketScope, error)
 	ListProjectRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error)
 	ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectRecord, error)
+	GetProjectMetricsSummary(ctx context.Context, authorizationHeader string, organization string, project string) (*gintegrationsyfon.ProjectMetricsSummary, error)
 	ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
+	ListProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
 	ListProjectFileUsage(ctx context.Context, authorizationHeader string, organization string, project string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
 	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error)
+	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error)
 	ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error)
 	BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
@@ -102,12 +108,14 @@ type storageAnalyticsBackend interface {
 }
 
 type StorageAnalyticsService struct {
-	storage          storageAnalyticsBackend
-	projectJoinMu    sync.RWMutex
-	projectJoinCache map[string]cachedProjectJoinState
-	projectJoinWork  map[string]*inflightProjectJoinState
-	chainInputMu     sync.RWMutex
-	chainInputCache  map[string]cachedChainInputState
+	storage           storageAnalyticsBackend
+	projectJoinMu     sync.RWMutex
+	projectJoinCache  map[string]cachedProjectJoinState
+	projectJoinWork   map[string]*inflightProjectJoinState
+	chainInputMu      sync.RWMutex
+	chainInputCache   map[string]cachedChainInputState
+	projectAuditCache map[string]cachedProjectAuditRecordState
+	projectAuditWork  map[string]*inflightProjectAuditRecordState
 }
 
 type StorageFolderTimings struct {
@@ -127,10 +135,12 @@ func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyti
 		return nil
 	}
 	return &StorageAnalyticsService{
-		storage:          storage,
-		projectJoinCache: map[string]cachedProjectJoinState{},
-		projectJoinWork:  map[string]*inflightProjectJoinState{},
-		chainInputCache:  map[string]cachedChainInputState{},
+		storage:           storage,
+		projectJoinCache:  map[string]cachedProjectJoinState{},
+		projectJoinWork:   map[string]*inflightProjectJoinState{},
+		chainInputCache:   map[string]cachedChainInputState{},
+		projectAuditCache: map[string]cachedProjectAuditRecordState{},
+		projectAuditWork:  map[string]*inflightProjectAuditRecordState{},
 	}
 }
 
@@ -222,6 +232,25 @@ type cachedChainInputState struct {
 	bucketSummary      *gintegrationsyfon.ProjectBucketSummary
 	bucketObjects      []gintegrationsyfon.ProjectBucketObject
 	bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
+}
+
+type cachedProjectAuditRecordState struct {
+	records   []gintegrationsyfon.ProjectRecord
+	validator projectAuditRecordValidator
+	cachedAt  time.Time
+}
+
+type inflightProjectAuditRecordState struct {
+	done      chan struct{}
+	records   []gintegrationsyfon.ProjectRecord
+	validator projectAuditRecordValidator
+	err       error
+}
+
+type projectAuditRecordValidator struct {
+	RecordCount             int
+	RecordLatestUpdatedTime string
+	RecordRevision          string
 }
 
 func BuildGitRepoInventory(ref string, gitSubpath string, repo *gogit.Repository, hash plumbing.Hash) ([]RepoInventoryFile, error) {
@@ -432,13 +461,28 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	options.Timings.StageStart("chain_setup_total")
 	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, bucketPathPrefix, options.Timings)
 	options.Timings.Record("chain_setup_total", time.Since(start))
+	if inputs != nil && inputs.recordSet != nil {
+		options.Timings.RecordMemory(
+			"chain_setup_total",
+			"git_files", len(inputs.inventory),
+			"syfon_records", countRecordStates(inputs.recordSet.allProjectRecords),
+			"bucket_objects", len(inputs.bucketObjects),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
+	if storageView != nil {
+		options.Timings.RecordMemory(
+			"storage_view",
+			"syfon_records", countRecordStates(storageView.allProjectRecords),
+			"bucket_objects", len(storageView.bucketObjectsByURL),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -447,6 +491,13 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	includeBucketOrigin := bucketMode != StorageChainBucketModeValidate && storageView.bucketInventoryAvailable
 	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, includeBucketOrigin)
 	options.Timings.Record("model_build", time.Since(modelStart))
+	options.Timings.RecordMemory(
+		"model_build",
+		"total_findings", len(model.Findings),
+		"syfon_records", countRecordStates(storageView.allProjectRecords),
+		"bucket_objects", len(storageView.bucketObjectsByURL),
+		"git_files", len(inputs.inventory),
+	)
 	model.Summary.BucketInventoryAvailable = storageView.bucketInventoryAvailable
 	model.Summary.BucketInventoryError = storageView.bucketInventoryError
 	model.Summary.ValidationMode = validationMode
@@ -458,10 +509,17 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	}
 	filteredFindings := filterStorageChainFindingsByKind(model.Findings, options.FindingKind)
 	summary := filterStorageChainSummary(model.Summary, filteredFindings)
-	findings := limitStorageChainFindings(filteredFindings, options.FindingLimit)
+	findings := limitStorageChainFindings(filteredFindings, options.FindingLimit, options.FindingKind)
 	summary.ReturnedFindings = len(findings)
 	summary.FindingLimit = options.FindingLimit
 	summary.FindingsTruncated = len(findings) < len(filteredFindings)
+	options.Timings.RecordMemory(
+		"response_shape",
+		"total_findings", summary.TotalFindings,
+		"filtered_findings", len(filteredFindings),
+		"returned_findings", len(findings),
+		"finding_limit", options.FindingLimit,
+	)
 	return &GitStorageChainAuditResponse{
 		Findings:         findings,
 		Groups:           summarizeChainIssueGroups(filteredFindings),
@@ -499,9 +557,21 @@ func filterStorageChainSummary(summary GitStorageChainAuditSummary, findings []G
 	return summary
 }
 
-func limitStorageChainFindings(findings []GitStorageChainFinding, limit int) []GitStorageChainFinding {
+func limitStorageChainFindings(findings []GitStorageChainFinding, limit int, kind string) []GitStorageChainFinding {
 	if limit <= 0 || limit >= len(findings) {
 		return append([]GitStorageChainFinding(nil), findings...)
+	}
+	if strings.TrimSpace(kind) == "" {
+		limited := make([]GitStorageChainFinding, 0, len(findings))
+		countsByKind := make(map[string]int)
+		for _, finding := range findings {
+			if countsByKind[finding.Kind] >= limit {
+				continue
+			}
+			limited = append(limited, finding)
+			countsByKind[finding.Kind]++
+		}
+		return limited
 	}
 	return append([]GitStorageChainFinding(nil), findings[:limit]...)
 }
@@ -1015,7 +1085,8 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 		inflight.err = fmt.Errorf("lookup syfon project records by checksum: %w", err)
 		return nil, nil, inflight.err
 	}
-	usageByObjectID, err := service.storage.ListProjectFileUsage(ctx, authorizationHeader, organization, project, cleanupInactiveDays)
+	objectIDs := projectRecordObjectIDs(recordsByChecksumRaw)
+	usageByObjectID, err := service.listProjectFileUsageByObjectIDs(ctx, authorizationHeader, organization, project, objectIDs, cleanupInactiveDays)
 	if err != nil {
 		inflight.err = fmt.Errorf("list syfon project file usage: %w", err)
 		return nil, nil, inflight.err
@@ -1044,6 +1115,40 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 	inflight.recordsByChecksum = recordsByChecksum
 	inflight.usageByObjectID = usageByObjectID
 	return recordsByChecksum, usageByObjectID, nil
+}
+
+func projectRecordObjectIDs(recordsByChecksum map[string][]gintegrationsyfon.ProjectRecord) []string {
+	objectIDs := make([]string, 0)
+	for _, records := range recordsByChecksum {
+		for _, record := range records {
+			objectIDs = append(objectIDs, record.ObjectID)
+		}
+	}
+	return uniqueStrings(objectIDs)
+}
+
+func (service *StorageAnalyticsService) listProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error) {
+	usageByObjectID := make(map[string]gintegrationsyfon.FileUsage)
+	if len(objectIDs) == 0 {
+		return usageByObjectID, nil
+	}
+	for start := 0; start < len(objectIDs); start += projectFileUsageBulkChunkSize {
+		end := start + projectFileUsageBulkChunkSize
+		if end > len(objectIDs) {
+			end = len(objectIDs)
+		}
+		chunkUsage, err := service.storage.ListProjectFileUsageByObjectIDs(ctx, authorizationHeader, organization, project, objectIDs[start:end], inactiveDays)
+		if err != nil {
+			if gintegrationsyfon.IsHTTPStatus(err, http.StatusNotFound, http.StatusMethodNotAllowed) {
+				return service.storage.ListProjectFileUsage(ctx, authorizationHeader, organization, project, inactiveDays)
+			}
+			return nil, err
+		}
+		for objectID, usage := range chunkUsage {
+			usageByObjectID[objectID] = usage
+		}
+	}
+	return usageByObjectID, nil
 }
 
 func (service *StorageAnalyticsService) projectJoinCacheKey(organization string, project string, commitHash string) string {
@@ -1872,6 +1977,9 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if hasExactPathBucketMismatch(record, bucketMatches, bucketObjectsByURL) {
 		return storageFindingBrokenBucketMap
 	}
+	if recordHasMatchedCanonicalAccessProbe(record) {
+		return storageFindingNone
+	}
 	if inventoryHasValidationMismatch(record, bucketMatches, bucketObjectsByURL) {
 		return storageFindingValidationMismatch
 	}
@@ -1970,6 +2078,41 @@ func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []strin
 func recordHasValidationMismatchProbe(record projectRecordState) bool {
 	for _, probe := range record.AccessProbes {
 		if strings.TrimSpace(probe.ValidationStatus) == "mismatched" {
+			return true
+		}
+	}
+	return false
+}
+
+func recordHasMatchedCanonicalAccessProbe(record projectRecordState) bool {
+	rawURLs := make(map[string]struct{}, len(record.AccessURLs))
+	for _, accessURL := range record.AccessURLs {
+		if trimmed := strings.TrimSpace(accessURL); trimmed != "" {
+			rawURLs[trimmed] = struct{}{}
+		}
+	}
+	canonicalURLs := make(map[string]struct{}, len(record.CanonicalAccessURLs))
+	for _, accessURL := range record.CanonicalAccessURLs {
+		trimmed := strings.TrimSpace(accessURL)
+		if trimmed == "" {
+			continue
+		}
+		if _, raw := rawURLs[trimmed]; !raw {
+			canonicalURLs[trimmed] = struct{}{}
+		}
+	}
+	if len(canonicalURLs) == 0 {
+		return false
+	}
+	for _, probe := range record.AccessProbes {
+		if strings.TrimSpace(probe.Status) != "present" {
+			continue
+		}
+		if _, ok := canonicalURLs[strings.TrimSpace(probe.ObjectURL)]; !ok {
+			continue
+		}
+		switch strings.TrimSpace(probe.ValidationStatus) {
+		case "", "not_requested", "matched":
 			return true
 		}
 	}
@@ -2383,6 +2526,9 @@ func accessURLHasBrokenBucketMapping(accessURL string, probesByURL map[string][]
 
 func classifyRawAccessURLFindings(record projectRecordState) storageFindingKind {
 	if len(record.AccessProbes) == 0 {
+		return storageFindingNone
+	}
+	if recordHasMatchedCanonicalAccessProbe(record) {
 		return storageFindingNone
 	}
 	probesByURL := make(map[string][]gintegrationsyfon.BulkStorageProbeResult, len(record.AccessProbes))

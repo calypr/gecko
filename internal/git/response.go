@@ -63,38 +63,15 @@ func BuildGitTreeResponse(projectID string, ref string, path string, repo *gogit
 		truncated = true
 	}
 
-	for index := range entries {
-		entry := &entries[index]
-		if entry.Type != "blob" {
-			if options.IncludeLastModified {
-				if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entry.Path); err == nil && lastModifiedAt != nil {
-					entry.LastModifiedAt = lastModifiedAt
-				}
-			}
-			continue
+	enrichTreeEntries(tree, entries, options)
+	if options.IncludeLastModified {
+		lastModifiedByPath, err := lookupGitPathsLastModified(repo, hash, entries)
+		if err != nil {
+			return nil, fmt.Errorf("lookup git tree last modified times: %w", err)
 		}
-
-		needsFileOpen := options.IncludeSize || options.IncludeLFSPointer
-		if needsFileOpen {
-			if file, err := tree.File(entry.Name); err == nil {
-				if options.IncludeSize {
-					entry.Size = file.Size
-				}
-				if options.IncludeLFSPointer {
-					if reader, err := file.Reader(); err == nil {
-						contentBytes, readErr := io.ReadAll(io.LimitReader(reader, 2048))
-						_ = reader.Close()
-						if readErr == nil {
-							entry.LFSPointer = ParseGitLFSPointer(contentBytes)
-						}
-					}
-				}
-			}
-		}
-
-		if options.IncludeLastModified {
-			if lastModifiedAt, err := lookupGitPathLastModified(repo, hash, entry.Path); err == nil && lastModifiedAt != nil {
-				entry.LastModifiedAt = lastModifiedAt
+		for index := range entries {
+			if lastModifiedAt, ok := lastModifiedByPath[entries[index].Path]; ok {
+				entries[index].LastModifiedAt = &lastModifiedAt
 			}
 		}
 	}

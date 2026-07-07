@@ -12,6 +12,123 @@ import (
 	"testing"
 )
 
+func TestGetProjectMetricsSummaryReadsRecordValidator(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Path != "/index/v1/metrics/summary" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("organization"); got != "org" {
+			t.Fatalf("expected organization query, got %q", got)
+		}
+		if got := r.URL.Query().Get("project"); got != "proj" {
+			t.Fatalf("expected project query, got %q", got)
+		}
+		body := []byte(`{"total_files":99,"record_count":42,"record_latest_updated_time":"2026-07-02T00:00:00Z","record_revision":"rev-1"}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	manager := NewManager("http://syfon.example", client)
+	summary, err := manager.GetProjectMetricsSummary(context.Background(), "Bearer token", "org", "proj")
+	if err != nil {
+		t.Fatalf("GetProjectMetricsSummary returned error: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected metrics summary")
+	}
+	if summary.RecordCount != 42 || summary.RecordLatestUpdatedTime != "2026-07-02T00:00:00Z" || summary.RecordRevision != "rev-1" {
+		t.Fatalf("unexpected metrics summary: %+v", summary)
+	}
+}
+
+func TestListProjectFileUsageByObjectIDsUsesBulkEndpoint(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/index/v1/metrics/files/bulk" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("organization"); got != "org" {
+			t.Fatalf("expected organization query, got %q", got)
+		}
+		if got := r.URL.Query().Get("project"); got != "proj" {
+			t.Fatalf("expected project query, got %q", got)
+		}
+		var req struct {
+			ObjectIDs    []string `json:"object_ids"`
+			InactiveDays *int     `json:"inactive_days"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !reflect.DeepEqual(req.ObjectIDs, []string{"obj-a", "obj-b"}) {
+			t.Fatalf("unexpected object ids: %+v", req.ObjectIDs)
+		}
+		if req.InactiveDays == nil || *req.InactiveDays != 30 {
+			t.Fatalf("unexpected inactive days: %+v", req.InactiveDays)
+		}
+		body := []byte(`{"data":[{"object_id":"obj-a","name":"a.txt","size":100,"download_count":3,"upload_count":1}]}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	manager := NewManager("http://syfon.example", client)
+	usage, err := manager.ListProjectFileUsageByObjectIDs(context.Background(), "Bearer token", "org", "proj", []string{"obj-a", "obj-b", "obj-a", ""}, 30)
+	if err != nil {
+		t.Fatalf("ListProjectFileUsageByObjectIDs returned error: %v", err)
+	}
+	if len(usage) != 1 || usage["obj-a"].DownloadCount != 3 || usage["obj-a"].UploadCount != 1 {
+		t.Fatalf("unexpected usage response: %+v", usage)
+	}
+}
+
+func TestListProjectBucketInventoryUsesInventoryEndpoint(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/project-bucket/inventory" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req struct {
+			Organization string `json:"organization"`
+			Project      string `json:"project"`
+			Mode         string `json:"mode"`
+			PathPrefix   string `json:"path_prefix"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Organization != "org" || req.Project != "proj" || req.Mode != "items" || req.PathPrefix != "CONFIG" {
+			t.Fatalf("unexpected request body: %+v", req)
+		}
+		body, err := json.Marshal(map[string]any{"items": []map[string]any{{
+			"object_url":    "s3://bucket/root/CONFIG/a.bin",
+			"provider":      "s3",
+			"bucket":        "bucket",
+			"key":           "root/CONFIG/a.bin",
+			"path":          "CONFIG/a.bin",
+			"size_bytes":    123,
+			"etag":          "etag-1",
+			"last_modified": "2026-07-07T18:00:00Z",
+		}}})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	manager := NewManager("http://syfon", client)
+
+	items, err := manager.ListProjectBucketInventory(context.Background(), "Bearer token", "org", "proj", "CONFIG")
+	if err != nil {
+		t.Fatalf("ListProjectBucketInventory returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].ObjectURL != "s3://bucket/root/CONFIG/a.bin" || items[0].SizeBytes != 123 {
+		t.Fatalf("unexpected inventory items: %+v", items)
+	}
+}
+
 func TestBulkGetProjectRecordsByChecksumReadsResultsMap(t *testing.T) {
 	t.Helper()
 
