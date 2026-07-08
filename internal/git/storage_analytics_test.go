@@ -342,6 +342,15 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 	if backend.listProjectFileUsageByObjectIDsCalls != 1 {
 		t.Fatalf("expected exact summary to use bulk file usage lookup, got %d", backend.listProjectFileUsageByObjectIDsCalls)
 	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected exact summary to load shared project audit records once, got %d", backend.listProjectAuditRecordsCalls)
+	}
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected exact summary to join cached project records locally, got %d checksum lookup calls", backend.bulkGetProjectRecordsCalls)
+	}
+	if contains(backend.listProjectFileUsageObjectIDs, "obj-orphan") {
+		t.Fatalf("expected exact summary usage lookup to include only Git-matched records, got %+v", backend.listProjectFileUsageObjectIDs)
+	}
 	if backend.listProjectFileUsageCalls != 0 {
 		t.Fatalf("expected exact summary to skip paginated project usage lookup, got %d", backend.listProjectFileUsageCalls)
 	}
@@ -1759,11 +1768,11 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if chain.Summary.CountsByKind["syfon_missing_bucket_object"] != 1 {
 		t.Fatalf("expected validate mode to report missing Syfon bucket object, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["git_syfon_metadata_mismatch"]; got != 1 {
-		t.Fatalf("expected one LIST-derived metadata mismatch, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
+		t.Fatalf("expected one LIST-derived broken bucket mapping, got summary %+v", chain.Summary)
 	}
 	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
-	assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/mismatch.txt")
+	assertHasChainFinding(t, chain.Findings, "syfon_broken_bucket_mapping", "data/mismatch.txt")
 	assertHasChainFinding(t, chain.Findings, "syfon_missing_bucket_object", "s3://bucket/syfon-only.txt")
 }
 
@@ -1829,12 +1838,146 @@ func TestBuildStorageChainAuditMetadataModeUsesMetadataValidation(t *testing.T) 
 	}
 }
 
-func TestExpectedStorageObjectNameForListValidationSkipsContentAddressedKeys(t *testing.T) {
-	if got := expectedStorageObjectNameForListValidation("s3://cbds/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/ec4b068cb42b52449dd44052c3bfb2a459b00336a9cd42cd29c22ca1d1b26cb0", "CONFIG/cbds-BForePC.json"); got != "" {
-		t.Fatalf("expected content-addressed storage key to skip name validation, got %q", got)
+func TestExpectedStorageObjectNameForListValidationUsesRecordNameForContentAddressedKeys(t *testing.T) {
+	if got := expectedStorageObjectNameForListValidation("s3://cbds/0b76f9ee-3c82-58e5-8ae2-47addb5d6d79/ec4b068cb42b52449dd44052c3bfb2a459b00336a9cd42cd29c22ca1d1b26cb0", "CONFIG/cbds-BForePC.json"); got != "cbds-BForePC.json" {
+		t.Fatalf("expected content-addressed storage key to validate basename, got %q", got)
 	}
 	if got := expectedStorageObjectNameForListValidation("s3://bucket/path/cbds-BForePC.json", "CONFIG/cbds-BForePC.json"); got != "cbds-BForePC.json" {
 		t.Fatalf("expected filename-backed storage key to validate basename, got %q", got)
+	}
+}
+
+func TestBuildStorageChainAuditIgnoresOneByteListSizeDrift(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 44),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Name: "a.txt", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 44, AccessURLs: []string{"s3://bucket/data/a.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/a.txt", Bucket: "bucket", Key: "data/a.txt", Path: "data/a.txt", SizeBytes: 43},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		ValidationMode:      StorageChainValidationModeList,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if got := chain.Summary.CountsByKind["git_syfon_metadata_mismatch"]; got != 0 {
+		t.Fatalf("expected one-byte size drift to be ignored, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected one-byte size drift to count as complete, got summary %+v", chain.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditSuggestsFixForLargeSizeDrift(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 44),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Name: "a.txt", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 44, AccessURLs: []string{"s3://bucket/data/a.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/a.txt", Bucket: "bucket", Key: "data/a.txt", Path: "data/a.txt", SizeBytes: 40},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		ValidationMode:      StorageChainValidationModeList,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	finding := assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/a.txt")
+	if !strings.Contains(finding.SuggestedFix, "Syfon/Git size is 44 B, bucket inventory reports 40 B") {
+		t.Fatalf("expected size-drift suggested fix, got %+v", finding)
+	}
+	if finding.SuggestedAction != "" {
+		t.Fatalf("did not expect fake suggested action for size drift, got %+v", finding)
+	}
+}
+
+func TestBuildStorageChainAuditSuggestsRealAccessURLRepairForNameMismatch(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/right.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-a",
+				Name:         "right.txt",
+				Checksum:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Organization: "org",
+				Project:      "proj",
+				Size:         100,
+				AccessURLs:   []string{"s3://bucket/data/wrong.txt", "s3://bucket/data/right.txt"},
+				AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+					{AccessID: "bad", Type: "s3", URL: "s3://bucket/data/wrong.txt"},
+					{AccessID: "good", Type: "s3", URL: "s3://bucket/data/right.txt"},
+				},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/wrong.txt", Bucket: "bucket", Key: "data/wrong.txt", Path: "data/wrong.txt", SizeBytes: 100},
+			{ObjectURL: "s3://bucket/data/right.txt", Bucket: "bucket", Key: "data/right.txt", Path: "data/right.txt", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		ValidationMode:      StorageChainValidationModeList,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	finding := assertHasChainFinding(t, chain.Findings, "syfon_broken_bucket_mapping", "data/right.txt")
+	if finding.SuggestedAction != storageActionRemoveBrokenAccessURLs {
+		t.Fatalf("expected name mismatch to suggest real access URL repair, got %+v", finding)
+	}
+	if !contains(finding.AvailableActions, storageActionRemoveBrokenAccessURLs) {
+		t.Fatalf("expected suggested action to be advertised, got %+v", finding.AvailableActions)
+	}
+	if !strings.Contains(finding.SuggestedFix, `Syfon name is "right.txt", bucket key basename is "wrong.txt"`) {
+		t.Fatalf("expected name mismatch suggested fix, got %+v", finding)
+	}
+
+	applyResponse, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", nil, nil, []GitStorageCleanupApplyFinding{{
+		Kind:             finding.Kind,
+		NormalizedPath:   finding.NormalizedPath,
+		ObjectIDs:        finding.ObjectIDs,
+		Records:          finding.Records,
+		AccessURLs:       finding.AccessURLs,
+		AvailableActions: finding.AvailableActions,
+		SuggestedAction:  finding.SuggestedAction,
+	}}, false, false, false, false, false)
+	if err != nil {
+		t.Fatalf("apply suggested repair: %v", err)
+	}
+	if len(applyResponse.UpdatedRecordIDs) != 1 || applyResponse.UpdatedRecordIDs[0] != "obj-a" {
+		t.Fatalf("expected access method update, got %+v", applyResponse)
+	}
+	methods := backend.updatedAccessMethods["obj-a"]
+	if len(methods) != 1 || methods[0].URL != "s3://bucket/data/right.txt" {
+		t.Fatalf("expected broken access URL removed through Syfon update, got %+v", methods)
 	}
 }
 
@@ -1876,6 +2019,125 @@ func TestBuildStorageChainAuditCachesProjectChainInputs(t *testing.T) {
 	}
 	if backend.listProjectBucketObjectsCalls != 1 {
 		t.Fatalf("expected cached project bucket inventory, got %d calls", backend.listProjectBucketObjectsCalls)
+	}
+}
+
+func TestStorageFolderExactReusesAuditProjectRecordCache(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100},
+		},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{
+			"obj-present": {ObjectID: "obj-present", DownloadCount: 3},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly}); err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	summary, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	if err != nil {
+		t.Fatalf("build exact storage summary: %v", err)
+	}
+	if summary.RecordCount != 1 || summary.DownloadCount != 3 {
+		t.Fatalf("expected exact summary to join cached record and usage, got %+v", summary)
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected audit and exact summary to share one project record enumeration, got %d", backend.listProjectAuditRecordsCalls)
+	}
+	if backend.getProjectMetricsSummaryCalls != 2 {
+		t.Fatalf("expected one cheap metrics validation per request, got %d", backend.getProjectMetricsSummaryCalls)
+	}
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected exact summary to avoid checksum bulk record lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	}
+}
+
+func TestStorageFolderExactWarmsAuditProjectRecordCache(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	if _, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash); err != nil {
+		t.Fatalf("build exact storage summary: %v", err)
+	}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly}); err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected exact summary and audit to share one project record enumeration, got %d", backend.listProjectAuditRecordsCalls)
+	}
+	if backend.getProjectMetricsSummaryCalls != 2 {
+		t.Fatalf("expected one cheap metrics validation per request, got %d", backend.getProjectMetricsSummaryCalls)
+	}
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected exact summary to avoid checksum bulk record lookup, got %d", backend.bulkGetProjectRecordsCalls)
+	}
+}
+
+func TestStorageFolderExactAndAuditCoalesceProjectRecordRefresh(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		listProjectAuditRecordsDelay: 50 * time.Millisecond,
+		projectMetricsSummary: &gintegrationsyfon.ProjectMetricsSummary{
+			RecordCount:             1,
+			RecordLatestUpdatedTime: "2026-07-01T00:00:00Z",
+		},
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	errs := make(chan error, 2)
+
+	go func() {
+		_, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+		errs <- err
+	}()
+	go func() {
+		_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly})
+		errs <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("expected concurrent exact summary and audit to succeed, got %v", err)
+		}
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected concurrent exact summary and audit to coalesce one project record refresh, got %d", backend.listProjectAuditRecordsCalls)
+	}
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected exact summary to avoid checksum bulk record lookup, got %d", backend.bulkGetProjectRecordsCalls)
 	}
 }
 
@@ -2019,8 +2281,8 @@ func TestStorageChildrenSkipsSummaryJoinUsageWork(t *testing.T) {
 			t.Fatalf("expected concurrent storage analytics request to succeed, got %v", err)
 		}
 	}
-	if backend.bulkGetProjectRecordsCalls != 2 {
-		t.Fatalf("expected summary and page-scoped children checksum lookups, got %d", backend.bulkGetProjectRecordsCalls)
+	if backend.bulkGetProjectRecordsCalls != 1 {
+		t.Fatalf("expected only page-scoped children to use checksum lookup, got %d", backend.bulkGetProjectRecordsCalls)
 	}
 	if backend.listProjectFileUsageCalls != 0 {
 		t.Fatalf("expected paginated usage lookup to remain unused, got %d", backend.listProjectFileUsageCalls)
@@ -2086,7 +2348,7 @@ func TestListProjectFileUsageByObjectIDsFallsBackWhenBulkEndpointMissing(t *test
 	}
 }
 
-func TestLoadProjectJoinCacheDeduplicatesChecksums(t *testing.T) {
+func TestLoadProjectJoinCacheFiltersSharedRecordsByDeduplicatedGitChecksums(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 		"data/b.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
@@ -2094,14 +2356,18 @@ func TestLoadProjectJoinCacheDeduplicatesChecksums(t *testing.T) {
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
 			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/a"}},
+			{ObjectID: "obj-orphan", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/orphan"}},
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
 	if _, err := service.BuildStorageSummary(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash); err != nil {
 		t.Fatalf("build storage summary: %v", err)
 	}
-	if len(backend.bulkChecksums) != 1 {
-		t.Fatalf("expected duplicate file checksums to be deduplicated before backend lookup, got %+v", backend.bulkChecksums)
+	if backend.bulkGetProjectRecordsCalls != 0 {
+		t.Fatalf("expected exact summary to avoid checksum lookup, got %d calls", backend.bulkGetProjectRecordsCalls)
+	}
+	if len(backend.listProjectFileUsageObjectIDs) != 1 || backend.listProjectFileUsageObjectIDs[0] != "obj-a" {
+		t.Fatalf("expected duplicate Git checksums to request one matched object usage row, got %+v", backend.listProjectFileUsageObjectIDs)
 	}
 }
 
@@ -2435,16 +2701,17 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
-		t.Fatalf("expected mapped bucket match to surface stale access URL repair, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
+		t.Fatalf("expected mapped bucket match to suppress stale raw URL misclassification, got %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 0 {
-		t.Fatalf("expected stale access URL repair to block clean-chain count, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected mapped bucket match to preserve clean-chain count, got %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
-	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "data/slide.ome.tiff")
-	if finding.DefaultAction != storageActionRemoveBrokenAccessURLs {
-		t.Fatalf("expected stale URL finding to default to access method repair, got %+v", finding)
+	for _, finding := range findings {
+		if finding.NormalizedPath == "data/slide.ome.tiff" {
+			t.Fatalf("did not expect stale raw URL to produce a chain finding once mapped object exists: %+v", finding)
+		}
 	}
 	if len(backend.probeItems) != 1 {
 		t.Fatalf("expected only the canonical scoped probe, got %+v", backend.probeItems)
@@ -2521,13 +2788,14 @@ func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectSc
 	if got := chain.Summary.CountsByKind["syfon_missing_bucket_object"]; got != 0 {
 		t.Fatalf("expected stale EllrottLab URL to be canonicalized into the audit project bucket, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
-		t.Fatalf("expected current project bucket object to surface stale access URL repair, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected current project bucket object to complete the chain, got summary %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "gdc_mirror", "gdc_mirror", chain)
-	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "data/file.bin")
-	if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
-		t.Fatalf("did not expect stale EllrottLab bucket to appear as resolved target: %+v", finding)
+	for _, finding := range findings {
+		if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
+			t.Fatalf("did not expect stale EllrottLab bucket to appear in findings: %+v", finding)
+		}
 	}
 }
 
@@ -2798,7 +3066,7 @@ func TestBuildStorageChainAuditFlagsExactPathMismatchWhenHashExistsElsewhereInBu
 	assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "CONFIG/cbds-BForePC.json")
 }
 
-func TestClassifyStorageFindingSurfacesStaleRawURLWhenScopedProbeMatches(t *testing.T) {
+func TestClassifyStorageFindingSuppressesRawURLFailuresWhenScopedProbeMatches(t *testing.T) {
 	record := projectRecordState{
 		ProjectRecord: gintegrationsyfon.ProjectRecord{
 			ObjectID:   "obj-a",
@@ -2829,19 +3097,12 @@ func TestClassifyStorageFindingSurfacesStaleRawURLWhenScopedProbeMatches(t *test
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
-		t.Fatalf("expected scoped matched probe to surface repairable stale URL, got %s", got)
-	}
-	repairRecord := repairableBrokenAccessRecord(record)
-	if len(repairRecord.AccessProbes) != 2 {
-		t.Fatalf("expected stale raw and scoped replacement probes, got %+v", repairRecord.AccessProbes)
-	}
-	if repairRecord.AccessProbes[0].ErrorKind != "stale_scope_mapping" || repairRecord.AccessProbes[1].ObjectURL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
-		t.Fatalf("unexpected repair probes: %+v", repairRecord.AccessProbes)
+	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
+		t.Fatalf("expected scoped matched probe to suppress raw URL credential miss, got %s", got)
 	}
 }
 
-func TestClassifyStorageFindingSurfacesRawURLMismatchWhenScopedProbeMatches(t *testing.T) {
+func TestClassifyStorageFindingSuppressesRawURLMismatchWhenScopedProbeMatches(t *testing.T) {
 	record := projectRecordState{
 		ProjectRecord: gintegrationsyfon.ProjectRecord{
 			ObjectID:   "obj-a",
@@ -2872,8 +3133,8 @@ func TestClassifyStorageFindingSurfacesRawURLMismatchWhenScopedProbeMatches(t *t
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
-		t.Fatalf("expected scoped matched probe to surface repairable stale URL, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
+		t.Fatalf("expected scoped matched probe to suppress raw URL mismatch, got %s", got)
 	}
 }
 
@@ -2920,42 +3181,15 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 		t.Fatalf("expected repairable broken access method finding, got %s", got)
 	}
 	broken := repairableBrokenAccessRecord(record)
-	if len(broken.AccessProbes) != 3 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" || broken.AccessProbes[1].ErrorKind != "stale_scope_mapping" {
-		t.Fatalf("expected retired, stale, and replacement probes in repair record, got %+v", broken.AccessProbes)
+	if len(broken.AccessProbes) != 1 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" {
+		t.Fatalf("expected only broken access probe in repair record, got %+v", broken.AccessProbes)
 	}
 	remaining, shouldDelete, ok := repairBrokenBucketMappingRecord(broken)
 	if !ok || shouldDelete {
 		t.Fatalf("expected repair update, got ok=%v shouldDelete=%v remaining=%+v", ok, shouldDelete, remaining)
 	}
-	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
-		t.Fatalf("expected working access method to be replaced with scoped URL, got %+v", remaining)
-	}
-}
-
-func TestRemainingAccessMethodsReplacesStaleScopeMapping(t *testing.T) {
-	record := GitStorageCleanupRecordAudit{
-		ObjectID:      "obj-a",
-		AccessURLs:    []string{"s3://bforepc-prod/JHU/slide.ome.tiff"},
-		AccessMethods: []GitStorageCleanupAccessMethod{{AccessID: "s3", Type: "s3", URL: "s3://bforepc-prod/JHU/slide.ome.tiff"}},
-		AccessProbes: []GitStorageCleanupAccessProbe{
-			{
-				URL:       "s3://bforepc-prod/JHU/slide.ome.tiff",
-				Status:    "error",
-				ErrorKind: "stale_scope_mapping",
-			},
-			{
-				URL:              "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
-				Bucket:           "bforepc",
-				Key:              "bforepc-prod/JHU/slide.ome.tiff",
-				Status:           "present",
-				ValidationStatus: "matched",
-			},
-		},
-	}
-
-	remaining := remainingAccessMethodsAfterBrokenRemoval(record)
-	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
-		t.Fatalf("expected stale URL replaced with scoped URL, got %+v", remaining)
+	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc-prod/JHU/slide.ome.tiff" {
+		t.Fatalf("expected working access method to remain, got %+v", remaining)
 	}
 }
 

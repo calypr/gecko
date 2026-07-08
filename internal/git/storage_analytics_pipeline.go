@@ -355,6 +355,7 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecordSet(ctx cont
 }
 
 func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
+	start := time.Now()
 	cacheKey := service.projectChainInputCacheKey(organization, project)
 	summary, err := service.storage.GetProjectMetricsSummary(ctx, authorizationHeader, organization, project)
 	if err != nil {
@@ -366,6 +367,7 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx contex
 		cached, ok := service.projectAuditCache[cacheKey]
 		service.chainInputMu.RUnlock()
 		if ok && cached.validator == validator && time.Since(cached.cachedAt) < chainProjectRecordCacheMaxAge {
+			log.Printf("syfon_project_record_cache_hit org=%s project=%s record_count=%d age_ms=%d duration_ms=%d", organization, project, len(cached.records), time.Since(cached.cachedAt).Milliseconds(), time.Since(start).Milliseconds())
 			return cached.records, nil
 		}
 
@@ -373,6 +375,7 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx contex
 		service.chainInputMu.Lock()
 		if cached, ok := service.projectAuditCache[cacheKey]; ok && cached.validator == validator && time.Since(cached.cachedAt) < chainProjectRecordCacheMaxAge {
 			service.chainInputMu.Unlock()
+			log.Printf("syfon_project_record_cache_hit org=%s project=%s record_count=%d age_ms=%d duration_ms=%d", organization, project, len(cached.records), time.Since(cached.cachedAt).Milliseconds(), time.Since(start).Milliseconds())
 			return cached.records, nil
 		}
 		if inflight, ok := service.projectAuditWork[workKey]; ok {
@@ -381,6 +384,7 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx contex
 			if inflight.err != nil {
 				return nil, inflight.err
 			}
+			log.Printf("syfon_project_record_cache_wait org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(inflight.records), time.Since(start).Milliseconds())
 			return inflight.records, nil
 		}
 		inflight := &inflightProjectAuditRecordState{
@@ -389,6 +393,7 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx contex
 		}
 		service.projectAuditWork[workKey] = inflight
 		service.chainInputMu.Unlock()
+		log.Printf("syfon_project_record_cache_refresh org=%s project=%s validator_count=%d validator_latest=%q validator_revision=%q", organization, project, validator.RecordCount, validator.RecordLatestUpdatedTime, validator.RecordRevision)
 		defer func() {
 			service.chainInputMu.Lock()
 			delete(service.projectAuditWork, workKey)
@@ -410,12 +415,14 @@ func (service *StorageAnalyticsService) loadCachedProjectAuditRecords(ctx contex
 		}
 		service.chainInputMu.Unlock()
 		inflight.records = copiedRecords
+		log.Printf("syfon_project_record_cache_refreshed org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(copiedRecords), time.Since(start).Milliseconds())
 		return copiedRecords, nil
 	}
 	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project, "")
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project audit records: %w", err)
 	}
+	log.Printf("syfon_project_record_cache_uncached org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(projectRecords), time.Since(start).Milliseconds())
 	return projectRecords, nil
 }
 
@@ -799,7 +806,7 @@ func projectInventoryBuckets(bucketObjectsByURL map[string]gintegrationsyfon.Pro
 
 func inventoryPresentProbe(record projectRecordState, objectURL string, expectedName string, item gintegrationsyfon.ProjectBucketObject) gintegrationsyfon.BulkStorageProbeResult {
 	size := item.SizeBytes
-	sizeMatch := item.SizeBytes == record.Size
+	sizeMatch := storageSizesMatchForAudit(record.Size, item.SizeBytes)
 	nameMatch := true
 	if expectedName != "" {
 		nameMatch = path.Base(strings.Trim(strings.TrimSpace(item.Key), "/")) == expectedName

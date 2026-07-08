@@ -428,6 +428,8 @@ type GitStorageChainFinding struct {
 	RecordCount       int                            `json:"record_count"`
 	SizeBytes         int64                          `json:"size_bytes,omitempty"`
 	RecommendedAction string                         `json:"recommended_action"`
+	SuggestedFix      string                         `json:"suggested_fix,omitempty"`
+	SuggestedAction   string                         `json:"suggested_action,omitempty"`
 	Actionability     string                         `json:"actionability,omitempty"`
 	AvailableActions  []string                       `json:"available_actions,omitempty"`
 	DefaultAction     string                         `json:"default_action,omitempty"`
@@ -550,6 +552,7 @@ type GitStorageCleanupApplyFinding struct {
 	AccessURLs       []string                       `json:"access_urls,omitempty"`
 	AvailableActions []string                       `json:"available_actions,omitempty"`
 	DefaultAction    string                         `json:"default_action,omitempty"`
+	SuggestedAction  string                         `json:"suggested_action,omitempty"`
 	Evidence         *GitAuditEvidence              `json:"evidence,omitempty"`
 }
 

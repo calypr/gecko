@@ -354,6 +354,7 @@ func (handler *Handler) handleGitProjectStorageCleanupApplyPOST(ctx fiber.Ctx) e
 		requestBody.Findings[i].AccessURLs = normalizeAnalyticsPathList(requestBody.Findings[i].AccessURLs)
 		requestBody.Findings[i].AvailableActions = normalizeStringList(requestBody.Findings[i].AvailableActions)
 		requestBody.Findings[i].DefaultAction = strings.TrimSpace(requestBody.Findings[i].DefaultAction)
+		requestBody.Findings[i].SuggestedAction = strings.TrimSpace(requestBody.Findings[i].SuggestedAction)
 		if requestBody.Findings[i].Evidence != nil {
 			requestBody.Findings[i].Evidence.ObjectIDs = normalizeStringList(requestBody.Findings[i].Evidence.ObjectIDs)
 			requestBody.Findings[i].Evidence.AccessURLs = normalizeAnalyticsPathList(requestBody.Findings[i].Evidence.AccessURLs)

@@ -60,6 +60,7 @@ func storageRepairPolicyForKind(kind string) storageRepairPolicy {
 		return storageRepairPolicy{
 			actionability: storageActionabilityManualChoice,
 			actions: []string{
+				storageActionRemoveBrokenAccessURLs,
 				storageActionDeleteSyfonRecord,
 				storageActionDeleteBucketObject,
 				storageActionDeleteBoth,
@@ -611,6 +612,9 @@ func resolveStorageCleanupApplyAction(finding GitStorageCleanupApplyFinding, act
 	}
 	action := cleanupActionForApplyFinding(actionSelection, finding)
 	if action == "" {
+		action = strings.TrimSpace(finding.SuggestedAction)
+	}
+	if action == "" {
 		action = legacyDefaultStorageCleanupAction(kind, deleteRepoOrphans, deleteStaleDuplicates, deleteBucketOnlyObjects, repairBrokenBucketMappings)
 	}
 	if action == "" {
@@ -880,7 +884,10 @@ func recordStatusMeansBrokenAccess(status string) bool {
 
 func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
 	switch strings.TrimSpace(probe.ErrorKind) {
-	case "missing_access_url", "credential_missing", "stale_scope_mapping":
+	case "missing_access_url", "credential_missing":
+		return true
+	}
+	if accessProbeHasMismatch(probe, "name_mismatch") {
 		return true
 	}
 	switch strings.TrimSpace(probe.Status) {
@@ -956,6 +963,7 @@ func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx conte
 	}
 	if len(plan.UpdateAccessMethods) > 0 || len(toDelete) > 0 {
 		service.evictProjectJoinCache(organization, project)
+		service.evictProjectAuditRecordCache(organization, project)
 	}
 	for _, objectID := range toDelete {
 		success := true
@@ -1117,44 +1125,26 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 		service.projectJoinMu.Unlock()
 	}()
 
-	checksums := make([]string, 0, len(inventory))
-	seenChecksums := make(map[string]struct{}, len(inventory))
-	for _, item := range inventory {
-		checksum := strings.TrimSpace(item.Checksum)
-		if checksum == "" {
-			continue
-		}
-		if _, ok := seenChecksums[checksum]; ok {
-			continue
-		}
-		seenChecksums[checksum] = struct{}{}
-		checksums = append(checksums, checksum)
-	}
-	recordsByChecksumRaw, err := service.storage.BulkGetProjectRecordsByChecksum(ctx, authorizationHeader, organization, project, checksums)
+	recordStart := time.Now()
+	projectRecords, err := service.loadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
 	if err != nil {
-		inflight.err = fmt.Errorf("lookup syfon project records by checksum: %w", err)
+		inflight.err = err
 		return nil, nil, inflight.err
 	}
-	objectIDs := projectRecordObjectIDs(recordsByChecksumRaw)
+	checksums := inventoryChecksumSet(inventory)
+	matchedRecords := filterProjectRecordsByChecksum(projectRecords, checksums)
+	log.Printf("storage_folder_exact_syfon_local_join org=%s project=%s git_checksums=%d project_records=%d matched_records=%d duration_ms=%d", organization, project, len(checksums), len(projectRecords), len(matchedRecords), time.Since(recordStart).Milliseconds())
+
+	usageStart := time.Now()
+	objectIDs := projectRecordObjectIDs(matchedRecords)
 	usageByObjectID, err := service.listProjectFileUsageByObjectIDs(ctx, authorizationHeader, organization, project, objectIDs, cleanupInactiveDays)
 	if err != nil {
 		inflight.err = fmt.Errorf("list syfon project file usage: %w", err)
 		return nil, nil, inflight.err
 	}
-	recordsByChecksum := make(map[string][]projectRecordState, len(recordsByChecksumRaw))
-	for _, records := range recordsByChecksumRaw {
-		for _, record := range records {
-			normalizedChecksum := normalizeAnalyticsChecksum(record.Checksum)
-			if normalizedChecksum == "" {
-				continue
-			}
-			record.Checksum = normalizedChecksum
-			recordsByChecksum[normalizedChecksum] = append(recordsByChecksum[normalizedChecksum], projectRecordState{
-				ProjectRecord: record,
-				Usage:         usageByObjectID[record.ObjectID],
-			})
-		}
-	}
+	log.Printf("storage_folder_exact_bulk_usage_lookup org=%s project=%s object_ids=%d usage_rows=%d duration_ms=%d", organization, project, len(objectIDs), len(usageByObjectID), time.Since(usageStart).Milliseconds())
+
+	recordsByChecksum := buildProjectJoinRecordsByChecksum(matchedRecords, usageByObjectID)
 	service.projectJoinMu.Lock()
 	service.projectJoinCache[cacheKey] = cachedProjectJoinState{
 		expiresAt:         time.Now().Add(projectJoinCacheTTL),
@@ -1167,14 +1157,56 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 	return recordsByChecksum, usageByObjectID, nil
 }
 
-func projectRecordObjectIDs(recordsByChecksum map[string][]gintegrationsyfon.ProjectRecord) []string {
-	objectIDs := make([]string, 0)
-	for _, records := range recordsByChecksum {
-		for _, record := range records {
-			objectIDs = append(objectIDs, record.ObjectID)
+func inventoryChecksumSet(inventory []RepoInventoryFile) map[string]struct{} {
+	checksums := make(map[string]struct{}, len(inventory))
+	for _, item := range inventory {
+		checksum := normalizeAnalyticsChecksum(item.Checksum)
+		if checksum == "" {
+			continue
 		}
+		checksums[checksum] = struct{}{}
+	}
+	return checksums
+}
+
+func filterProjectRecordsByChecksum(records []gintegrationsyfon.ProjectRecord, checksums map[string]struct{}) []gintegrationsyfon.ProjectRecord {
+	out := make([]gintegrationsyfon.ProjectRecord, 0)
+	for _, record := range records {
+		normalizedChecksum := normalizeAnalyticsChecksum(record.Checksum)
+		if normalizedChecksum == "" {
+			continue
+		}
+		if _, ok := checksums[normalizedChecksum]; !ok {
+			continue
+		}
+		record.Checksum = normalizedChecksum
+		out = append(out, record)
+	}
+	return out
+}
+
+func projectRecordObjectIDs(records []gintegrationsyfon.ProjectRecord) []string {
+	objectIDs := make([]string, 0, len(records))
+	for _, record := range records {
+		objectIDs = append(objectIDs, record.ObjectID)
 	}
 	return uniqueStrings(objectIDs)
+}
+
+func buildProjectJoinRecordsByChecksum(records []gintegrationsyfon.ProjectRecord, usageByObjectID map[string]gintegrationsyfon.FileUsage) map[string][]projectRecordState {
+	recordsByChecksum := make(map[string][]projectRecordState)
+	for _, record := range records {
+		normalizedChecksum := normalizeAnalyticsChecksum(record.Checksum)
+		if normalizedChecksum == "" {
+			continue
+		}
+		record.Checksum = normalizedChecksum
+		recordsByChecksum[normalizedChecksum] = append(recordsByChecksum[normalizedChecksum], projectRecordState{
+			ProjectRecord: record,
+			Usage:         usageByObjectID[record.ObjectID],
+		})
+	}
+	return recordsByChecksum
 }
 
 func (service *StorageAnalyticsService) listProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error) {
@@ -1214,6 +1246,13 @@ func (service *StorageAnalyticsService) evictProjectJoinCache(organization strin
 			delete(service.projectJoinCache, key)
 		}
 	}
+}
+
+func (service *StorageAnalyticsService) evictProjectAuditRecordCache(organization string, project string) {
+	cacheKey := service.projectChainInputCacheKey(organization, project)
+	service.chainInputMu.Lock()
+	delete(service.projectAuditCache, cacheKey)
+	service.chainInputMu.Unlock()
 }
 
 func (service *StorageAnalyticsService) listProjectRecordStates(ctx context.Context, authorizationHeader string, organization string, project string, usageByObjectID map[string]gintegrationsyfon.FileUsage) (map[string][]projectRecordState, error) {
@@ -2131,11 +2170,24 @@ func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []strin
 
 func recordHasValidationMismatchProbe(record projectRecordState) bool {
 	for _, probe := range record.AccessProbes {
-		if strings.TrimSpace(probe.ValidationStatus) == "mismatched" {
+		if storageProbeValidationMismatchIsSignificant(record, probe) {
 			return true
 		}
 	}
 	return false
+}
+
+func storageProbeValidationMismatchIsSignificant(record projectRecordState, probe gintegrationsyfon.BulkStorageProbeResult) bool {
+	if strings.TrimSpace(probe.ValidationStatus) != "mismatched" {
+		return false
+	}
+	if !syfonProbeHasMismatch(probe, "size_mismatch") || len(probe.ValidationMismatches) != 1 {
+		return true
+	}
+	if probe.SizeBytes == nil {
+		return true
+	}
+	return !storageSizesMatchForAudit(record.Size, *probe.SizeBytes)
 }
 
 func recordHasMatchedCanonicalAccessProbe(record projectRecordState) bool {
@@ -2177,23 +2229,27 @@ func inventoryHasValidationMismatch(record projectRecordState, bucketObjectURLs 
 	if len(bucketObjectURLs) == 0 {
 		return false
 	}
-	checksum := normalizeAnalyticsChecksum(record.Checksum)
 	for _, objectURL := range bucketObjectURLs {
 		item, ok := bucketObjectsByURL[objectURL]
 		if !ok {
 			continue
 		}
-		if record.Size > 0 && item.SizeBytes > 0 && item.SizeBytes != record.Size {
+		if !storageSizesMatchForAudit(record.Size, item.SizeBytes) {
 			return true
-		}
-		if checksum != "" {
-			metaSHA := normalizeAnalyticsChecksum(item.MetaSHA256)
-			if metaSHA != "" && metaSHA != checksum {
-				return true
-			}
 		}
 	}
 	return false
+}
+
+func storageSizesMatchForAudit(expectedSize int64, observedSize int64) bool {
+	if expectedSize <= 0 || observedSize <= 0 {
+		return true
+	}
+	diff := expectedSize - observedSize
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= 1
 }
 
 func accessProbesForRecord(record projectRecordState) []GitStorageCleanupAccessProbe {
@@ -2363,6 +2419,12 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 	}
 	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport(kind)
 	primaryProbe := selectChainProbe(record, bucketObjectURLs)
+	suggestedFix := suggestedFixForChainFinding(kind, record)
+	suggestedAction := suggestedActionForChainFinding(kind, record)
+	if suggestedAction != "" && !contains(availableActions, suggestedAction) {
+		availableActions = append([]string(nil), availableActions...)
+		availableActions = append(availableActions, suggestedAction)
+	}
 	findings := make([]GitStorageChainFinding, 0, len(paths))
 	for _, path := range paths {
 		findings = append(findings, GitStorageChainFinding{
@@ -2382,6 +2444,8 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 			RecordCount:       1,
 			SizeBytes:         record.Size,
 			RecommendedAction: action,
+			SuggestedFix:      suggestedFix,
+			SuggestedAction:   suggestedAction,
 			Actionability:     actionability,
 			AvailableActions:  availableActions,
 			DefaultAction:     defaultAction,
@@ -2390,6 +2454,81 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 		})
 	}
 	return findings
+}
+
+func suggestedActionForChainFinding(kind string, record projectRecordState) string {
+	switch strings.TrimSpace(kind) {
+	case "git_syfon_metadata_mismatch", "syfon_broken_bucket_mapping":
+	default:
+		return ""
+	}
+	if recordHasAccessProbeMismatch(record, "name_mismatch") {
+		return storageActionRemoveBrokenAccessURLs
+	}
+	return ""
+}
+
+func suggestedFixForChainFinding(kind string, record projectRecordState) string {
+	normalizedKind := strings.TrimSpace(kind)
+	switch normalizedKind {
+	case "git_syfon_metadata_mismatch":
+	case "syfon_broken_bucket_mapping":
+		if !recordHasAccessProbeMismatch(record, "name_mismatch") {
+			return ""
+		}
+	default:
+		return ""
+	}
+	mismatches := make([]string, 0, 2)
+	if probe, ok := firstAccessProbeMismatch(record, "size_mismatch"); ok {
+		bucketSize := int64(0)
+		if probe.SizeBytes != nil {
+			bucketSize = *probe.SizeBytes
+		}
+		mismatches = append(mismatches, fmt.Sprintf("Syfon/Git size is %s, bucket inventory reports %s", formatAuditSize(record.Size), formatAuditSize(bucketSize)))
+	}
+	if probe, ok := firstAccessProbeMismatch(record, "name_mismatch"); ok {
+		expectedName := path.Base(strings.Trim(strings.TrimSpace(record.Name), "/"))
+		observedName := path.Base(strings.Trim(strings.TrimSpace(probe.Key), "/"))
+		mismatches = append(mismatches, fmt.Sprintf("Syfon name is %q, bucket key basename is %q", expectedName, observedName))
+	}
+	if len(mismatches) == 0 {
+		return "Bucket object exists, but its storage evidence does not match the Syfon/Git record. Review the record and bucket object before applying a destructive fix."
+	}
+	if recordHasAccessProbeMismatch(record, "name_mismatch") {
+		return strings.Join(mismatches, ". ") + ". Remove the broken access URL if another access URL works; otherwise delete and recreate or correct the Syfon record."
+	}
+	return strings.Join(mismatches, ". ") + ". Update the stale Syfon metadata or delete and recreate the record after confirming the bucket object is authoritative."
+}
+
+func recordHasAccessProbeMismatch(record projectRecordState, mismatch string) bool {
+	_, ok := firstAccessProbeMismatch(record, mismatch)
+	return ok
+}
+
+func firstAccessProbeMismatch(record projectRecordState, mismatch string) (GitStorageCleanupAccessProbe, bool) {
+	for _, probe := range accessProbesForRecord(record) {
+		if accessProbeHasMismatch(probe, mismatch) {
+			return probe, true
+		}
+	}
+	return GitStorageCleanupAccessProbe{}, false
+}
+
+func accessProbeHasMismatch(probe GitStorageCleanupAccessProbe, mismatch string) bool {
+	for _, item := range probe.ValidationMismatches {
+		if strings.TrimSpace(item) == mismatch {
+			return true
+		}
+	}
+	return false
+}
+
+func formatAuditSize(size int64) string {
+	if size <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d B", size)
 }
 
 type chainProbeSelection struct {
@@ -2611,43 +2750,12 @@ func repairableBrokenAccessProbes(record projectRecordState) []gintegrationsyfon
 			continue
 		}
 		if mappedURL := strings.TrimSpace(record.CanonicalAccessURLByRaw[rawURL]); mappedURL != "" && mappedURL != rawURL && accessURLHasPresentProbe(mappedURL, probesByURL) {
-			out = append(out, staleScopeMappingProbe(rawURL, mappedURL))
-			out = append(out, presentAccessProbes(mappedURL, probesByURL)...)
 			continue
 		}
 		for _, probe := range probesByURL[rawURL] {
 			if syfonProbeIsBrokenAccess(probe) {
 				out = append(out, probe)
 			}
-		}
-	}
-	return out
-}
-
-func staleScopeMappingProbe(rawURL string, mappedURL string) gintegrationsyfon.BulkStorageProbeResult {
-	bucket, key, _ := parseStorageURL(mappedURL)
-	return gintegrationsyfon.BulkStorageProbeResult{
-		ObjectURL:        strings.TrimSpace(rawURL),
-		Operation:        StorageChainValidationModeList,
-		Bucket:           bucket,
-		Key:              key,
-		Status:           "error",
-		Exists:           false,
-		ErrorKind:        "stale_scope_mapping",
-		Error:            fmt.Sprintf("access URL should be updated to current project scope URL %q", strings.TrimSpace(mappedURL)),
-		ValidationStatus: "unverifiable",
-	}
-}
-
-func presentAccessProbes(accessURL string, probesByURL map[string][]gintegrationsyfon.BulkStorageProbeResult) []gintegrationsyfon.BulkStorageProbeResult {
-	out := make([]gintegrationsyfon.BulkStorageProbeResult, 0)
-	for _, probe := range probesByURL[strings.TrimSpace(accessURL)] {
-		if strings.TrimSpace(probe.Status) != "present" {
-			continue
-		}
-		switch strings.TrimSpace(probe.ValidationStatus) {
-		case "", "not_requested", "matched":
-			out = append(out, probe)
 		}
 	}
 	return out
@@ -2675,12 +2783,24 @@ func syfonProbeObjectURL(probe gintegrationsyfon.BulkStorageProbeResult) string 
 
 func syfonProbeIsBrokenAccess(probe gintegrationsyfon.BulkStorageProbeResult) bool {
 	switch strings.TrimSpace(probe.ErrorKind) {
-	case "missing_access_url", "credential_missing", "stale_scope_mapping":
+	case "missing_access_url", "credential_missing":
+		return true
+	}
+	if syfonProbeHasMismatch(probe, "name_mismatch") {
 		return true
 	}
 	switch strings.TrimSpace(probe.Status) {
 	case "missing", "forbidden", "unsupported", "invalid", "error":
 		return true
+	}
+	return false
+}
+
+func syfonProbeHasMismatch(probe gintegrationsyfon.BulkStorageProbeResult, mismatch string) bool {
+	for _, item := range probe.ValidationMismatches {
+		if strings.TrimSpace(item) == mismatch {
+			return true
+		}
 	}
 	return false
 }
@@ -2706,7 +2826,7 @@ func classifyRawAccessURLFindings(record projectRecordState) storageFindingKind 
 		hasBrokenBucketMapping := false
 		hasProbeError := false
 		for _, probe := range probes {
-			if strings.TrimSpace(probe.ValidationStatus) == "mismatched" {
+			if storageProbeValidationMismatchIsSignificant(record, probe) {
 				return storageFindingValidationMismatch
 			}
 			if strings.TrimSpace(probe.Status) == "present" {
@@ -3210,28 +3330,7 @@ func expectedStorageObjectNameForListValidation(objectURL string, recordName str
 	if expectedName == "." || expectedName == "/" || expectedName == "" {
 		return ""
 	}
-	_, key, ok := parseStorageURL(objectURL)
-	if !ok {
-		return expectedName
-	}
-	keyBase := path.Base(strings.Trim(key, "/"))
-	if isContentAddressedStorageBasename(keyBase) {
-		return ""
-	}
 	return expectedName
-}
-
-func isContentAddressedStorageBasename(value string) bool {
-	trimmed := strings.ToLower(strings.TrimSpace(value))
-	if len(trimmed) < 32 {
-		return false
-	}
-	for _, r := range trimmed {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func sortStorageAggregates(items []storageAggregate, sortBy string, sortOrder string) {
