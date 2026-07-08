@@ -609,7 +609,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.ForceAuditRefresh, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.ForceAuditRefresh, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if storageView != nil {
 		options.Timings.RecordMemory(
@@ -2175,7 +2175,7 @@ func cleanupSelectionCandidatesForRecords(checksum string, displayPath string, m
 		candidates = append(candidates, match.ObjectID)
 		candidates = append(candidates, match.AccessURLs...)
 		candidates = append(candidates, match.CanonicalAccessURLs...)
-		candidates = append(candidates, accessURLsForStorage(match)...)
+		candidates = append(candidates, recordStorageCandidateURLs(match)...)
 		for _, probe := range match.AccessProbes {
 			candidates = append(candidates, probe.ObjectURL)
 			candidates = append(candidates, canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL))
@@ -2385,77 +2385,69 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if recordHasBrokenAccess(record) {
 		return storageFindingBrokenAccessURL
 	}
-	bucketMatches := matchedBucketObjectURLs(record, bucketObjectsByURL)
-	if hasExactPathBucketMismatch(record, bucketMatches, bucketObjectsByURL) {
+	resolution := resolveRecordStorage(record, bucketObjectsByURL)
+	if hasExactPathBucketMismatch(record, resolution, bucketObjectsByURL) {
 		return storageFindingBrokenBucketMap
 	}
 	if len(repairableBrokenAccessProbes(record)) > 0 {
 		return storageFindingBrokenBucketMap
 	}
-	if recordHasMatchedCanonicalAccessProbe(record) {
+	if resolution.hasAcceptedCanonicalProbe {
 		return storageFindingNone
 	}
-	if inventoryHasValidationMismatch(record, bucketMatches, bucketObjectsByURL) {
+	if inventoryHasValidationMismatch(record, resolution.matchedBucketObjectURLs, bucketObjectsByURL) {
 		return storageFindingValidationMismatch
 	}
-	if recordHasValidationMismatchProbe(record) {
+	if resolution.hasValidationMismatch {
 		return storageFindingValidationMismatch
 	}
-	if len(bucketMatches) > 0 {
-		return storageFindingNone
-	}
-	if kind := classifyRawAccessURLFindings(record); kind != storageFindingNone {
-		return kind
-	}
-	if len(record.AccessProbes) == 0 {
-		if len(bucketObjectsByURL) > 0 && hasCanonicalBucketURL(record) {
+	if len(resolution.matchedBucketObjectURLs) > 0 {
+		if resolution.hasPresentRawAccessProbe && resolution.hasBrokenRawAccessProbe {
+			return storageFindingBrokenBucketMap
+		}
+		if resolution.hasPresentRawAccessProbe && resolution.hasMissingRawAccessProbe {
+			return storageFindingObjectMissing
+		}
+		if resolution.hasPresentRawAccessProbe && resolution.hasRawAccessProbeError {
 			return storageFindingProbeError
 		}
 		return storageFindingNone
 	}
-	hasPresent := false
-	hasMissing := false
-	hasBrokenBucketMapping := false
-	hasProbeError := false
-	hasBucketMatch := len(bucketMatches) > 0
-	for _, probe := range record.AccessProbes {
-		if strings.TrimSpace(probe.Status) == "present" {
-			hasPresent = true
+	if len(record.AccessProbes) == 0 {
+		if len(bucketObjectsByURL) > 0 && len(resolution.candidateURLs) > 0 {
+			return storageFindingProbeError
 		}
-		switch strings.TrimSpace(probe.ErrorKind) {
-		case "credential_missing":
-			hasBrokenBucketMapping = true
-		}
-		switch strings.TrimSpace(probe.Status) {
-		case "not_found":
-			hasMissing = true
-		case "forbidden", "unsupported", "invalid", "error":
-			hasProbeError = true
-		}
-		if strings.TrimSpace(probe.ValidationStatus) == "mismatched" {
-			return storageFindingValidationMismatch
-		}
-	}
-	if hasBucketMatch || hasPresent {
 		return storageFindingNone
 	}
-	if hasBrokenBucketMapping {
+	if resolution.hasPresentProbe {
+		if resolution.hasPresentRawAccessProbe && resolution.hasBrokenRawAccessProbe {
+			return storageFindingBrokenBucketMap
+		}
+		if resolution.hasPresentRawAccessProbe && resolution.hasMissingRawAccessProbe {
+			return storageFindingObjectMissing
+		}
+		if resolution.hasPresentRawAccessProbe && resolution.hasRawAccessProbeError {
+			return storageFindingProbeError
+		}
+		return storageFindingNone
+	}
+	if resolution.hasBrokenMappingProbe {
 		return storageFindingBrokenBucketMap
 	}
-	if hasMissing {
+	if resolution.hasMissingProbe {
 		return storageFindingObjectMissing
 	}
-	if hasProbeError {
+	if resolution.hasProbeError {
 		return storageFindingProbeError
 	}
 	return storageFindingNone
 }
 
-func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
-	if len(bucketObjectsByURL) == 0 || len(bucketMatches) > 0 {
+func hasExactPathBucketMismatch(record projectRecordState, resolution recordStorageResolution, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
+	if len(bucketObjectsByURL) == 0 || len(resolution.matchedBucketObjectURLs) > 0 {
 		return false
 	}
-	expectedBucketURLs := accessURLsForStorage(record)
+	expectedBucketURLs := resolution.candidateURLs
 	if len(expectedBucketURLs) == 0 {
 		return false
 	}
@@ -2490,15 +2482,6 @@ func hasExactPathBucketMismatch(record projectRecordState, bucketMatches []strin
 	return false
 }
 
-func recordHasValidationMismatchProbe(record projectRecordState) bool {
-	for _, probe := range record.AccessProbes {
-		if storageProbeValidationMismatchIsSignificant(record, probe) {
-			return true
-		}
-	}
-	return false
-}
-
 func storageProbeValidationMismatchIsSignificant(record projectRecordState, probe gintegrationsyfon.BulkStorageProbeResult) bool {
 	if strings.TrimSpace(probe.ValidationStatus) != "mismatched" {
 		return false
@@ -2522,41 +2505,6 @@ func storageProbeValidationMismatchIsSignificant(record projectRecordState, prob
 		return true
 	}
 	return !storageSizesMatchForAudit(record.Size, *probe.SizeBytes)
-}
-
-func recordHasMatchedCanonicalAccessProbe(record projectRecordState) bool {
-	rawURLs := make(map[string]struct{}, len(record.AccessURLs))
-	for _, accessURL := range record.AccessURLs {
-		if trimmed := strings.TrimSpace(accessURL); trimmed != "" {
-			rawURLs[trimmed] = struct{}{}
-		}
-	}
-	canonicalURLs := make(map[string]struct{}, len(record.CanonicalAccessURLs))
-	for _, accessURL := range record.CanonicalAccessURLs {
-		trimmed := strings.TrimSpace(accessURL)
-		if trimmed == "" {
-			continue
-		}
-		if _, raw := rawURLs[trimmed]; !raw {
-			canonicalURLs[trimmed] = struct{}{}
-		}
-	}
-	if len(canonicalURLs) == 0 {
-		return false
-	}
-	for _, probe := range record.AccessProbes {
-		if strings.TrimSpace(probe.Status) != "present" {
-			continue
-		}
-		if _, ok := canonicalURLs[strings.TrimSpace(probe.ObjectURL)]; !ok {
-			continue
-		}
-		switch strings.TrimSpace(probe.ValidationStatus) {
-		case "", "not_requested", "matched":
-			return true
-		}
-	}
-	return false
 }
 
 func inventoryHasValidationMismatch(record projectRecordState, bucketObjectURLs []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
@@ -2895,7 +2843,7 @@ func chainFindingError(kind string, record projectRecordState, probe GitStorageC
 
 func recordsReferenceBucketObject(matches []projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
 	for _, match := range matches {
-		if len(matchedBucketObjectURLs(match, bucketObjectsByURL)) > 0 {
+		if len(resolveRecordStorage(match, bucketObjectsByURL).matchedBucketObjectURLs) > 0 {
 			return true
 		}
 	}
@@ -2903,16 +2851,7 @@ func recordsReferenceBucketObject(matches []projectRecordState, bucketObjectsByU
 }
 
 func matchedBucketObjectURLs(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) []string {
-	if len(bucketObjectsByURL) == 0 {
-		return nil
-	}
-	matches := make([]string, 0)
-	for _, objectURL := range recordBucketURLs(record) {
-		if _, ok := bucketObjectsByURL[objectURL]; ok {
-			matches = append(matches, objectURL)
-		}
-	}
-	return uniqueStrings(matches)
+	return resolveRecordStorage(record, bucketObjectsByURL).matchedBucketObjectURLs
 }
 
 func cleanupMatchedBucketObjectURLs(matches []projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) []string {
@@ -2933,23 +2872,117 @@ func cleanupMatchedBucketObjectURLs(matches []projectRecordState, bucketObjectsB
 	return uniqueStrings(objectURLs)
 }
 
-func hasCanonicalBucketURL(record projectRecordState) bool {
-	return len(recordBucketURLs(record)) > 0
+func recordBucketURLs(record projectRecordState) []string {
+	return recordStorageCandidateURLs(record)
 }
 
-func recordBucketURLs(record projectRecordState) []string {
+func recordStorageCandidateURLs(record projectRecordState) []string {
 	out := make([]string, 0)
 	for _, probe := range record.AccessProbes {
 		if objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL); objectURL != "" {
 			out = append(out, objectURL)
 		}
 	}
-	for _, accessURL := range accessURLsForStorage(record) {
+	for _, accessURL := range rawAccessURLsForRecord(record) {
+		if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
+			out = append(out, objectURL)
+		}
+	}
+	for _, accessURL := range record.CanonicalAccessURLs {
 		if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
 			out = append(out, objectURL)
 		}
 	}
 	return uniqueStrings(out)
+}
+
+type recordStorageResolution struct {
+	candidateURLs             []string
+	matchedBucketObjectURLs   []string
+	hasPresentProbe           bool
+	hasMissingProbe           bool
+	hasBrokenMappingProbe     bool
+	hasProbeError             bool
+	hasValidationMismatch     bool
+	hasAcceptedCanonicalProbe bool
+	hasPresentRawAccessProbe  bool
+	hasMissingRawAccessProbe  bool
+	hasBrokenRawAccessProbe   bool
+	hasRawAccessProbeError    bool
+}
+
+func resolveRecordStorage(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) recordStorageResolution {
+	resolution := recordStorageResolution{
+		candidateURLs: recordStorageCandidateURLs(record),
+	}
+	rawURLs := make(map[string]struct{}, len(record.AccessURLs))
+	rawCandidateURLs := make(map[string]struct{}, len(record.AccessURLs))
+	for _, accessURL := range record.AccessURLs {
+		if trimmed := strings.TrimSpace(accessURL); trimmed != "" {
+			rawURLs[trimmed] = struct{}{}
+			if objectURL := canonicalStorageURL("", "", trimmed); objectURL != "" {
+				rawCandidateURLs[objectURL] = struct{}{}
+			}
+		}
+	}
+	canonicalURLs := make(map[string]struct{}, len(record.CanonicalAccessURLs))
+	for _, accessURL := range record.CanonicalAccessURLs {
+		trimmed := strings.TrimSpace(accessURL)
+		if trimmed == "" {
+			continue
+		}
+		if _, raw := rawURLs[trimmed]; !raw {
+			canonicalURLs[trimmed] = struct{}{}
+		}
+	}
+	for _, probe := range record.AccessProbes {
+		objectURL := syfonProbeObjectURL(probe)
+		status := strings.TrimSpace(probe.Status)
+		_, rawAccessProbe := rawCandidateURLs[objectURL]
+		if status == "present" {
+			resolution.hasPresentProbe = true
+			if rawAccessProbe {
+				resolution.hasPresentRawAccessProbe = true
+			}
+			if _, ok := canonicalURLs[objectURL]; ok {
+				switch strings.TrimSpace(probe.ValidationStatus) {
+				case "", "not_requested", "matched":
+					resolution.hasAcceptedCanonicalProbe = true
+				}
+			}
+		}
+		if storageProbeValidationMismatchIsSignificant(record, probe) {
+			resolution.hasValidationMismatch = true
+		}
+		switch strings.TrimSpace(probe.ErrorKind) {
+		case "credential_missing":
+			resolution.hasBrokenMappingProbe = true
+			if rawAccessProbe {
+				resolution.hasBrokenRawAccessProbe = true
+			}
+		}
+		switch status {
+		case "not_found":
+			resolution.hasMissingProbe = true
+			if rawAccessProbe {
+				resolution.hasMissingRawAccessProbe = true
+			}
+		case "forbidden", "unsupported", "invalid", "error":
+			resolution.hasProbeError = true
+			if rawAccessProbe {
+				resolution.hasRawAccessProbeError = true
+			}
+		}
+	}
+	if len(bucketObjectsByURL) > 0 {
+		for _, objectURL := range resolution.candidateURLs {
+			if _, ok := bucketObjectsByURL[objectURL]; ok {
+				resolution.matchedBucketObjectURLs = append(resolution.matchedBucketObjectURLs, objectURL)
+			}
+		}
+		resolution.matchedBucketObjectURLs = uniqueStrings(resolution.matchedBucketObjectURLs)
+	}
+	return resolution
 }
 
 func accessURLsForStorage(record projectRecordState) []string {
@@ -3116,59 +3149,6 @@ func syfonProbeHasMismatch(probe gintegrationsyfon.BulkStorageProbeResult, misma
 		}
 	}
 	return false
-}
-
-func classifyRawAccessURLFindings(record projectRecordState) storageFindingKind {
-	if len(record.AccessProbes) == 0 {
-		return storageFindingNone
-	}
-	if recordHasMatchedCanonicalAccessProbe(record) {
-		return storageFindingNone
-	}
-	probesByURL := make(map[string][]gintegrationsyfon.BulkStorageProbeResult, len(record.AccessProbes))
-	for _, probe := range record.AccessProbes {
-		probesByURL[strings.TrimSpace(probe.ObjectURL)] = append(probesByURL[strings.TrimSpace(probe.ObjectURL)], probe)
-	}
-	for _, accessURL := range rawAccessURLsForRecord(record) {
-		probes := probesByURL[accessURL]
-		if len(probes) == 0 {
-			continue
-		}
-		hasPresent := false
-		hasMissing := false
-		hasBrokenBucketMapping := false
-		hasProbeError := false
-		for _, probe := range probes {
-			if storageProbeValidationMismatchIsSignificant(record, probe) {
-				return storageFindingValidationMismatch
-			}
-			if strings.TrimSpace(probe.Status) == "present" {
-				hasPresent = true
-			}
-			switch strings.TrimSpace(probe.ErrorKind) {
-			case "credential_missing":
-				hasBrokenBucketMapping = true
-			}
-			switch strings.TrimSpace(probe.Status) {
-			case "not_found":
-				hasMissing = true
-			case "forbidden", "unsupported", "invalid", "error":
-				hasProbeError = true
-			}
-		}
-		if hasPresent {
-			continue
-		}
-		switch {
-		case hasBrokenBucketMapping:
-			return storageFindingBrokenBucketMap
-		case hasMissing:
-			return storageFindingObjectMissing
-		case hasProbeError:
-			return storageFindingProbeError
-		}
-	}
-	return storageFindingNone
 }
 
 func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) []string {

@@ -2846,6 +2846,82 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	}
 }
 
+func TestBuildStorageChainAuditAcceptsMappedNameAndSourcePathInventoryObjects(t *testing.T) {
+	sourceChecksum := "610cad76a473c4b0bf43f923b3bb907aac9ac2630d9c3f21aba1c531953c43e4"
+	mappedChecksum := "b71c3fcf28a6d2cf6e432b21a1734786708517f4808c22f9114abb73a60f4cc7"
+	sourcePath := "OHSU/koei_chin/visium_hd/1-R1/outs/binned_outputs/square_002um/spatial/tissue_positions.parquet"
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		sourcePath:             lfsPointer(sourceChecksum, 2048),
+		"META/Research.ndjson": lfsPointer(mappedChecksum, 4722),
+	})
+	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-source-path",
+				Name:         "tissue_positions.parquet",
+				Checksum:     sourceChecksum,
+				Organization: "HTAN_INT",
+				Project:      "BForePC",
+				Size:         2048,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{"s3://bforepc/" + sourceChecksum},
+			},
+			{
+				ObjectID:     "obj-mapped-name",
+				Name:         "ResearchSubject.ndjson",
+				Checksum:     mappedChecksum,
+				Organization: "HTAN_INT",
+				Project:      "BForePC",
+				Size:         4722,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{"s3://bforepc/" + mappedChecksum},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bforepc",
+				Organization: "HTAN_INT",
+				ProjectID:    "BForePC",
+				Path:         "s3://bforepc/bforepc-prod",
+			},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL: "s3://bforepc/bforepc-prod/" + sourcePath,
+				Bucket:    "bforepc",
+				Key:       "bforepc-prod/" + sourcePath,
+				Path:      sourcePath,
+				SizeBytes: 2048,
+			},
+			{
+				ObjectURL: "s3://bforepc/" + mappedChecksum,
+				Bucket:    "bforepc",
+				Key:       mappedChecksum,
+				Path:      mappedChecksum,
+				SizeBytes: 4722,
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 2 {
+		t.Fatalf("expected both source-path and mapped-name objects to complete chains, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
+		t.Fatalf("expected no missing bucket findings when either candidate exists, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["syfon_missing_bucket_object"]; got != 0 {
+		t.Fatalf("expected no Syfon-only missing bucket findings when either candidate exists, got summary %+v", chain.Summary)
+	}
+}
+
 func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectScopes(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/file.bin": lfsPointer("dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935", 100),
