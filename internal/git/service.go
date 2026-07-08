@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,5 +235,13 @@ func (service *GitService) RequestInstallationToken(ctx context.Context, authori
 	if service.fenceAPI == nil {
 		return "", fmt.Errorf("fence client is not initialized")
 	}
-	return service.fenceAPI.RequestInstallationToken(ctx, authorizationHeader, organization, project, identity, access)
+	started := time.Now()
+	log.Printf("INFO: github_installation_token_request_start organization=%s project=%s owner=%s repo=%s access=%s", organization, project, identity.Owner, identity.Repo, access)
+	token, err := service.fenceAPI.RequestInstallationToken(ctx, authorizationHeader, organization, project, identity, access)
+	if err != nil {
+		log.Printf("INFO: github_installation_token_request_done organization=%s project=%s owner=%s repo=%s access=%s token_received=false duration_ms=%d error=%q", organization, project, identity.Owner, identity.Repo, access, time.Since(started).Milliseconds(), err.Error())
+		return "", err
+	}
+	log.Printf("INFO: github_installation_token_request_done organization=%s project=%s owner=%s repo=%s access=%s token_received=%t token_fingerprint=%s token_length=%d duration_ms=%d", organization, project, identity.Owner, identity.Repo, access, strings.TrimSpace(token) != "", githubAccessTokenFingerprint(token), githubAccessTokenLength(token), time.Since(started).Milliseconds())
+	return token, nil
 }
