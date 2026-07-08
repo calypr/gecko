@@ -2421,7 +2421,7 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 	primaryProbe := selectChainProbe(record, bucketObjectURLs)
 	suggestedFix := suggestedFixForChainFinding(kind, record)
 	suggestedAction := suggestedActionForChainFinding(kind, record)
-	if suggestedAction != "" && !contains(availableActions, suggestedAction) {
+	if suggestedAction != "" && !stringSliceContains(availableActions, suggestedAction) {
 		availableActions = append([]string(nil), availableActions...)
 		availableActions = append(availableActions, suggestedAction)
 	}
