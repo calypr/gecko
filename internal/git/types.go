@@ -409,6 +409,9 @@ type GitStorageChainAuditRequest struct {
 	BucketPathPrefix    string `json:"bucket_path_prefix,omitempty"`
 	FindingKind         string `json:"finding_kind,omitempty"`
 	FindingLimit        int    `json:"finding_limit,omitempty"`
+	ForceAuditRefresh   bool   `json:"force_audit_refresh,omitempty"`
+	// ForceBucketInventoryRefresh is accepted as a compatibility alias for older frontend branches.
+	ForceBucketInventoryRefresh bool `json:"force_bucket_inventory_refresh,omitempty"`
 }
 
 type GitStorageChainFinding struct {
@@ -452,6 +455,11 @@ type GitStorageChainAuditSummary struct {
 	BucketSummaryMode        string         `json:"bucket_summary_mode,omitempty"`
 	BucketInventoryAvailable bool           `json:"bucket_inventory_available"`
 	BucketInventoryError     string         `json:"bucket_inventory_error,omitempty"`
+	AuditCacheHit            bool           `json:"audit_cache_hit,omitempty"`
+	AuditCachedAt            string         `json:"audit_cached_at,omitempty"`
+	AuditCacheAgeSeconds     int64          `json:"audit_cache_age_seconds,omitempty"`
+	AuditCacheSource         string         `json:"audit_cache_source,omitempty"`
+	AuditCacheError          string         `json:"audit_cache_error,omitempty"`
 }
 
 type GitStorageChainIssueGroup struct {

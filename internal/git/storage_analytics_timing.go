@@ -27,6 +27,7 @@ type StorageChainAuditOptions struct {
 	BucketPathPrefix    string
 	FindingKind         string
 	FindingLimit        int
+	ForceAuditRefresh   bool
 	Timings             *StorageChainAuditTimings
 }
 

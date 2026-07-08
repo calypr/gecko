@@ -31,6 +31,7 @@ func NewHandler(sharedHandler *shared.Handler) *Handler {
 	var storageAnalytics *git.StorageAnalyticsService
 	if sharedHandler.GitService != nil && sharedHandler.SyfonManager != nil {
 		storageAnalytics = git.NewStorageAnalyticsService(sharedHandler.SyfonManager)
+		storageAnalytics.EnableStorageChainAuditResponseCacheFromEnv()
 	}
 	return &Handler{
 		Handler:           sharedHandler,

@@ -272,7 +272,7 @@ func summarizeChainIssueGroups(findings []GitStorageChainFinding) []GitStorageCh
 }
 
 func (service *StorageAnalyticsService) loadStorageAuditBaseInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*storageAuditBaseInputs, error) {
-	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
 	if err != nil {
 		return nil, err
 	}
@@ -808,15 +808,9 @@ func inventoryPresentProbe(record projectRecordState, objectURL string, expected
 	size := item.SizeBytes
 	sizeMatch := storageSizesMatchForAudit(record.Size, item.SizeBytes)
 	nameMatch := true
-	if expectedName != "" {
-		nameMatch = path.Base(strings.Trim(strings.TrimSpace(item.Key), "/")) == expectedName
-	}
-	mismatches := make([]string, 0, 2)
+	mismatches := make([]string, 0, 1)
 	if !sizeMatch {
 		mismatches = append(mismatches, "size_mismatch")
-	}
-	if !nameMatch {
-		mismatches = append(mismatches, "name_mismatch")
 	}
 	validationStatus := "matched"
 	if len(mismatches) > 0 {
@@ -912,7 +906,7 @@ func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context
 	return view, nil
 }
 
-func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
+func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, forceRefresh bool, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
 	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &storageAuditStorageView{
 		scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
@@ -932,7 +926,14 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 		}
 		if validationMode == StorageChainValidationModeList {
 			inventoryStart := time.Now()
-			validationObjects, validationObjectsByURL, err := service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			var validationObjects []gintegrationsyfon.ProjectBucketObject
+			var validationObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
+			var err error
+			if forceRefresh {
+				validationObjects, validationObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			} else {
+				validationObjects, validationObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			}
 			timings.Record("syfon_bucket_validation_inventory", time.Since(inventoryStart))
 			timings.RecordMemory("syfon_bucket_validation_inventory", "bucket_objects", len(validationObjects), "bucket_lookup", len(validationObjectsByURL))
 			if err != nil {

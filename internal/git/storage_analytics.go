@@ -109,14 +109,16 @@ type storageAnalyticsBackend interface {
 }
 
 type StorageAnalyticsService struct {
-	storage           storageAnalyticsBackend
-	projectJoinMu     sync.RWMutex
-	projectJoinCache  map[string]cachedProjectJoinState
-	projectJoinWork   map[string]*inflightProjectJoinState
-	chainInputMu      sync.RWMutex
-	chainInputCache   map[string]cachedChainInputState
-	projectAuditCache map[string]cachedProjectAuditRecordState
-	projectAuditWork  map[string]*inflightProjectAuditRecordState
+	storage                 storageAnalyticsBackend
+	projectJoinMu           sync.RWMutex
+	projectJoinCache        map[string]cachedProjectJoinState
+	projectJoinWork         map[string]*inflightProjectJoinState
+	chainInputMu            sync.RWMutex
+	chainInputCache         map[string]cachedChainInputState
+	projectAuditCache       map[string]cachedProjectAuditRecordState
+	projectAuditWork        map[string]*inflightProjectAuditRecordState
+	chainAuditResponseCache storageChainAuditResponseCache
+	exactProjectJoinCache   storageExactProjectJoinCache
 }
 
 type StorageFolderTimings struct {
@@ -143,6 +145,14 @@ func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyti
 		projectAuditCache: map[string]cachedProjectAuditRecordState{},
 		projectAuditWork:  map[string]*inflightProjectAuditRecordState{},
 	}
+}
+
+func (service *StorageAnalyticsService) EnableStorageChainAuditResponseCacheFromEnv() {
+	if service == nil {
+		return
+	}
+	service.chainAuditResponseCache = NewStorageChainAuditResponseCacheFromEnv()
+	service.exactProjectJoinCache = NewStorageExactProjectJoinCacheFromEnv()
 }
 
 type RepoInventoryFile struct {
@@ -264,7 +274,7 @@ func BuildGitRepoInventory(ref string, gitSubpath string, repo *gogit.Repository
 }
 
 func (service *StorageAnalyticsService) BuildStorageSummary(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitStorageSummaryResponse, error) {
-	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
 	if err != nil {
 		return nil, err
 	}
@@ -313,10 +323,10 @@ func (service *StorageAnalyticsService) BuildStorageChildren(ctx context.Context
 	}, nil
 }
 
-func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string, summaryMode string, timings *StorageFolderTimings) (*GitStorageFolderResponse, error) {
+func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, limit int, sortBy string, sortOrder string, cursor string, summaryMode string, forceRefresh bool, timings *StorageFolderTimings) (*GitStorageFolderResponse, error) {
 	if strings.EqualFold(strings.TrimSpace(summaryMode), StorageFolderSummaryModeExact) {
 		exactStart := time.Now()
-		index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+		index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, forceRefresh)
 		timings.Record("exact_join", time.Since(exactStart))
 		if err != nil {
 			return nil, err
@@ -394,7 +404,7 @@ func (service *StorageAnalyticsService) BuildStorageFolder(ctx context.Context, 
 }
 
 func (service *StorageAnalyticsService) BuildProjectDiffAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitProjectDiffAuditResponse, error) {
-	_, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+	_, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
 	if err != nil {
 		return nil, err
 	}
@@ -438,13 +448,44 @@ func (service *StorageAnalyticsService) BuildStorageChainAudit(ctx context.Conte
 }
 
 func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
+	normalized, err := normalizeStorageChainAuditOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	if service.chainAuditResponseCache != nil && storageChainAuditResponseCacheAllowed(gitSubpath, normalized) {
+		return service.buildStorageChainAuditWithResponseCache(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
+	}
+	if service.chainAuditResponseCache != nil && storageChainAuditRootResponseProjectionAllowed(gitSubpath, normalized) {
+		response, ok, err := service.projectStorageChainAuditFromRootResponseCache(ctx, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return response, nil
+		}
+	}
+	if service.chainAuditResponseCache != nil && normalized.Timings != nil {
+		normalized.Timings.Record("audit_response_cache_bypass_non_root", 0)
+	}
+	return service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
+}
+
+func storageChainAuditResponseCacheAllowed(gitSubpath string, options StorageChainAuditOptions) bool {
+	return normalizeRepoSubpath(gitSubpath) == "" && normalizeRepoSubpath(options.BucketPathPrefix) == ""
+}
+
+func storageChainAuditRootResponseProjectionAllowed(gitSubpath string, options StorageChainAuditOptions) bool {
+	return normalizeRepoSubpath(gitSubpath) != "" && normalizeRepoSubpath(options.BucketPathPrefix) == "" && !options.ForceAuditRefresh
+}
+
+func normalizeStorageChainAuditOptions(options StorageChainAuditOptions) (StorageChainAuditOptions, error) {
 	probeMode, ok := NormalizeStorageChainProbeMode(options.ProbeMode)
 	if !ok {
-		return nil, fmt.Errorf("invalid storage chain probe mode %q", options.ProbeMode)
+		return StorageChainAuditOptions{}, fmt.Errorf("invalid storage chain probe mode %q", options.ProbeMode)
 	}
 	bucketMode, ok := NormalizeStorageChainBucketInventoryMode(options.BucketInventoryMode)
 	if !ok {
-		return nil, fmt.Errorf("invalid storage chain bucket inventory mode %q", options.BucketInventoryMode)
+		return StorageChainAuditOptions{}, fmt.Errorf("invalid storage chain bucket inventory mode %q", options.BucketInventoryMode)
 	}
 	validationMode := strings.TrimSpace(options.ValidationMode)
 	if validationMode == "" {
@@ -456,9 +497,101 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	}
 	validationMode, ok = NormalizeStorageChainValidationMode(validationMode)
 	if !ok {
-		return nil, fmt.Errorf("invalid storage chain validation mode %q", options.ValidationMode)
+		return StorageChainAuditOptions{}, fmt.Errorf("invalid storage chain validation mode %q", options.ValidationMode)
 	}
-	bucketPathPrefix := normalizeRepoSubpath(options.BucketPathPrefix)
+	options.ProbeMode = probeMode
+	options.ValidationMode = validationMode
+	options.BucketInventoryMode = bucketMode
+	options.BucketPathPrefix = normalizeRepoSubpath(options.BucketPathPrefix)
+	options.FindingKind = strings.TrimSpace(options.FindingKind)
+	return options, nil
+}
+
+func (service *StorageAnalyticsService) buildStorageChainAuditWithResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, options.BucketPathPrefix, hash.String())
+	cache := service.chainAuditResponseCache
+	if !options.ForceAuditRefresh {
+		start := time.Now()
+		cached, ok, err := cache.Get(ctx, cacheKey)
+		options.Timings.Record("audit_response_cache_lookup", time.Since(start))
+		if err != nil {
+			logStorageChainAuditCacheError(options.Timings, cache.Source(), "get", err)
+		}
+		if ok {
+			response := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
+			applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cache.Source(), "")
+			options.Timings.Record("audit_response_cache_hit", 0)
+			options.Timings.RecordMemory(
+				"audit_response_cache_hit",
+				"total_findings", response.Summary.TotalFindings,
+				"returned_findings", response.Summary.ReturnedFindings,
+				"finding_limit", options.FindingLimit,
+			)
+			return response, nil
+		}
+		options.Timings.Record("audit_response_cache_miss", 0)
+	} else {
+		options.Timings.Record("audit_response_cache_force_refresh", 0)
+	}
+
+	buildOptions := options
+	buildOptions.FindingKind = ""
+	buildOptions.FindingLimit = -1
+	response, err := service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, buildOptions)
+	if err != nil {
+		return nil, err
+	}
+	cachedAt := time.Now()
+	cacheStart := time.Now()
+	setErr := cache.Set(ctx, cacheKey, cachedStorageChainAuditResponse{CachedAt: cachedAt, Response: *response}, storageChainAuditCacheTTL())
+	options.Timings.Record("audit_response_cache_store", time.Since(cacheStart))
+	cacheError := ""
+	if setErr != nil {
+		cacheError = setErr.Error()
+		logStorageChainAuditCacheError(options.Timings, cache.Source(), "set", setErr)
+	}
+	projected := projectStorageChainAuditResponse(*response, options.FindingKind, options.FindingLimit)
+	applyStorageChainAuditCacheMetadata(projected, false, cachedAt, cache.Source(), cacheError)
+	return projected, nil
+}
+
+func (service *StorageAnalyticsService) projectStorageChainAuditFromRootResponseCache(ctx context.Context, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, bool, error) {
+	cache := service.chainAuditResponseCache
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, "", options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, "", hash.String())
+	start := time.Now()
+	cached, ok, err := cache.Get(ctx, cacheKey)
+	options.Timings.Record("audit_response_root_cache_lookup", time.Since(start))
+	if err != nil {
+		logStorageChainAuditCacheError(options.Timings, cache.Source(), "get_root", err)
+		return nil, false, nil
+	}
+	if !ok {
+		options.Timings.Record("audit_response_root_cache_miss", 0)
+		return nil, false, nil
+	}
+	inventoryStart := time.Now()
+	inventory, err := service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
+	options.Timings.Record("audit_response_root_cache_project_inventory", time.Since(inventoryStart))
+	if err != nil {
+		return nil, false, err
+	}
+	response := projectStorageChainAuditResponseForSubpath(cached.Response, gitSubpath, inventory, options.FindingKind, options.FindingLimit)
+	applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cache.Source()+":root", "")
+	options.Timings.Record("audit_response_root_cache_hit", 0)
+	options.Timings.RecordMemory(
+		"audit_response_root_cache_hit",
+		"git_subpath", normalizeRepoSubpath(gitSubpath),
+		"git_files", response.Summary.GitTrackedFileCount,
+		"total_findings", response.Summary.TotalFindings,
+		"returned_findings", response.Summary.ReturnedFindings,
+	)
+	return response, true, nil
+}
+
+func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
+	bucketMode := options.BucketInventoryMode
+	validationMode := options.ValidationMode
+	bucketPathPrefix := options.BucketPathPrefix
 	start := time.Now()
 	options.Timings.StageStart("chain_setup_total")
 	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, bucketPathPrefix, options.Timings)
@@ -476,7 +609,7 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.ForceAuditRefresh, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if storageView != nil {
 		options.Timings.RecordMemory(
@@ -529,6 +662,158 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 		PathPrefix:       model.PathPrefix,
 		BucketPathPrefix: bucketPathPrefix,
 	}, nil
+}
+
+func projectStorageChainAuditResponseForSubpath(base GitStorageChainAuditResponse, gitSubpath string, inventory []RepoInventoryFile, findingKind string, findingLimit int) *GitStorageChainAuditResponse {
+	pathPrefix := normalizeRepoSubpath(gitSubpath)
+	filteredFindings := make([]GitStorageChainFinding, 0, len(base.Findings))
+	for _, finding := range base.Findings {
+		if storageChainFindingMatchesSubpath(finding, pathPrefix) {
+			filteredFindings = append(filteredFindings, finding)
+		}
+	}
+
+	summary := base.Summary
+	countsByKind := make(map[string]int, len(summary.CountsByKind))
+	for kind := range summary.CountsByKind {
+		countsByKind[kind] = 0
+	}
+	issueGitPaths := make(map[string]struct{})
+	objectIDs := make(map[string]struct{})
+	bucketObjects := make(map[string]struct{})
+	for _, finding := range filteredFindings {
+		countsByKind[finding.Kind]++
+		if storageChainFindingHasGitPath(finding.Kind) {
+			for _, sourcePath := range finding.SourcePaths {
+				if storagePathMatchesRepoSubpath(sourcePath, pathPrefix) && !strings.Contains(sourcePath, "://") {
+					issueGitPaths[normalizeRepoSubpath(sourcePath)] = struct{}{}
+				}
+			}
+			if len(finding.SourcePaths) == 0 && storagePathMatchesRepoSubpath(finding.NormalizedPath, pathPrefix) && !strings.Contains(finding.NormalizedPath, "://") {
+				issueGitPaths[normalizeRepoSubpath(finding.NormalizedPath)] = struct{}{}
+			}
+		}
+		for _, objectID := range finding.ObjectIDs {
+			if trimmed := strings.TrimSpace(objectID); trimmed != "" {
+				objectIDs[trimmed] = struct{}{}
+			}
+		}
+		if trimmed := strings.TrimSpace(finding.BucketObjectURL); trimmed != "" {
+			bucketObjects[trimmed] = struct{}{}
+		}
+		for _, accessURL := range finding.AccessURLs {
+			if trimmed := strings.TrimSpace(accessURL); trimmed != "" {
+				bucketObjects[trimmed] = struct{}{}
+			}
+		}
+	}
+	gitTrackedFileCount := len(inventory)
+	completeCount := gitTrackedFileCount - len(issueGitPaths)
+	if completeCount < 0 {
+		completeCount = 0
+	}
+	countsByKind["bucket_syfon_git_complete"] = completeCount
+	summary.CountsByKind = countsByKind
+	summary.TotalFindings = len(filteredFindings)
+	summary.GitTrackedFileCount = gitTrackedFileCount
+	summary.SyfonRecordCount = completeCount + len(objectIDs)
+	summary.BucketObjectCount = completeCount + len(bucketObjects)
+
+	projected := base
+	projected.Findings = filteredFindings
+	projected.Groups = summarizeChainIssueGroups(filteredFindings)
+	projected.Summary = summary
+	projected.PathPrefix = pathPrefix
+	projected.BucketPathPrefix = ""
+	return projectStorageChainAuditResponse(projected, findingKind, findingLimit)
+}
+
+func storageChainFindingHasGitPath(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "git_only_no_syfon", "syfon_git_no_bucket", "git_syfon_metadata_mismatch", "probe_error":
+		return true
+	}
+	return false
+}
+
+func projectStorageChainAuditResponse(base GitStorageChainAuditResponse, findingKind string, findingLimit int) *GitStorageChainAuditResponse {
+	response := cloneStorageChainAuditResponse(base)
+	filteredFindings := filterStorageChainFindingsByKind(response.Findings, findingKind)
+	summary := filterStorageChainSummary(response.Summary, filteredFindings)
+	findings := limitStorageChainFindings(filteredFindings, findingLimit, findingKind)
+	summary.ReturnedFindings = len(findings)
+	summary.FindingLimit = findingLimit
+	summary.FindingsTruncated = len(findings) < len(filteredFindings)
+	response.Findings = findings
+	response.Groups = summarizeChainIssueGroups(filteredFindings)
+	response.Summary = summary
+	return &response
+}
+
+func storageChainFindingMatchesSubpath(finding GitStorageChainFinding, pathPrefix string) bool {
+	if pathPrefix == "" {
+		return true
+	}
+	candidates := []string{finding.NormalizedPath, finding.BucketObjectURL, finding.ResolvedKey}
+	candidates = append(candidates, finding.SourcePaths...)
+	candidates = append(candidates, finding.AccessURLs...)
+	for _, record := range finding.Records {
+		candidates = append(candidates, record.NormalizedPath)
+		candidates = append(candidates, record.AccessURLs...)
+		for _, accessMethod := range record.AccessMethods {
+			candidates = append(candidates, accessMethod.URL)
+		}
+		for _, probe := range record.AccessProbes {
+			candidates = append(candidates, probe.URL, probe.Path, probe.Key)
+		}
+	}
+	if finding.Evidence != nil {
+		candidates = append(candidates, finding.Evidence.SourcePaths...)
+		candidates = append(candidates, finding.Evidence.AccessURLs...)
+		candidates = append(candidates, finding.Evidence.BucketObjectURLs...)
+		candidates = append(candidates, finding.Evidence.Keys...)
+	}
+	for _, candidate := range candidates {
+		if storagePathMatchesRepoSubpath(candidate, pathPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func storagePathMatchesRepoSubpath(raw string, pathPrefix string) bool {
+	pathPrefix = normalizeRepoSubpath(pathPrefix)
+	if pathPrefix == "" {
+		return true
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return false
+	}
+	if _, key, ok := parseStorageURL(value); ok {
+		key = normalizeRepoSubpath(key)
+		return key == pathPrefix || strings.HasPrefix(key, pathPrefix+"/") || strings.Contains("/"+key, "/"+pathPrefix+"/")
+	}
+	normalized := normalizeRepoSubpath(value)
+	return normalized == pathPrefix || strings.HasPrefix(normalized, pathPrefix+"/") || strings.Contains("/"+normalized, "/"+pathPrefix+"/")
+}
+
+func logStorageChainAuditCacheError(timings *StorageChainAuditTimings, source string, operation string, err error) {
+	if timings == nil || timings.Logf == nil || err == nil {
+		return
+	}
+	timings.Logf("storage_chain_audit_cache_error %s source=%s operation=%s error=%q", strings.TrimSpace(timings.DebugPrefix), strings.TrimSpace(source), strings.TrimSpace(operation), err.Error())
+}
+
+func applyStorageChainAuditCacheMetadata(response *GitStorageChainAuditResponse, hit bool, cachedAt time.Time, source string, cacheError string) {
+	if response == nil || cachedAt.IsZero() {
+		return
+	}
+	response.Summary.AuditCacheHit = hit
+	response.Summary.AuditCachedAt = cachedAt.UTC().Format(time.RFC3339Nano)
+	response.Summary.AuditCacheAgeSeconds = int64(time.Since(cachedAt).Seconds())
+	response.Summary.AuditCacheSource = strings.TrimSpace(source)
+	response.Summary.AuditCacheError = strings.TrimSpace(cacheError)
 }
 
 func filterStorageChainFindingsByKind(findings []GitStorageChainFinding, kind string) []GitStorageChainFinding {
@@ -887,9 +1172,6 @@ func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
 	case "missing_access_url", "credential_missing":
 		return true
 	}
-	if accessProbeHasMismatch(probe, "name_mismatch") {
-		return true
-	}
 	switch strings.TrimSpace(probe.Status) {
 	case "missing", "forbidden", "unsupported", "invalid", "error":
 		return true
@@ -1087,7 +1369,7 @@ func cleanupActionForFinding(index map[string]string, finding GitStorageCleanupF
 	return strings.TrimSpace(index[cleanupActionKey("", path)])
 }
 
-func (service *StorageAnalyticsService) loadJoinState(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*repoAnalyticsIndex, []RepoInventoryFile, map[string][]projectRecordState, map[string]gintegrationsyfon.FileUsage, error) {
+func (service *StorageAnalyticsService) loadJoinState(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, forceRefresh bool) (*repoAnalyticsIndex, []RepoInventoryFile, map[string][]projectRecordState, map[string]gintegrationsyfon.FileUsage, error) {
 	index, err := loadOrBuildRepoAnalyticsIndex(ctx, mirrorPath, ref, repo, hash)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -1096,24 +1378,28 @@ func (service *StorageAnalyticsService) loadJoinState(ctx context.Context, autho
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	recordsByChecksum, usageByObjectID, err := service.loadProjectJoinCache(ctx, authorizationHeader, organization, project, hash, index.sidecar.Files)
+	recordsByChecksum, usageByObjectID, err := service.loadProjectJoinCache(ctx, authorizationHeader, organization, project, hash, index.sidecar.Files, forceRefresh)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	return index, inventory, recordsByChecksum, usageByObjectID, nil
 }
 
-func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context, authorizationHeader string, organization string, project string, hash plumbing.Hash, inventory []RepoInventoryFile) (map[string][]projectRecordState, map[string]gintegrationsyfon.FileUsage, error) {
+func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context, authorizationHeader string, organization string, project string, hash plumbing.Hash, inventory []RepoInventoryFile, forceRefresh bool) (map[string][]projectRecordState, map[string]gintegrationsyfon.FileUsage, error) {
 	cacheKey := service.projectJoinCacheKey(organization, project, hash.String())
+	redisKey := storageExactProjectJoinCacheKey(organization, project, hash.String())
 	service.projectJoinMu.Lock()
-	if cached, ok := service.projectJoinCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
-		service.projectJoinMu.Unlock()
-		return cached.recordsByChecksum, cached.usageByObjectID, nil
+	if !forceRefresh {
+		if cached, ok := service.projectJoinCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+			service.projectJoinMu.Unlock()
+			log.Printf("storage_folder_exact_join_cache_hit org=%s project=%s source=memory records_by_checksum=%d usage_rows=%d", organization, project, len(cached.recordsByChecksum), len(cached.usageByObjectID))
+			return cloneRecordStateMap(cached.recordsByChecksum), cloneFileUsageMap(cached.usageByObjectID), nil
+		}
 	}
 	if inflight, ok := service.projectJoinWork[cacheKey]; ok {
 		service.projectJoinMu.Unlock()
 		<-inflight.done
-		return inflight.recordsByChecksum, inflight.usageByObjectID, inflight.err
+		return cloneRecordStateMap(inflight.recordsByChecksum), cloneFileUsageMap(inflight.usageByObjectID), inflight.err
 	}
 	inflight := &inflightProjectJoinState{done: make(chan struct{})}
 	service.projectJoinWork[cacheKey] = inflight
@@ -1124,6 +1410,29 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 		close(inflight.done)
 		service.projectJoinMu.Unlock()
 	}()
+
+	if !forceRefresh && service.exactProjectJoinCache != nil {
+		redisStart := time.Now()
+		cached, ok, err := service.exactProjectJoinCache.Get(ctx, redisKey)
+		if err != nil {
+			log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=get error=%q", organization, project, service.exactProjectJoinCache.Source(), err.Error())
+		}
+		if ok {
+			state := cachedProjectJoinState{
+				expiresAt:         time.Now().Add(projectJoinCacheTTL),
+				recordsByChecksum: cloneRecordStateMap(cached.RecordsByChecksum),
+				usageByObjectID:   cloneFileUsageMap(cached.UsageByObjectID),
+			}
+			service.projectJoinMu.Lock()
+			service.projectJoinCache[cacheKey] = state
+			service.projectJoinMu.Unlock()
+			log.Printf("storage_folder_exact_join_cache_hit org=%s project=%s source=%s age_seconds=%d records_by_checksum=%d usage_rows=%d duration_ms=%d", organization, project, service.exactProjectJoinCache.Source(), int64(time.Since(cached.CachedAt).Seconds()), len(cached.RecordsByChecksum), len(cached.UsageByObjectID), time.Since(redisStart).Milliseconds())
+			inflight.recordsByChecksum = cloneRecordStateMap(cached.RecordsByChecksum)
+			inflight.usageByObjectID = cloneFileUsageMap(cached.UsageByObjectID)
+			return cloneRecordStateMap(cached.RecordsByChecksum), cloneFileUsageMap(cached.UsageByObjectID), nil
+		}
+		log.Printf("storage_folder_exact_join_cache_miss org=%s project=%s source=%s duration_ms=%d", organization, project, service.exactProjectJoinCache.Source(), time.Since(redisStart).Milliseconds())
+	}
 
 	recordStart := time.Now()
 	projectRecords, err := service.loadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
@@ -1148,12 +1457,25 @@ func (service *StorageAnalyticsService) loadProjectJoinCache(ctx context.Context
 	service.projectJoinMu.Lock()
 	service.projectJoinCache[cacheKey] = cachedProjectJoinState{
 		expiresAt:         time.Now().Add(projectJoinCacheTTL),
-		recordsByChecksum: recordsByChecksum,
-		usageByObjectID:   usageByObjectID,
+		recordsByChecksum: cloneRecordStateMap(recordsByChecksum),
+		usageByObjectID:   cloneFileUsageMap(usageByObjectID),
 	}
 	service.projectJoinMu.Unlock()
-	inflight.recordsByChecksum = recordsByChecksum
-	inflight.usageByObjectID = usageByObjectID
+	if service.exactProjectJoinCache != nil {
+		setStart := time.Now()
+		err := service.exactProjectJoinCache.Set(ctx, redisKey, cachedExactProjectJoinState{
+			CachedAt:          time.Now(),
+			RecordsByChecksum: recordsByChecksum,
+			UsageByObjectID:   usageByObjectID,
+		}, storageChainAuditCacheTTL())
+		if err != nil {
+			log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=set error=%q", organization, project, service.exactProjectJoinCache.Source(), err.Error())
+		} else {
+			log.Printf("storage_folder_exact_join_cache_store org=%s project=%s source=%s records_by_checksum=%d usage_rows=%d duration_ms=%d", organization, project, service.exactProjectJoinCache.Source(), len(recordsByChecksum), len(usageByObjectID), time.Since(setStart).Milliseconds())
+		}
+	}
+	inflight.recordsByChecksum = cloneRecordStateMap(recordsByChecksum)
+	inflight.usageByObjectID = cloneFileUsageMap(usageByObjectID)
 	return recordsByChecksum, usageByObjectID, nil
 }
 
@@ -2181,7 +2503,19 @@ func storageProbeValidationMismatchIsSignificant(record projectRecordState, prob
 	if strings.TrimSpace(probe.ValidationStatus) != "mismatched" {
 		return false
 	}
-	if !syfonProbeHasMismatch(probe, "size_mismatch") || len(probe.ValidationMismatches) != 1 {
+	significantMismatches := 0
+	for _, mismatch := range probe.ValidationMismatches {
+		switch strings.TrimSpace(mismatch) {
+		case "", "name_mismatch":
+			continue
+		default:
+			significantMismatches++
+		}
+	}
+	if significantMismatches == 0 {
+		return false
+	}
+	if !syfonProbeHasMismatch(probe, "size_mismatch") || significantMismatches != 1 {
 		return true
 	}
 	if probe.SizeBytes == nil {
@@ -2457,14 +2791,6 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 }
 
 func suggestedActionForChainFinding(kind string, record projectRecordState) string {
-	switch strings.TrimSpace(kind) {
-	case "git_syfon_metadata_mismatch", "syfon_broken_bucket_mapping":
-	default:
-		return ""
-	}
-	if recordHasAccessProbeMismatch(record, "name_mismatch") {
-		return storageActionRemoveBrokenAccessURLs
-	}
 	return ""
 }
 
@@ -2473,9 +2799,7 @@ func suggestedFixForChainFinding(kind string, record projectRecordState) string 
 	switch normalizedKind {
 	case "git_syfon_metadata_mismatch":
 	case "syfon_broken_bucket_mapping":
-		if !recordHasAccessProbeMismatch(record, "name_mismatch") {
-			return ""
-		}
+		return ""
 	default:
 		return ""
 	}
@@ -2487,16 +2811,8 @@ func suggestedFixForChainFinding(kind string, record projectRecordState) string 
 		}
 		mismatches = append(mismatches, fmt.Sprintf("Syfon/Git size is %s, bucket inventory reports %s", formatAuditSize(record.Size), formatAuditSize(bucketSize)))
 	}
-	if probe, ok := firstAccessProbeMismatch(record, "name_mismatch"); ok {
-		expectedName := path.Base(strings.Trim(strings.TrimSpace(record.Name), "/"))
-		observedName := path.Base(strings.Trim(strings.TrimSpace(probe.Key), "/"))
-		mismatches = append(mismatches, fmt.Sprintf("Syfon name is %q, bucket key basename is %q", expectedName, observedName))
-	}
 	if len(mismatches) == 0 {
 		return "Bucket object exists, but its storage evidence does not match the Syfon/Git record. Review the record and bucket object before applying a destructive fix."
-	}
-	if recordHasAccessProbeMismatch(record, "name_mismatch") {
-		return strings.Join(mismatches, ". ") + ". Remove the broken access URL if another access URL works; otherwise delete and recreate or correct the Syfon record."
 	}
 	return strings.Join(mismatches, ". ") + ". Update the stale Syfon metadata or delete and recreate the record after confirming the bucket object is authoritative."
 }
@@ -2784,9 +3100,6 @@ func syfonProbeObjectURL(probe gintegrationsyfon.BulkStorageProbeResult) string 
 func syfonProbeIsBrokenAccess(probe gintegrationsyfon.BulkStorageProbeResult) bool {
 	switch strings.TrimSpace(probe.ErrorKind) {
 	case "missing_access_url", "credential_missing":
-		return true
-	}
-	if syfonProbeHasMismatch(probe, "name_mismatch") {
 		return true
 	}
 	switch strings.TrimSpace(probe.Status) {

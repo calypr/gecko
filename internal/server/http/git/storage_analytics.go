@@ -104,6 +104,7 @@ func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
 		Logf: handler.logger.Info,
 	}
 	timings.Record("resolve_git_context", resolveDuration)
+	forceRefresh := parseBoolQuery(ctx.Query("force_refresh")) || parseBoolQuery(ctx.Query("force_audit_refresh")) || parseBoolQuery(ctx.Query("force_bucket_inventory_refresh"))
 	buildStart := time.Now()
 	response, err := handler.storageAnalytics.BuildStorageFolder(
 		ctx.Context(),
@@ -120,6 +121,7 @@ func (handler *Handler) handleGitProjectStorageFolderGET(ctx fiber.Ctx) error {
 		options.sortOrder,
 		options.cursor,
 		options.summaryMode,
+		forceRefresh,
 		timings,
 	)
 	timings.Record("build_folder", time.Since(buildStart))
@@ -145,6 +147,11 @@ func parseStorageChildrenRequestOptions(ctx fiber.Ctx, projectID string) (storag
 		sortOrder:   strings.TrimSpace(ctx.Query("sort_order")),
 		summaryMode: strings.TrimSpace(ctx.Query("summary_mode")),
 	}, nil
+}
+
+func parseBoolQuery(raw string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+	return err == nil && parsed
 }
 
 func parseStorageChildrenLimit(rawLimit string) (int, error) {
@@ -276,6 +283,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	findingKind := strings.TrimSpace(requestBody.FindingKind)
 	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_kind=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingKind, findingLimit)
 	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
+	forceAuditRefresh := requestBody.ForceAuditRefresh || requestBody.ForceBucketInventoryRefresh
 	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
@@ -293,6 +301,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 			BucketPathPrefix:    bucketPathPrefix,
 			FindingKind:         findingKind,
 			FindingLimit:        findingLimit,
+			ForceAuditRefresh:   forceAuditRefresh,
 			Timings:             timings,
 		},
 	)
@@ -595,7 +604,7 @@ func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsCont
 		bucketPathExists = strconv.FormatBool(*response.Summary.BucketPathExists)
 	}
 	handler.logger.Info(
-		"storage_chain_audit project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
+		"storage_chain_audit project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t audit_cache_hit=%t audit_cache_source=%s audit_cache_age_seconds=%d findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
 		projectCtx.projectID,
 		projectCtx.refName,
 		gitSubpath,
@@ -605,6 +614,9 @@ func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsCont
 		bucketPathExists,
 		response.Summary.BucketSummaryMode,
 		response.Summary.BucketInventoryAvailable,
+		response.Summary.AuditCacheHit,
+		response.Summary.AuditCacheSource,
+		response.Summary.AuditCacheAgeSeconds,
 		response.Summary.TotalFindings,
 		response.Summary.ReturnedFindings,
 		response.Summary.FindingsTruncated,
