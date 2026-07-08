@@ -153,9 +153,10 @@ type RepoInventoryFile struct {
 
 type projectRecordState struct {
 	gintegrationsyfon.ProjectRecord
-	CanonicalAccessURLs []string
-	Usage               gintegrationsyfon.FileUsage
-	AccessProbes        []gintegrationsyfon.BulkStorageProbeResult
+	CanonicalAccessURLs     []string
+	CanonicalAccessURLByRaw map[string]string
+	Usage                   gintegrationsyfon.FileUsage
+	AccessProbes            []gintegrationsyfon.BulkStorageProbeResult
 }
 
 type storageAggregate struct {
@@ -794,7 +795,7 @@ func remainingAccessMethodsAfterBrokenRemoval(record GitStorageCleanupRecordAudi
 		}
 		remaining = append(remaining, method)
 	}
-	return remaining
+	return appendReplacementAccessMethods(remaining, record.AccessProbes, brokenURLs)
 }
 
 func brokenAccessURLsForRecord(record GitStorageCleanupRecordAudit) map[string]struct{} {
@@ -819,6 +820,55 @@ func brokenAccessURLsForRecord(record GitStorageCleanupRecordAudit) map[string]s
 	return broken
 }
 
+func appendReplacementAccessMethods(existing []gintegrationsyfon.ProjectAccessMethod, probes []GitStorageCleanupAccessProbe, brokenURLs map[string]struct{}) []gintegrationsyfon.ProjectAccessMethod {
+	seen := make(map[string]struct{}, len(existing)+len(probes))
+	out := make([]gintegrationsyfon.ProjectAccessMethod, 0, len(existing)+len(probes))
+	for _, method := range existing {
+		url := strings.TrimSpace(method.URL)
+		if url == "" {
+			continue
+		}
+		key := normalizeCleanupSelectionKey(url)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, method)
+	}
+	for _, probe := range probes {
+		if strings.TrimSpace(probe.Status) != "present" || !probeValidationMatched(probe.ValidationStatus) {
+			continue
+		}
+		replacementURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.URL)
+		if replacementURL == "" {
+			continue
+		}
+		key := normalizeCleanupSelectionKey(replacementURL)
+		if _, broken := brokenURLs[key]; broken {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, gintegrationsyfon.ProjectAccessMethod{
+			AccessID: "s3",
+			Type:     "s3",
+			URL:      replacementURL,
+		})
+	}
+	return out
+}
+
+func probeValidationMatched(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", "not_requested", "matched":
+		return true
+	default:
+		return false
+	}
+}
+
 func recordStatusMeansBrokenAccess(status string) bool {
 	switch strings.TrimSpace(status) {
 	case "missing", "error":
@@ -830,7 +880,7 @@ func recordStatusMeansBrokenAccess(status string) bool {
 
 func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
 	switch strings.TrimSpace(probe.ErrorKind) {
-	case "missing_access_url", "credential_missing":
+	case "missing_access_url", "credential_missing", "stale_scope_mapping":
 		return true
 	}
 	switch strings.TrimSpace(probe.Status) {
@@ -1238,6 +1288,7 @@ func applyScopedStorageMappings(recordsByChecksum map[string][]projectRecordStat
 			for _, record := range group {
 				clone := record
 				clone.CanonicalAccessURLs = canonicalizeRecordAccessURLs(record.AccessURLs, scopes, organization, project)
+				clone.CanonicalAccessURLByRaw = canonicalizeRecordAccessURLMappings(record.AccessURLs, scopes, organization, project)
 				states = append(states, clone)
 			}
 			out[checksum] = states
@@ -1977,6 +2028,9 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if hasExactPathBucketMismatch(record, bucketMatches, bucketObjectsByURL) {
 		return storageFindingBrokenBucketMap
 	}
+	if len(repairableBrokenAccessProbes(record)) > 0 {
+		return storageFindingBrokenBucketMap
+	}
 	if recordHasMatchedCanonicalAccessProbe(record) {
 		return storageFindingNone
 	}
@@ -2504,6 +2558,8 @@ func repairBrokenBucketMappingRecord(record projectRecordState) ([]gintegrations
 	if !removedAny {
 		return nil, false, false
 	}
+	auditRecord := cleanupRecordAuditForRecord("", "access_url", record)
+	remaining = appendReplacementAccessMethods(remaining, auditRecord.AccessProbes, brokenAccessURLsForRecord(auditRecord))
 	if len(remaining) == 0 {
 		return nil, true, true
 	}
@@ -2520,11 +2576,113 @@ func accessURLHasBrokenBucketMapping(accessURL string, probesByURL map[string][]
 		if strings.TrimSpace(probe.Status) == "present" {
 			return false
 		}
-		if strings.TrimSpace(probe.ErrorKind) == "credential_missing" {
+		if syfonProbeIsBrokenAccess(probe) {
 			hasBrokenBucketMapping = true
 		}
 	}
 	return hasBrokenBucketMapping
+}
+
+func repairableBrokenAccessRecord(record projectRecordState) projectRecordState {
+	clone := record
+	clone.AccessProbes = repairableBrokenAccessProbes(record)
+	return clone
+}
+
+func repairableBrokenAccessProbes(record projectRecordState) []gintegrationsyfon.BulkStorageProbeResult {
+	if len(record.AccessProbes) == 0 {
+		return nil
+	}
+	probesByURL := make(map[string][]gintegrationsyfon.BulkStorageProbeResult, len(record.AccessProbes))
+	for _, probe := range record.AccessProbes {
+		objectURL := syfonProbeObjectURL(probe)
+		if objectURL == "" {
+			continue
+		}
+		probesByURL[objectURL] = append(probesByURL[objectURL], probe)
+	}
+	out := make([]gintegrationsyfon.BulkStorageProbeResult, 0)
+	for _, accessURL := range rawAccessURLsForRecord(record) {
+		rawURL := strings.TrimSpace(accessURL)
+		if rawURL == "" {
+			continue
+		}
+		if accessURLHasPresentProbe(rawURL, probesByURL) {
+			continue
+		}
+		if mappedURL := strings.TrimSpace(record.CanonicalAccessURLByRaw[rawURL]); mappedURL != "" && mappedURL != rawURL && accessURLHasPresentProbe(mappedURL, probesByURL) {
+			out = append(out, staleScopeMappingProbe(rawURL, mappedURL))
+			out = append(out, presentAccessProbes(mappedURL, probesByURL)...)
+			continue
+		}
+		for _, probe := range probesByURL[rawURL] {
+			if syfonProbeIsBrokenAccess(probe) {
+				out = append(out, probe)
+			}
+		}
+	}
+	return out
+}
+
+func staleScopeMappingProbe(rawURL string, mappedURL string) gintegrationsyfon.BulkStorageProbeResult {
+	bucket, key, _ := parseStorageURL(mappedURL)
+	return gintegrationsyfon.BulkStorageProbeResult{
+		ObjectURL:        strings.TrimSpace(rawURL),
+		Operation:        StorageChainValidationModeList,
+		Bucket:           bucket,
+		Key:              key,
+		Status:           "error",
+		Exists:           false,
+		ErrorKind:        "stale_scope_mapping",
+		Error:            fmt.Sprintf("access URL should be updated to current project scope URL %q", strings.TrimSpace(mappedURL)),
+		ValidationStatus: "unverifiable",
+	}
+}
+
+func presentAccessProbes(accessURL string, probesByURL map[string][]gintegrationsyfon.BulkStorageProbeResult) []gintegrationsyfon.BulkStorageProbeResult {
+	out := make([]gintegrationsyfon.BulkStorageProbeResult, 0)
+	for _, probe := range probesByURL[strings.TrimSpace(accessURL)] {
+		if strings.TrimSpace(probe.Status) != "present" {
+			continue
+		}
+		switch strings.TrimSpace(probe.ValidationStatus) {
+		case "", "not_requested", "matched":
+			out = append(out, probe)
+		}
+	}
+	return out
+}
+
+func accessURLHasPresentProbe(accessURL string, probesByURL map[string][]gintegrationsyfon.BulkStorageProbeResult) bool {
+	for _, probe := range probesByURL[strings.TrimSpace(accessURL)] {
+		if strings.TrimSpace(probe.Status) != "present" {
+			continue
+		}
+		switch strings.TrimSpace(probe.ValidationStatus) {
+		case "", "not_requested", "matched":
+			return true
+		}
+	}
+	return false
+}
+
+func syfonProbeObjectURL(probe gintegrationsyfon.BulkStorageProbeResult) string {
+	if objectURL := strings.TrimSpace(probe.ObjectURL); objectURL != "" {
+		return objectURL
+	}
+	return canonicalStorageURL(probe.Bucket, probe.Key, "")
+}
+
+func syfonProbeIsBrokenAccess(probe gintegrationsyfon.BulkStorageProbeResult) bool {
+	switch strings.TrimSpace(probe.ErrorKind) {
+	case "missing_access_url", "credential_missing", "stale_scope_mapping":
+		return true
+	}
+	switch strings.TrimSpace(probe.Status) {
+	case "missing", "forbidden", "unsupported", "invalid", "error":
+		return true
+	}
+	return false
 }
 
 func classifyRawAccessURLFindings(record projectRecordState) storageFindingKind {
@@ -2592,6 +2750,24 @@ func canonicalizeRecordAccessURLs(accessURLs []string, scopes []domain.StorageBu
 		}
 	}
 	return uniqueStrings(out)
+}
+
+func canonicalizeRecordAccessURLMappings(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) map[string]string {
+	out := make(map[string]string, len(accessURLs))
+	for _, accessURL := range accessURLs {
+		rawURL := strings.TrimSpace(accessURL)
+		if rawURL == "" {
+			continue
+		}
+		if objectURL := canonicalizeScopedStorageURL(rawURL, scopes, organization, project); objectURL != "" {
+			out[rawURL] = objectURL
+			continue
+		}
+		if objectURL := canonicalStorageURL("", "", rawURL); objectURL != "" {
+			out[rawURL] = objectURL
+		}
+	}
+	return out
 }
 
 func canonicalizeRecordAccessURLsForProjectInventory(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) ([]string, error) {

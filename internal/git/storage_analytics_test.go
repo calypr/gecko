@@ -2435,17 +2435,16 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
-		t.Fatalf("expected mapped bucket match to suppress stale raw URL misclassification, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
+		t.Fatalf("expected mapped bucket match to surface stale access URL repair, got %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
-		t.Fatalf("expected mapped bucket match to preserve clean-chain count, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 0 {
+		t.Fatalf("expected stale access URL repair to block clean-chain count, got %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
-	for _, finding := range findings {
-		if finding.NormalizedPath == "data/slide.ome.tiff" {
-			t.Fatalf("did not expect stale raw URL to produce a chain finding once mapped object exists: %+v", finding)
-		}
+	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "data/slide.ome.tiff")
+	if finding.DefaultAction != storageActionRemoveBrokenAccessURLs {
+		t.Fatalf("expected stale URL finding to default to access method repair, got %+v", finding)
 	}
 	if len(backend.probeItems) != 1 {
 		t.Fatalf("expected only the canonical scoped probe, got %+v", backend.probeItems)
@@ -2522,14 +2521,13 @@ func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectSc
 	if got := chain.Summary.CountsByKind["syfon_missing_bucket_object"]; got != 0 {
 		t.Fatalf("expected stale EllrottLab URL to be canonicalized into the audit project bucket, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
-		t.Fatalf("expected current project bucket object to complete the chain, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
+		t.Fatalf("expected current project bucket object to surface stale access URL repair, got summary %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "gdc_mirror", "gdc_mirror", chain)
-	for _, finding := range findings {
-		if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
-			t.Fatalf("did not expect stale EllrottLab bucket to appear in findings: %+v", finding)
-		}
+	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "data/file.bin")
+	if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
+		t.Fatalf("did not expect stale EllrottLab bucket to appear as resolved target: %+v", finding)
 	}
 }
 
@@ -2800,7 +2798,7 @@ func TestBuildStorageChainAuditFlagsExactPathMismatchWhenHashExistsElsewhereInBu
 	assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "CONFIG/cbds-BForePC.json")
 }
 
-func TestClassifyStorageFindingSuppressesRawURLFailuresWhenScopedProbeMatches(t *testing.T) {
+func TestClassifyStorageFindingSurfacesStaleRawURLWhenScopedProbeMatches(t *testing.T) {
 	record := projectRecordState{
 		ProjectRecord: gintegrationsyfon.ProjectRecord{
 			ObjectID:   "obj-a",
@@ -2809,6 +2807,9 @@ func TestClassifyStorageFindingSuppressesRawURLFailuresWhenScopedProbeMatches(t 
 			AccessURLs: []string{"s3://bforepc-prod/JHU/slide.ome.tiff"},
 		},
 		CanonicalAccessURLs: []string{"s3://bforepc/bforepc-prod/JHU/slide.ome.tiff"},
+		CanonicalAccessURLByRaw: map[string]string{
+			"s3://bforepc-prod/JHU/slide.ome.tiff": "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
+		},
 		AccessProbes: []gintegrationsyfon.BulkStorageProbeResult{
 			{
 				ObjectURL:        "s3://bforepc-prod/JHU/slide.ome.tiff",
@@ -2828,12 +2829,19 @@ func TestClassifyStorageFindingSuppressesRawURLFailuresWhenScopedProbeMatches(t 
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
-		t.Fatalf("expected scoped matched probe to suppress raw URL credential miss, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
+		t.Fatalf("expected scoped matched probe to surface repairable stale URL, got %s", got)
+	}
+	repairRecord := repairableBrokenAccessRecord(record)
+	if len(repairRecord.AccessProbes) != 2 {
+		t.Fatalf("expected stale raw and scoped replacement probes, got %+v", repairRecord.AccessProbes)
+	}
+	if repairRecord.AccessProbes[0].ErrorKind != "stale_scope_mapping" || repairRecord.AccessProbes[1].ObjectURL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
+		t.Fatalf("unexpected repair probes: %+v", repairRecord.AccessProbes)
 	}
 }
 
-func TestClassifyStorageFindingSuppressesRawURLMismatchWhenScopedProbeMatches(t *testing.T) {
+func TestClassifyStorageFindingSurfacesRawURLMismatchWhenScopedProbeMatches(t *testing.T) {
 	record := projectRecordState{
 		ProjectRecord: gintegrationsyfon.ProjectRecord{
 			ObjectID:   "obj-a",
@@ -2842,6 +2850,9 @@ func TestClassifyStorageFindingSuppressesRawURLMismatchWhenScopedProbeMatches(t 
 			AccessURLs: []string{"s3://bforepc-prod/JHU/slide.ome.tiff"},
 		},
 		CanonicalAccessURLs: []string{"s3://bforepc/bforepc-prod/JHU/slide.ome.tiff"},
+		CanonicalAccessURLByRaw: map[string]string{
+			"s3://bforepc-prod/JHU/slide.ome.tiff": "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
+		},
 		AccessProbes: []gintegrationsyfon.BulkStorageProbeResult{
 			{
 				ObjectURL:            "s3://bforepc-prod/JHU/slide.ome.tiff",
@@ -2861,8 +2872,90 @@ func TestClassifyStorageFindingSuppressesRawURLMismatchWhenScopedProbeMatches(t 
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
-		t.Fatalf("expected scoped matched probe to suppress raw URL mismatch, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
+		t.Fatalf("expected scoped matched probe to surface repairable stale URL, got %s", got)
+	}
+}
+
+func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T) {
+	record := projectRecordState{
+		ProjectRecord: gintegrationsyfon.ProjectRecord{
+			ObjectID: "obj-a",
+			Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Size:     100,
+			AccessURLs: []string{
+				"s3://retired-bucket/JHU/slide.ome.tiff",
+				"s3://bforepc-prod/JHU/slide.ome.tiff",
+			},
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "s3", Type: "s3", URL: "s3://retired-bucket/JHU/slide.ome.tiff"},
+				{AccessID: "s3", Type: "s3", URL: "s3://bforepc-prod/JHU/slide.ome.tiff"},
+			},
+		},
+		CanonicalAccessURLs: []string{"s3://retired-bucket/JHU/slide.ome.tiff", "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff"},
+		CanonicalAccessURLByRaw: map[string]string{
+			"s3://retired-bucket/JHU/slide.ome.tiff": "s3://retired-bucket/JHU/slide.ome.tiff",
+			"s3://bforepc-prod/JHU/slide.ome.tiff":   "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
+		},
+		AccessProbes: []gintegrationsyfon.BulkStorageProbeResult{
+			{
+				ObjectURL:        "s3://retired-bucket/JHU/slide.ome.tiff",
+				Status:           "error",
+				Exists:           false,
+				ErrorKind:        "credential_missing",
+				ValidationStatus: "unverifiable",
+			},
+			{
+				ObjectURL:        "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/JHU/slide.ome.tiff",
+				Status:           "present",
+				Exists:           true,
+				ValidationStatus: "matched",
+			},
+		},
+	}
+
+	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
+		t.Fatalf("expected repairable broken access method finding, got %s", got)
+	}
+	broken := repairableBrokenAccessRecord(record)
+	if len(broken.AccessProbes) != 3 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" || broken.AccessProbes[1].ErrorKind != "stale_scope_mapping" {
+		t.Fatalf("expected retired, stale, and replacement probes in repair record, got %+v", broken.AccessProbes)
+	}
+	remaining, shouldDelete, ok := repairBrokenBucketMappingRecord(broken)
+	if !ok || shouldDelete {
+		t.Fatalf("expected repair update, got ok=%v shouldDelete=%v remaining=%+v", ok, shouldDelete, remaining)
+	}
+	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
+		t.Fatalf("expected working access method to be replaced with scoped URL, got %+v", remaining)
+	}
+}
+
+func TestRemainingAccessMethodsReplacesStaleScopeMapping(t *testing.T) {
+	record := GitStorageCleanupRecordAudit{
+		ObjectID:      "obj-a",
+		AccessURLs:    []string{"s3://bforepc-prod/JHU/slide.ome.tiff"},
+		AccessMethods: []GitStorageCleanupAccessMethod{{AccessID: "s3", Type: "s3", URL: "s3://bforepc-prod/JHU/slide.ome.tiff"}},
+		AccessProbes: []GitStorageCleanupAccessProbe{
+			{
+				URL:       "s3://bforepc-prod/JHU/slide.ome.tiff",
+				Status:    "error",
+				ErrorKind: "stale_scope_mapping",
+			},
+			{
+				URL:              "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff",
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/JHU/slide.ome.tiff",
+				Status:           "present",
+				ValidationStatus: "matched",
+			},
+		},
+	}
+
+	remaining := remainingAccessMethodsAfterBrokenRemoval(record)
+	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc/bforepc-prod/JHU/slide.ome.tiff" {
+		t.Fatalf("expected stale URL replaced with scoped URL, got %+v", remaining)
 	}
 }
 

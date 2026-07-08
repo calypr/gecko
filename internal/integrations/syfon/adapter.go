@@ -396,12 +396,16 @@ func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizati
 		}
 		accessMethods := make([]ProjectAccessMethod, 0, len(item.AccessMethods))
 		for _, method := range item.AccessMethods {
+			methodURL := strings.TrimSpace(method.URL)
 			accessMethods = append(accessMethods, ProjectAccessMethod{
 				AccessID: strings.TrimSpace(method.AccessID),
 				Type:     strings.TrimSpace(method.Type),
-				URL:      strings.TrimSpace(method.URL),
+				URL:      methodURL,
 				Headers:  append([]string(nil), method.Headers...),
 			})
+			if methodURL != "" {
+				accessURLs = append(accessURLs, methodURL)
+			}
 		}
 		out = append(out, ProjectRecord{
 			ObjectID:      strings.TrimSpace(item.ObjectID),
@@ -412,7 +416,7 @@ func (manager *Manager) ListProjectAuditRecords(ctx context.Context, authorizati
 			Size:          item.Size,
 			CreatedAt:     parseOptionalTime(optionalString(item.CreatedTime)),
 			UpdatedAt:     parseOptionalTime(optionalString(item.UpdatedTime)),
-			AccessURLs:    accessURLs,
+			AccessURLs:    uniqueNonEmptyStrings(accessURLs),
 			AccessMethods: accessMethods,
 		})
 	}

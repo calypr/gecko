@@ -545,6 +545,47 @@ func TestListProjectAuditRecordsIncludesPathPrefix(t *testing.T) {
 	}
 }
 
+func TestListProjectAuditRecordsFoldsAccessMethodURLsIntoAccessURLs(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/project-records" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		body, err := json.Marshal(map[string]any{"items": []map[string]any{{
+			"object_id": "obj-1",
+			"name":      "file.txt",
+			"checksum":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"size":      10,
+			"access_methods": []map[string]any{
+				{"access_id": "s3", "type": "s3", "url": "s3://bucket/path/file.txt"},
+				{"access_id": "s3", "type": "s3", "url": "s3://bucket/path/file.txt"},
+			},
+		}}})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	manager := NewManager("http://syfon.example", client)
+	records, err := manager.ListProjectAuditRecords(context.Background(), "Bearer token", "org", "proj", "")
+	if err != nil {
+		t.Fatalf("ListProjectAuditRecords returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one record, got %+v", records)
+	}
+	if !reflect.DeepEqual(records[0].AccessURLs, []string{"s3://bucket/path/file.txt"}) {
+		t.Fatalf("expected access method URL folded into access URLs, got %+v", records[0].AccessURLs)
+	}
+	if len(records[0].AccessMethods) != 2 {
+		t.Fatalf("expected access methods preserved, got %+v", records[0].AccessMethods)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
