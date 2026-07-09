@@ -1777,7 +1777,7 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 						probes = append(probes, result)
 					}
 				}
-				clone.AccessProbes = probes
+				clone.AccessProbes = append(append([]gintegrationsyfon.BulkStorageProbeResult(nil), record.AccessProbes...), probes...)
 				states = append(states, clone)
 			}
 			out[checksum] = states
@@ -2878,19 +2878,21 @@ func recordBucketURLs(record projectRecordState) []string {
 
 func recordStorageCandidateURLs(record projectRecordState) []string {
 	out := make([]string, 0)
+	for _, accessURL := range record.CanonicalAccessURLs {
+		if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
+			out = append(out, objectURL)
+		}
+	}
 	for _, probe := range record.AccessProbes {
 		if objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL); objectURL != "" {
 			out = append(out, objectURL)
 		}
 	}
-	for _, accessURL := range rawAccessURLsForRecord(record) {
-		if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
-			out = append(out, objectURL)
-		}
-	}
-	for _, accessURL := range record.CanonicalAccessURLs {
-		if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
-			out = append(out, objectURL)
+	if len(record.CanonicalAccessURLs) == 0 {
+		for _, accessURL := range rawAccessURLsForRecord(record) {
+			if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
+				out = append(out, objectURL)
+			}
 		}
 	}
 	return uniqueStrings(out)
@@ -3181,20 +3183,6 @@ func canonicalizeRecordAccessURLMappings(accessURLs []string, scopes []domain.St
 		}
 	}
 	return out
-}
-
-func canonicalizeRecordAccessURLsForProjectInventory(accessURLs []string, scopes []domain.StorageBucketScope, organization string, project string) ([]string, error) {
-	out := make([]string, 0, len(accessURLs))
-	for _, accessURL := range accessURLs {
-		if objectURL := canonicalizeScopedStorageURL(accessURL, scopes, organization, project); objectURL != "" {
-			out = append(out, objectURL)
-			continue
-		}
-		if _, _, ok := parseStorageURL(accessURL); ok {
-			return nil, fmt.Errorf("storage access URL %q could not be mapped into bucket scopes for project %s/%s", strings.TrimSpace(accessURL), strings.TrimSpace(organization), strings.TrimSpace(project))
-		}
-	}
-	return uniqueStrings(out), nil
 }
 
 func canonicalizeScopedStorageURL(accessURL string, scopes []domain.StorageBucketScope, organization string, project string) string {

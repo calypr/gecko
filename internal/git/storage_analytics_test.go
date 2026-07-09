@@ -2922,6 +2922,85 @@ func TestBuildStorageChainAuditAcceptsMappedNameAndSourcePathInventoryObjects(t 
 	}
 }
 
+func TestBuildStorageChainAuditUsesCanonicalInventoryCandidatesBeforeMissingBucket(t *testing.T) {
+	sourceChecksum := "db458f223d03fddc541e2ad3c93ff3c152a20ecaa636cdfcb031cff6fe0c6b3a"
+	mappedChecksum := "b8639eca6eed65224f3af4c70425f578b949ee7202051388c331404cf35073f6"
+	sourcePath := "OHSU/koei_chin/visium_hd/4-R2/outs/segmented_outputs/analysis/diffexp/gene_expression_kmeans_10_clusters/differential_expression.csv"
+	mappedRepoPath := "OHSU/koei_chin/visium_hd/4-R2/outs/segmented_outputs/analysis/diffexp/gene_expression_kmeans_2_clusters/differential_expression.csv"
+	mappedRawURL := "s3://bforepc-prod/97a32a3a-1a30-5e14-bd94-7bf65ac98f27/" + mappedChecksum
+	sourceRawURL := "s3://bforepc-prod/" + sourcePath
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		sourcePath:     lfsPointer(sourceChecksum, 1200),
+		mappedRepoPath: lfsPointer(mappedChecksum, 1300),
+	})
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-source",
+				Name:         "differential_expression.csv",
+				Checksum:     sourceChecksum,
+				Organization: "HTAN_INT",
+				Project:      "BForePC",
+				Size:         1200,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{sourceRawURL},
+			},
+			{
+				ObjectID:     "obj-mapped",
+				Name:         "differential_expression.csv",
+				Checksum:     mappedChecksum,
+				Organization: "HTAN_INT",
+				Project:      "BForePC",
+				Size:         1300,
+				UpdatedAt:    &now,
+				AccessURLs:   []string{mappedRawURL},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bforepc",
+				Organization: "HTAN_INT",
+				ProjectID:    "BForePC",
+				Path:         "s3://bforepc/bforepc-prod",
+			},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{
+				ObjectURL: "s3://bforepc/bforepc-prod/" + sourcePath,
+				Bucket:    "bforepc",
+				Key:       "bforepc-prod/" + sourcePath,
+				Path:      sourcePath,
+				SizeBytes: 1200,
+			},
+			{
+				ObjectURL: "s3://bforepc/bforepc-prod/" + mappedRepoPath,
+				Bucket:    "bforepc",
+				Key:       "bforepc-prod/" + mappedRepoPath,
+				Path:      mappedRepoPath,
+				SizeBytes: 1300,
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 2 {
+		t.Fatalf("expected canonical inventory candidates to complete both chains, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
+		t.Fatalf("expected no Git+Syfon missing bucket findings after canonical inventory matching, got summary %+v", chain.Summary)
+	}
+	if backend.listProbeCalls != 0 {
+		t.Fatalf("expected no Syfon bulk-list fallback call, got %d calls with items %+v", backend.listProbeCalls, backend.listProbeItems)
+	}
+}
+
 func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectScopes(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/file.bin": lfsPointer("dc4e842bde2d06c161ad96dfcc58084677e9e376989f5b3567c4217b108a0935", 100),

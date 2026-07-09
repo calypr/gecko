@@ -776,11 +776,10 @@ func repoPathsByChecksumForInventory(inventory []RepoInventoryFile) map[string][
 func inventoryValidationProbesForRecord(record projectRecordState, repoPaths []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, inventoryBuckets map[string]struct{}, scopes []domain.StorageBucketScope, organization string, project string) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
 	probes := make([]gintegrationsyfon.BulkStorageProbeResult, 0)
 	seen := make(map[string]struct{})
-	accessURLs, err := canonicalizeRecordAccessURLsForProjectInventory(record.AccessURLs, scopes, organization, project)
+	accessURLs, err := recordAccessURLsForProjectInventory(record.AccessURLs, inventoryBuckets, scopes, organization, project)
 	if err != nil {
 		return nil, err
 	}
-	accessURLs = append(accessURLs, rawProjectBucketAccessURLsForInventory(record.AccessURLs, inventoryBuckets)...)
 	accessURLs = append(accessURLs, projectScopeRepoPathObjectURLs(repoPaths, scopes, organization, project)...)
 	accessURLs = uniqueStrings(accessURLs)
 	for _, accessURL := range accessURLs {
@@ -808,9 +807,14 @@ func inventoryValidationProbesForRecord(record projectRecordState, repoPaths []s
 	return probes, nil
 }
 
-func rawProjectBucketAccessURLsForInventory(accessURLs []string, inventoryBuckets map[string]struct{}) []string {
+func recordAccessURLsForProjectInventory(accessURLs []string, inventoryBuckets map[string]struct{}, scopes []domain.StorageBucketScope, organization string, project string) ([]string, error) {
 	out := make([]string, 0, len(accessURLs))
 	for _, accessURL := range accessURLs {
+		mapped := false
+		if objectURL := canonicalizeScopedStorageURL(accessURL, scopes, organization, project); objectURL != "" {
+			out = append(out, objectURL)
+			mapped = true
+		}
 		objectURL := canonicalStorageURL("", "", accessURL)
 		if objectURL == "" {
 			continue
@@ -820,13 +824,16 @@ func rawProjectBucketAccessURLsForInventory(accessURLs []string, inventoryBucket
 			continue
 		}
 		if len(inventoryBuckets) > 0 {
-			if _, ok := inventoryBuckets[bucket]; !ok {
-				continue
+			if _, ok := inventoryBuckets[bucket]; ok {
+				out = append(out, objectURL)
+				mapped = true
 			}
 		}
-		out = append(out, objectURL)
+		if !mapped {
+			return nil, fmt.Errorf("storage access URL %q could not be mapped into bucket scopes for project %s/%s", strings.TrimSpace(accessURL), strings.TrimSpace(organization), strings.TrimSpace(project))
+		}
 	}
-	return uniqueStrings(out)
+	return uniqueStrings(out), nil
 }
 
 func projectScopeRepoPathObjectURLs(repoPaths []string, scopes []domain.StorageBucketScope, organization string, project string) []string {
@@ -1339,6 +1346,13 @@ func bucketObjectHasEquivalentSyfonRecord(item gintegrationsyfon.ProjectBucketOb
 	return false
 }
 
+func recordHasResolvedStorage(record projectRecordState, bucketMatches []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
+	if len(bucketMatches) > 0 {
+		return true
+	}
+	return resolveRecordStorage(record, bucketObjectsByURL).hasPresentProbe
+}
+
 func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccumulator, countCompleteFromSyfon bool) {
 	for _, record := range index.allRecords {
 		gitPaths := uniqueStrings(index.repoPathsByChecksum[normalizeAnalyticsChecksum(record.Checksum)])
@@ -1373,7 +1387,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 			acc.findings = append(acc.findings, findings...)
 			acc.addCount("probe_error", chainPathCount(gitPaths))
 		case storageFindingNone:
-			if countCompleteFromSyfon && len(gitPaths) > 0 && len(bucketMatches) > 0 {
+			if countCompleteFromSyfon && len(gitPaths) > 0 && recordHasResolvedStorage(record, bucketMatches, index.bucketObjectsByURL) {
 				acc.addCount("bucket_syfon_git_complete", len(gitPaths))
 				continue
 			}
