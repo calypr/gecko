@@ -36,7 +36,7 @@ func (handler *Handler) handleGitProjectRefsGET(ctx fiber.Ctx) error {
 	if authorizationHeader != "" {
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
 			handler.logger.Warning("failed to warm git mirror for %s refs: %v", projectID, err)
 		}
@@ -76,7 +76,7 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 	if authorizationHeader != "" {
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
 			handler.logger.Warning("failed to warm git mirror for %s tree: %v", projectID, err)
 		}
@@ -153,7 +153,7 @@ func (handler *Handler) handleGitProjectManifestGET(ctx fiber.Ctx) error {
 	if authorizationHeader != "" {
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
 			handler.logger.Warning("failed to warm git mirror for %s manifest: %v", projectID, err)
 		}

@@ -52,6 +52,7 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 	projectGitWrite.Post("/update", projectWriteAuth, handler.handleGitProjectUpdatePOST)
 	projectGitWrite.Post("/repair/project-diff/audit", projectReadAuth, handler.handleGitProjectDiffAuditPOST)
 	projectGitWrite.Post("/repair/storage-chain/audit", projectReadAuth, handler.handleGitProjectStorageChainAuditPOST)
+	projectGitWrite.Post("/repair/storage-chain/register-git-only", projectWriteAuth, handler.handleGitProjectStorageChainRegisterGitOnlyPOST)
 	projectGitWrite.Post("/repair/storage-cleanup/audit", projectReadAuth, handler.handleGitProjectStorageCleanupAuditPOST)
 	projectGitWrite.Post("/repair/storage-cleanup/apply", projectReadAuth, handler.handleGitProjectStorageCleanupApplyPOST)
 	projectGitWrite.Post("/uploads/session", projectWriteAuth, handler.handleGitProjectUploadSessionPOST)

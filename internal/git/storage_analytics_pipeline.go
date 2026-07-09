@@ -42,6 +42,8 @@ type storageChainIndex struct {
 	allRecords           []projectRecordState
 	bucketObjectsByURL   map[string]gintegrationsyfon.ProjectBucketObject
 	repoPathsByChecksum  map[string][]string
+	repoPathsByBucketURL map[string][]string
+	repoChecksumsByPath  map[string]string
 	recordsByBucketURL   map[string][]projectRecordState
 	equivalentRecordKeys equivalentRecordKeyIndex
 }
@@ -70,7 +72,7 @@ type storageChainInputs struct {
 	bucketInventoryErr error
 }
 
-func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, bucketPathPrefix string, timings *StorageChainAuditTimings) (*storageChainInputs, error) {
+func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, validationMode string, bucketPathPrefix string, forceRefresh bool, timings *StorageChainAuditTimings) (*storageChainInputs, error) {
 	type inventoryResult struct {
 		inventory []RepoInventoryFile
 		err       error
@@ -96,6 +98,14 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 	bucketCh := make(chan bucketResult, 1)
 
 	go func() {
+		if bucketMode == StorageChainBucketModeValidate && validationMode != StorageChainValidationModeList {
+			timings.Record("syfon_bucket_inventory_skipped", 0)
+			bucketCh <- bucketResult{
+				bucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
+				bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{},
+			}
+			return
+		}
 		start := time.Now()
 		timings.StageStart("repo_index")
 		inventory, err := service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
@@ -125,24 +135,26 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		logStorageChainInputResult("syfon_project_scopes", len(scopes), err)
 		scopeCh <- scopeResult{scopes: scopes, err: err}
 	}()
-	if bucketMode == StorageChainBucketModeValidate {
-		bucketCh <- bucketResult{
-			bucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
-			bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{},
+	go func() {
+		start := time.Now()
+		timings.StageStart("syfon_bucket_inventory")
+		var bucketObjects []gintegrationsyfon.ProjectBucketObject
+		var bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
+		var err error
+		if bucketMode == StorageChainBucketModeValidate {
+			if forceRefresh {
+				bucketObjects, bucketObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			} else {
+				bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			}
+		} else {
+			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 		}
-		timings.Record("syfon_bucket_inventory_skipped", 0)
-		logStorageChainInputResult("syfon_bucket_inventory_skipped validate_mode", 0, nil)
-	} else {
-		go func() {
-			start := time.Now()
-			timings.StageStart("syfon_bucket_inventory")
-			bucketObjects, bucketObjectsByURL, err := service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
-			timings.Record("syfon_bucket_inventory", time.Since(start))
-			timings.RecordMemory("syfon_bucket_inventory", "bucket_objects", len(bucketObjects), "bucket_lookup", len(bucketObjectsByURL))
-			logStorageChainInputResult("syfon_bucket_items", len(bucketObjects), err)
-			bucketCh <- bucketResult{bucketObjects: bucketObjects, bucketObjectsByURL: bucketObjectsByURL, err: err}
-		}()
-	}
+		timings.Record("syfon_bucket_inventory", time.Since(start))
+		timings.RecordMemory("syfon_bucket_inventory", "bucket_objects", len(bucketObjects), "bucket_lookup", len(bucketObjectsByURL))
+		logStorageChainInputResult("syfon_bucket_items", len(bucketObjects), err)
+		bucketCh <- bucketResult{bucketObjects: bucketObjects, bucketObjectsByURL: bucketObjectsByURL, err: err}
+	}()
 
 	inventory := <-inventoryCh
 	recordSet := <-recordCh
@@ -188,8 +200,9 @@ const (
 )
 
 type chainAuditAccumulator struct {
-	findings []GitStorageChainFinding
-	summary  GitStorageChainAuditSummary
+	findings                   []GitStorageChainFinding
+	summary                    GitStorageChainAuditSummary
+	missingBucketDebugLogCount int
 }
 
 func newChainSummary(bucketObjectCount, syfonRecordCount, gitTrackedFileCount int) GitStorageChainAuditSummary {
@@ -892,7 +905,7 @@ func inventoryPresentProbe(record projectRecordState, objectURL string, expected
 	}
 	return gintegrationsyfon.BulkStorageProbeResult{
 		ID:                   storageListValidationRequestKey(objectURL, record.Size, expectedName),
-		Operation:            StorageChainValidationModeList,
+		Operation:            StorageChainValidationModeInventory,
 		ObjectURL:            objectURL,
 		Provider:             strings.TrimSpace(item.Provider),
 		Bucket:               strings.TrimSpace(item.Bucket),
@@ -917,16 +930,16 @@ func inventoryMissingProbe(record projectRecordState, objectURL string, expected
 	nameMatch := false
 	return gintegrationsyfon.BulkStorageProbeResult{
 		ID:                   storageListValidationRequestKey(objectURL, record.Size, expectedName),
-		Operation:            StorageChainValidationModeList,
+		Operation:            StorageChainValidationModeInventory,
 		ObjectURL:            objectURL,
 		Provider:             "s3",
 		Bucket:               bucket,
 		Key:                  key,
 		Path:                 path.Base(key),
 		Exists:               false,
-		Status:               "not_found",
-		Error:                fmt.Sprintf("object %q was not found in project bucket inventory", objectURL),
-		ErrorKind:            "object_not_found",
+		Status:               "unknown",
+		Error:                fmt.Sprintf("object %q was absent from project bucket inventory and requires exact verification", objectURL),
+		ErrorKind:            "inventory_miss",
 		ValidationStatus:     "unverifiable",
 		SizeMatch:            &sizeMatch,
 		NameMatch:            &nameMatch,
@@ -980,7 +993,7 @@ func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context
 	return view, nil
 }
 
-func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, inventory []RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, forceRefresh bool, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
+func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, inventory []RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
 	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &storageAuditStorageView{
 		scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
@@ -999,28 +1012,44 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			return view, nil
 		}
 		if validationMode == StorageChainValidationModeList {
-			inventoryStart := time.Now()
-			var validationObjects []gintegrationsyfon.ProjectBucketObject
-			var validationObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
-			var err error
-			if forceRefresh {
-				validationObjects, validationObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
-			} else {
-				validationObjects, validationObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			if bucketInventoryErr != nil {
+				return nil, bucketInventoryErr
 			}
-			timings.Record("syfon_bucket_validation_inventory", time.Since(inventoryStart))
-			timings.RecordMemory("syfon_bucket_validation_inventory", "bucket_objects", len(validationObjects), "bucket_lookup", len(validationObjectsByURL))
-			if err != nil {
-				return nil, err
-			}
-			view.bucketObjects, view.bucketObjectsByURL = cloneBucketInventory(validationObjects, validationObjectsByURL)
+			view.bucketObjects = bucketObjects
+			view.bucketObjectsByURL = bucketObjectsByURL
 			validateStart := time.Now()
 			probedRecordSet, err := attachProjectStorageInventoryValidations(recordSet, inventory, view.bucketObjectsByURL, scopes, organization, project)
 			if err != nil {
 				return nil, err
 			}
 			timings.Record("inventory_list_validation", time.Since(validateStart))
-			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL))
+
+			candidateStart := time.Now()
+			candidates := selectInventoryMissRecordSet(probedRecordSet)
+			timings.Record("exact_list_candidate_selection", time.Since(candidateStart))
+			if candidates != nil {
+				probeStart := time.Now()
+				exactRecordSet, probeErr := service.attachProjectStorageListValidations(ctx, authorizationHeader, candidates)
+				timings.Record("targeted_exact_list_validation", time.Since(probeStart))
+				if probeErr != nil {
+					return nil, probeErr
+				}
+				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
+				view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, exactRecordSet)
+
+				confirmationCandidates := selectInventoryMissRecordSet(exactRecordSet)
+				if confirmationCandidates != nil {
+					confirmationStart := time.Now()
+					confirmedRecordSet, confirmationErr := service.attachProjectStorageProbes(ctx, authorizationHeader, confirmationCandidates)
+					timings.Record("targeted_metadata_confirmation", time.Since(confirmationStart))
+					if confirmationErr != nil {
+						return nil, confirmationErr
+					}
+					probedRecordSet = mergeRecordSetProbes(probedRecordSet, confirmedRecordSet)
+					view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, confirmedRecordSet)
+				}
+			}
+			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum
 			view.allProjectRecords = probedRecordSet.allProjectRecords
 			return view, nil
@@ -1153,6 +1182,79 @@ func selectTargetedProbeRecordSet(recordSet *storageAuditRecordSet, bucketObject
 	}
 }
 
+func selectInventoryMissRecordSet(recordSet *storageAuditRecordSet) *storageAuditRecordSet {
+	if recordSet == nil {
+		return nil
+	}
+	selected := make(map[string][]projectRecordState)
+	for checksum, group := range recordSet.allProjectRecords {
+		for _, record := range group {
+			assessment := assessStorageRecordEvidence(record, false)
+			if assessment.Present || !assessment.HasInventoryMiss {
+				continue
+			}
+			selected[checksum] = append(selected[checksum], record)
+		}
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	return &storageAuditRecordSet{
+		recordsByChecksum: cloneRecordStateMap(selected),
+		allProjectRecords: cloneRecordStateMap(selected),
+	}
+}
+
+func countRecordSet(recordSet *storageAuditRecordSet) int {
+	if recordSet == nil {
+		return 0
+	}
+	return countRecordStates(recordSet.allProjectRecords)
+}
+
+func mergeBucketInventoryWithPresentProbes(bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, recordSet *storageAuditRecordSet) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject) {
+	if recordSet == nil {
+		return bucketObjects, bucketObjectsByURL
+	}
+	if bucketObjectsByURL == nil {
+		bucketObjectsByURL = make(map[string]gintegrationsyfon.ProjectBucketObject)
+	}
+	for _, group := range recordSet.allProjectRecords {
+		for _, record := range group {
+			for _, probe := range record.AccessProbes {
+				if strings.TrimSpace(probe.Status) != "present" {
+					continue
+				}
+				objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL)
+				if objectURL == "" {
+					continue
+				}
+				if _, ok := bucketObjectsByURL[objectURL]; ok {
+					continue
+				}
+				item := bucketObjectFromPresentProbe(objectURL, probe)
+				bucketObjectsByURL[objectURL] = item
+				bucketObjects = append(bucketObjects, item)
+			}
+		}
+	}
+	return bucketObjects, bucketObjectsByURL
+}
+
+func bucketObjectFromPresentProbe(objectURL string, probe gintegrationsyfon.BulkStorageProbeResult) gintegrationsyfon.ProjectBucketObject {
+	return gintegrationsyfon.ProjectBucketObject{
+		ObjectURL:    objectURL,
+		Provider:     strings.TrimSpace(probe.Provider),
+		Bucket:       strings.TrimSpace(probe.Bucket),
+		Key:          strings.Trim(strings.TrimSpace(probe.Key), "/"),
+		Path:         strings.TrimSpace(probe.Path),
+		SizeBytes:    derefInt64(probe.SizeBytes),
+		MetaSHA256:   strings.TrimSpace(probe.MetaSHA256),
+		ETag:         strings.TrimSpace(probe.ETag),
+		LastModified: strings.TrimSpace(probe.LastModified),
+	}
+}
+
 func recordNeedsTargetedProbe(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
 	resolution := resolveRecordStorage(record, bucketObjectsByURL)
 	if len(resolution.matchedBucketObjectURLs) == 0 {
@@ -1236,14 +1338,24 @@ func derefInt64(value *int64) int64 {
 	return *value
 }
 
-func buildStorageChainIndex(inventory []RepoInventoryFile, allProjectRecords map[string][]projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) storageChainIndex {
+func buildStorageChainIndex(inventory []RepoInventoryFile, allProjectRecords map[string][]projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string) storageChainIndex {
 	repoPathsByChecksum := make(map[string][]string, len(inventory))
+	repoPathsByBucketURL := make(map[string][]string, len(inventory))
+	repoChecksumsByPath := make(map[string]string, len(inventory))
 	for _, item := range inventory {
 		checksum := normalizeAnalyticsChecksum(item.Checksum)
 		if checksum == "" {
 			continue
 		}
-		repoPathsByChecksum[checksum] = append(repoPathsByChecksum[checksum], item.RepoPath)
+		repoPath := normalizeRepoSubpath(item.RepoPath)
+		if repoPath == "" {
+			continue
+		}
+		repoPathsByChecksum[checksum] = append(repoPathsByChecksum[checksum], repoPath)
+		repoChecksumsByPath[repoPath] = checksum
+		for _, bucketURL := range projectScopeRepoPathObjectURLs([]string{repoPath}, scopes, organization, project) {
+			repoPathsByBucketURL[bucketURL] = append(repoPathsByBucketURL[bucketURL], repoPath)
+		}
 	}
 	allRecords := flattenRecordStates(allProjectRecords)
 	recordsByBucketURL := make(map[string][]projectRecordState)
@@ -1257,13 +1369,15 @@ func buildStorageChainIndex(inventory []RepoInventoryFile, allProjectRecords map
 		allRecords:           allRecords,
 		bucketObjectsByURL:   bucketObjectsByURL,
 		repoPathsByChecksum:  repoPathsByChecksum,
+		repoPathsByBucketURL: repoPathsByBucketURL,
+		repoChecksumsByPath:  repoChecksumsByPath,
 		recordsByBucketURL:   recordsByBucketURL,
 		equivalentRecordKeys: buildEquivalentRecordKeyIndex(allRecords),
 	}
 }
 
-func buildStorageChainAuditModel(gitSubpath string, inventory []RepoInventoryFile, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, includeBucketOrigin bool) *chainAuditModel {
-	index := buildStorageChainIndex(inventory, allProjectRecords, bucketObjectsByURL)
+func buildStorageChainAuditModel(gitSubpath string, inventory []RepoInventoryFile, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string, includeBucketOrigin bool) *chainAuditModel {
+	index := buildStorageChainIndex(inventory, allProjectRecords, bucketObjectsByURL, scopes, organization, project)
 	acc := chainAuditAccumulator{
 		findings: make([]GitStorageChainFinding, 0),
 		summary:  newChainSummary(len(bucketObjectsByURL), len(index.allRecords), len(inventory)),
@@ -1272,7 +1386,7 @@ func buildStorageChainAuditModel(gitSubpath string, inventory []RepoInventoryFil
 		buildBucketOriginChainFindings(index, &acc)
 	}
 	buildSyfonOriginChainFindings(index, &acc, !includeBucketOrigin)
-	buildGitOriginChainFindings(index, recordsByChecksum, allProjectRecords, &acc)
+	buildGitOriginChainFindings(index, recordsByChecksum, allProjectRecords, scopes, organization, project, &acc)
 	return finalizeChainFindings(gitSubpath, acc)
 }
 
@@ -1286,6 +1400,12 @@ func buildBucketOriginChainFindings(index storageChainIndex, acc *chainAuditAccu
 		item := index.bucketObjectsByURL[bucketURL]
 		if bucketObjectHasCompleteChain(index.recordsByBucketURL[bucketURL], index.repoPathsByChecksum, index.bucketObjectsByURL) {
 			acc.addCount("bucket_syfon_git_complete", 1)
+			continue
+		}
+		if len(index.recordsByBucketURL[bucketURL]) > 0 {
+			// An exact Syfon-to-bucket URL match is not a bucket orphan, even
+			// when the Git and Syfon checksums disagree. The Syfon-origin pass
+			// reports that conflict without offering the bucket for deletion.
 			continue
 		}
 		if bucketObjectHasEquivalentSyfonRecord(item, index.equivalentRecordKeys) {
@@ -1353,11 +1473,74 @@ func recordHasResolvedStorage(record projectRecordState, bucketMatches []string,
 	return resolveRecordStorage(record, bucketObjectsByURL).hasPresentProbe
 }
 
+func logMissingBucketCandidateDebug(record projectRecordState, gitPaths []string, bucketMatches []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, acc *chainAuditAccumulator) {
+	if acc == nil || acc.missingBucketDebugLogCount >= storageChainValidationDebugSampleLimit {
+		return
+	}
+	resolution := resolveRecordStorage(record, bucketObjectsByURL)
+	log.Printf(
+		"INFO: storage_chain_missing_bucket_candidates object_id=%s checksum=%s name=%q git_paths=%q raw_access_urls=%q canonical_access_urls=%q candidate_status=%q bucket_matches=%q access_probe_status=%q",
+		strings.TrimSpace(record.ObjectID),
+		strings.TrimSpace(record.Checksum),
+		strings.TrimSpace(record.Name),
+		strings.Join(uniqueStrings(gitPaths), ","),
+		strings.Join(rawAccessURLsForRecord(record), ","),
+		strings.Join(uniqueStrings(record.CanonicalAccessURLs), ","),
+		strings.Join(storageCandidateStatuses(resolution.candidateURLs, bucketObjectsByURL), ","),
+		strings.Join(uniqueStrings(bucketMatches), ","),
+		strings.Join(storageProbeDebugStatuses(record.AccessProbes), ","),
+	)
+	acc.missingBucketDebugLogCount++
+}
+
+func storageCandidateStatuses(candidateURLs []string, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) []string {
+	out := make([]string, 0, len(candidateURLs))
+	for _, candidate := range uniqueStrings(candidateURLs) {
+		status := "missing"
+		if _, ok := bucketObjectsByURL[candidate]; ok {
+			status = "found"
+		}
+		out = append(out, candidate+"="+status)
+	}
+	return out
+}
+
+func storageProbeDebugStatuses(probes []gintegrationsyfon.BulkStorageProbeResult) []string {
+	out := make([]string, 0, len(probes))
+	for _, probe := range probes {
+		objectURL := syfonProbeObjectURL(probe)
+		if objectURL == "" {
+			objectURL = strings.TrimSpace(probe.ObjectURL)
+		}
+		status := strings.TrimSpace(probe.Status)
+		if status == "" {
+			status = "unknown"
+		}
+		validation := strings.TrimSpace(probe.ValidationStatus)
+		if validation != "" {
+			status += "/" + validation
+		}
+		if errKind := strings.TrimSpace(probe.ErrorKind); errKind != "" {
+			status += "/" + errKind
+		}
+		out = append(out, objectURL+"="+status)
+	}
+	return out
+}
+
 func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccumulator, countCompleteFromSyfon bool) {
 	for _, record := range index.allRecords {
 		gitPaths := uniqueStrings(index.repoPathsByChecksum[normalizeAnalyticsChecksum(record.Checksum)])
 		bucketMatches := matchedBucketObjectURLs(record, index.bucketObjectsByURL)
-		switch classifyStorageFinding(record, index.bucketObjectsByURL) {
+		classification := classifyStorageFinding(record, index.bucketObjectsByURL)
+		if len(gitPaths) == 0 && len(bucketMatches) > 0 && (classification == storageFindingNone || classification == storageFindingValidationMismatch) {
+			if samePathGitPaths := repoPathsForBucketURLs(index.repoPathsByBucketURL, bucketMatches); len(samePathGitPaths) > 0 {
+				findings := buildSamePathChecksumConflictFindings(index, record, samePathGitPaths, bucketMatches)
+				acc.add("git_syfon_metadata_mismatch", findings...)
+				continue
+			}
+		}
+		switch classification {
 		case storageFindingBrokenBucketMap:
 			findingRecord := repairableBrokenAccessRecord(record)
 			if len(findingRecord.AccessProbes) == 0 {
@@ -1368,6 +1551,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 			acc.addCount("syfon_broken_bucket_mapping", len(findings))
 		case storageFindingObjectMissing:
 			if len(gitPaths) > 0 {
+				logMissingBucketCandidateDebug(record, gitPaths, bucketMatches, index.bucketObjectsByURL, acc)
 				findings := buildChainRecordFindings("syfon_git_no_bucket", record, gitPaths, bucketMatches, "Git and Syfon matched, but the mapped bucket object does not exist.")
 				acc.findings = append(acc.findings, findings...)
 				acc.addCount("syfon_git_no_bucket", len(gitPaths))
@@ -1398,22 +1582,89 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 	}
 }
 
-func buildGitOriginChainFindings(index storageChainIndex, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, acc *chainAuditAccumulator) {
+func repoPathsForBucketURLs(repoPathsByBucketURL map[string][]string, bucketURLs []string) []string {
+	paths := make([]string, 0, len(bucketURLs))
+	for _, bucketURL := range uniqueStrings(bucketURLs) {
+		paths = append(paths, repoPathsByBucketURL[bucketURL]...)
+	}
+	return uniqueStrings(paths)
+}
+
+func hasSyfonRecordForBucketURLs(recordsByBucketURL map[string][]projectRecordState, bucketURLs []string) bool {
+	for _, bucketURL := range uniqueStrings(bucketURLs) {
+		if len(recordsByBucketURL[bucketURL]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func buildSamePathChecksumConflictFindings(index storageChainIndex, record projectRecordState, gitPaths []string, bucketMatches []string) []GitStorageChainFinding {
+	findings := buildChainRecordFindings(
+		"git_syfon_metadata_mismatch",
+		record,
+		gitPaths,
+		bucketMatches,
+		"Git and Syfon map to the same bucket object path, but their checksums disagree. Do not delete this object automatically.",
+	)
+	for findingIndex := range findings {
+		gitChecksum := index.repoChecksumsByPath[normalizeRepoSubpath(findings[findingIndex].NormalizedPath)]
+		findings[findingIndex].Error = "Git LFS and Syfon map to the same bucket object path but have different SHA-256 values."
+		findings[findingIndex].SuggestedFix = fmt.Sprintf(
+			"Git LFS pointer SHA-256 is %s; Syfon record SHA-256 is %s. Recompute the bucket object's SHA-256 and reconcile the stale side manually before changing Git, Syfon, or the bucket object.",
+			gitChecksum,
+			strings.TrimSpace(record.Checksum),
+		)
+	}
+	return findings
+}
+
+func buildGitOriginChainFindings(index storageChainIndex, recordsByChecksum map[string][]projectRecordState, allProjectRecords map[string][]projectRecordState, scopes []domain.StorageBucketScope, organization string, project string, acc *chainAuditAccumulator) {
 	for _, item := range index.inventory {
 		checksum := normalizeAnalyticsChecksum(item.Checksum)
 		if len(allProjectRecords[checksum]) > 0 || len(recordsByChecksum[checksum]) > 0 {
 			continue
 		}
-		actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport("git_only_no_syfon")
+		bucketURLs := projectScopeRepoPathObjectURLs([]string{item.RepoPath}, scopes, organization, project)
+		if hasSyfonRecordForBucketURLs(index.recordsByBucketURL, bucketURLs) {
+			// The Syfon-origin pass reports an exact-path checksum conflict as a
+			// metadata mismatch. Do not also offer this Git pointer for Syfon
+			// creation just because its checksum differs.
+			continue
+		}
+		bucketObjectURL := ""
+		bucketSizeBytes := int64(0)
+		bucketEvaluation := "not_evaluated"
+		if len(bucketURLs) == 1 {
+			bucketObjectURL = bucketURLs[0]
+			if bucketObject, ok := index.bucketObjectsByURL[bucketObjectURL]; ok {
+				bucketSizeBytes = bucketObject.SizeBytes
+				bucketEvaluation = "present"
+			} else {
+				bucketEvaluation = "not_found"
+			}
+		} else if len(bucketURLs) > 1 {
+			bucketEvaluation = "ambiguous_mapping"
+		}
+		actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupportForEvidence("git_only_no_syfon", "verified")
+		recommendedAction := "Git checksum has no matching Syfon record. Bucket presence is not claimed by this finding."
+		if bucketEvaluation == "present" && bucketSizeBytes == item.Size {
+			recommendedAction = "Git checksum has no matching Syfon record. The mapped bucket object exists and its byte size matches the Git LFS pointer; create a Syfon record after reviewing that RGW did not provide a SHA-256 for verification."
+		} else if bucketEvaluation == "present" {
+			recommendedAction = "Git checksum has no matching Syfon record. The mapped bucket object exists but its byte size differs from the Git LFS pointer, so it is not safe to create a Syfon record."
+		}
 		acc.add("git_only_no_syfon", GitStorageChainFinding{
 			Kind:              "git_only_no_syfon",
+			EvidenceStatus:    "verified",
 			NormalizedPath:    item.RepoPath,
 			Checksum:          checksum,
 			SourcePaths:       []string{item.RepoPath},
 			ObjectIDs:         []string{},
 			RecordCount:       0,
 			SizeBytes:         item.Size,
-			RecommendedAction: "Git checksum has no matching Syfon record. Bucket presence is not claimed by this finding.",
+			BucketObjectURL:   bucketObjectURL,
+			BucketSizeBytes:   bucketSizeBytes,
+			RecommendedAction: recommendedAction,
 			Actionability:     actionability,
 			AvailableActions:  availableActions,
 			DefaultAction:     defaultAction,
@@ -1422,7 +1673,8 @@ func buildGitOriginChainFindings(index storageChainIndex, recordsByChecksum map[
 				Checksum:         checksum,
 				SourcePaths:      []string{item.RepoPath},
 				ObjectIDs:        []string{},
-				BucketEvaluation: "not_evaluated",
+				BucketObjectURLs: bucketURLs,
+				BucketEvaluation: bucketEvaluation,
 			},
 		})
 	}

@@ -329,6 +329,58 @@ func TestBulkDeleteObjectsUsesBulkDRSDeleteEndpoint(t *testing.T) {
 	}
 }
 
+func TestRegisterProjectObjectsUsesDRSRegistrationEndpoint(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/ga4gh/drs/v1/objects/register" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("expected authorization header")
+		}
+		var request struct {
+			Candidates []struct {
+				Name             string   `json:"name"`
+				Size             int64    `json:"size"`
+				ControlledAccess []string `json:"controlled_access"`
+				Checksums        []struct {
+					Type     string `json:"type"`
+					Checksum string `json:"checksum"`
+				} `json:"checksums"`
+				AccessMethods []struct {
+					AccessURL struct {
+						URL string `json:"url"`
+					} `json:"access_url"`
+				} `json:"access_methods"`
+			} `json:"candidates"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(request.Candidates) != 1 || request.Candidates[0].Name != "a.bin" || request.Candidates[0].Size != 100 || len(request.Candidates[0].Checksums) != 1 || request.Candidates[0].Checksums[0].Type != "sha256" || request.Candidates[0].Checksums[0].Checksum != strings.Repeat("a", 64) || len(request.Candidates[0].AccessMethods) != 1 || request.Candidates[0].AccessMethods[0].AccessURL.URL != "s3://bucket/root/a.bin" {
+			t.Fatalf("unexpected registration request: %+v", request)
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"objects":[{"id":"obj-created"}]}`)),
+		}, nil
+	})}
+	manager := NewManager("http://syfon.example", client)
+	results, err := manager.RegisterProjectObjects(context.Background(), "Bearer token", []ProjectObjectRegistration{{
+		Name:             "a.bin",
+		Checksum:         strings.Repeat("a", 64),
+		Size:             100,
+		ControlledAccess: []string{"/organization/org/project/proj"},
+		AccessURLs:       []string{"s3://bucket/root/a.bin"},
+	}})
+	if err != nil {
+		t.Fatalf("RegisterProjectObjects returned error: %v", err)
+	}
+	if !reflect.DeepEqual(results, []ProjectObjectRegistrationResult{{ObjectID: "obj-created"}}) {
+		t.Fatalf("unexpected registration result: %+v", results)
+	}
+}
+
 func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	t.Helper()
 

@@ -156,6 +156,20 @@ type ProjectBucketDeleteResult struct {
 	Error     string
 }
 
+// ProjectObjectRegistration is the narrow subset of DRS registration Gecko
+// needs when it restores a Syfon record for an existing Git LFS pointer.
+type ProjectObjectRegistration struct {
+	Name             string
+	Checksum         string
+	Size             int64
+	ControlledAccess []string
+	AccessURLs       []string
+}
+
+type ProjectObjectRegistrationResult struct {
+	ObjectID string
+}
+
 func NewManager(baseURL string, client *http.Client) *Manager {
 	httpClient := client
 	if httpClient == nil {
@@ -637,6 +651,61 @@ func (manager *Manager) BulkDeleteObjects(ctx context.Context, authorizationHead
 		return fmt.Errorf("bulk delete syfon objects failed with status %d", response.StatusCode())
 	}
 	return nil
+}
+
+func (manager *Manager) RegisterProjectObjects(ctx context.Context, authorizationHeader string, candidates []ProjectObjectRegistration) ([]ProjectObjectRegistrationResult, error) {
+	if len(candidates) == 0 {
+		return []ProjectObjectRegistrationResult{}, nil
+	}
+	client, err := manager.drsClient(authorizationHeader)
+	if err != nil {
+		return nil, err
+	}
+	request := drsapi.RegisterObjectsJSONRequestBody{Candidates: make([]drsapi.DrsObjectCandidate, 0, len(candidates))}
+	for _, candidate := range candidates {
+		name := strings.TrimSpace(candidate.Name)
+		checksum := normalizeSHA256(candidate.Checksum)
+		accessURLs := uniqueNonEmptyStrings(candidate.AccessURLs)
+		if name == "" || checksum == "" || candidate.Size < 0 || len(accessURLs) == 0 {
+			return nil, fmt.Errorf("register Syfon object: candidate is missing a name, SHA-256, size, or access URL")
+		}
+		accessMethods := make([]drsapi.AccessMethod, 0, len(accessURLs))
+		for index, accessURL := range accessURLs {
+			accessID := fmt.Sprintf("s3-%d", index+1)
+			accessURLCopy := accessURL
+			accessMethods = append(accessMethods, drsapi.AccessMethod{
+				AccessId: &accessID,
+				AccessUrl: &struct {
+					Headers *[]string `json:"headers,omitempty"`
+					Url     string    `json:"url"`
+				}{Url: accessURLCopy},
+				Type: drsapi.AccessMethodType("s3"),
+			})
+		}
+		controlledAccess := uniqueNonEmptyStrings(candidate.ControlledAccess)
+		request.Candidates = append(request.Candidates, drsapi.DrsObjectCandidate{
+			Name:             &name,
+			Size:             candidate.Size,
+			Checksums:        []drsapi.Checksum{{Type: "sha256", Checksum: checksum}},
+			ControlledAccess: &controlledAccess,
+			AccessMethods:    &accessMethods,
+		})
+	}
+	response, err := client.RegisterObjectsWithResponse(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("register Syfon objects: %w", err)
+	}
+	if response.StatusCode() != http.StatusCreated || response.JSON201 == nil {
+		return nil, fmt.Errorf("register Syfon objects failed with status %d: %s", response.StatusCode(), strings.TrimSpace(string(response.Body)))
+	}
+	if len(response.JSON201.Objects) != len(candidates) {
+		return nil, fmt.Errorf("register Syfon objects: expected %d objects, received %d", len(candidates), len(response.JSON201.Objects))
+	}
+	results := make([]ProjectObjectRegistrationResult, len(response.JSON201.Objects))
+	for index, object := range response.JSON201.Objects {
+		results[index] = ProjectObjectRegistrationResult{ObjectID: strings.TrimSpace(object.Id)}
+	}
+	return results, nil
 }
 
 func (manager *Manager) DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]ProjectBucketDeleteResult, error) {

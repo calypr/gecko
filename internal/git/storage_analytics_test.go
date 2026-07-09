@@ -47,6 +47,7 @@ type fakeStorageAnalyticsBackend struct {
 	listProjectBucketObjectsPathPrefix   string
 	listProjectBucketInventoryCalls      int
 	listProjectBucketInventoryPathPrefix string
+	listProjectBucketInventoryDelay      time.Duration
 	listProjectBucketSummaryCalls        int
 	listProjectBucketSummaryMode         string
 	bulkGetProjectRecordsCalls           int
@@ -59,6 +60,7 @@ type fakeStorageAnalyticsBackend struct {
 	deletedStorageIDs                    []string
 	updatedAccessMethods                 map[string][]gintegrationsyfon.ProjectAccessMethod
 	deletedBucketObjects                 []string
+	registeredObjects                    []gintegrationsyfon.ProjectObjectRegistration
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error) {
@@ -188,10 +190,59 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Co
 func (fake *fakeStorageAnalyticsBackend) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error) {
 	fake.listProjectBucketInventoryCalls++
 	fake.listProjectBucketInventoryPathPrefix = pathPrefix
+	if fake.listProjectBucketInventoryDelay > 0 {
+		time.Sleep(fake.listProjectBucketInventoryDelay)
+	}
 	if fake.listProjectBucketObjectsErr != nil {
 		return nil, fake.listProjectBucketObjectsErr
 	}
 	return append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...), nil
+}
+
+func TestBuildStorageChainAuditCoalescesConcurrentForcedRefreshes(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		listProjectBucketInventoryDelay: 100 * time.Millisecond,
+		projectMetricsSummary: &gintegrationsyfon.ProjectMetricsSummary{
+			RecordCount:             1,
+			RecordLatestUpdatedTime: "2026-07-01T00:00:00Z",
+		},
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-a", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/root/data/a.txt"}},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket/root"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/root/data/a.txt", Bucket: "bucket", Key: "root/data/a.txt", SizeBytes: 100},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	service.chainAuditResponseCache = newMemoryStorageChainAuditResponseCache()
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ForceAuditRefresh: true}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("build concurrent forced audit: %v", err)
+		}
+	}
+	if backend.listProjectBucketInventoryCalls != 1 {
+		t.Fatalf("expected concurrent forced refreshes to share one bucket inventory, got %d", backend.listProjectBucketInventoryCalls)
+	}
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error) {
@@ -288,6 +339,24 @@ func (fake *fakeStorageAnalyticsBackend) BulkUpdateAccessMethods(ctx context.Con
 		fake.updatedAccessMethods[objectID] = append([]gintegrationsyfon.ProjectAccessMethod(nil), methods...)
 	}
 	return nil
+}
+
+func (fake *fakeStorageAnalyticsBackend) RegisterProjectObjects(ctx context.Context, authorizationHeader string, candidates []gintegrationsyfon.ProjectObjectRegistration) ([]gintegrationsyfon.ProjectObjectRegistrationResult, error) {
+	fake.registeredObjects = append(fake.registeredObjects, candidates...)
+	results := make([]gintegrationsyfon.ProjectObjectRegistrationResult, len(candidates))
+	for index, candidate := range candidates {
+		results[index] = gintegrationsyfon.ProjectObjectRegistrationResult{ObjectID: "created-" + candidate.Checksum[:8]}
+		fake.projectRecords = append(fake.projectRecords, gintegrationsyfon.ProjectRecord{
+			ObjectID:     results[index].ObjectID,
+			Name:         candidate.Name,
+			Checksum:     candidate.Checksum,
+			Size:         candidate.Size,
+			Organization: "HTAN_INT",
+			Project:      "BForePC",
+			AccessURLs:   candidate.AccessURLs,
+		})
+	}
+	return results, nil
 }
 
 func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
@@ -1146,7 +1215,7 @@ func TestStorageRepairPolicyCoversFindingKinds(t *testing.T) {
 		actionability string
 	}{
 		{"bucket_only_object", storageActionDeleteBucketObject, []string{storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
-		{"bucket_syfon_no_git", storageActionDeleteBoth, []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
+		{"bucket_syfon_no_git", storageActionDeleteBoth, []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject}, storageActionabilityManualChoice},
 		{"repo_orphan_live_object", storageActionDeleteBoth, []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject}, storageActionabilityAutoRepair},
 		{"repo_orphan_stale_record", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"stale_duplicate_record", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
@@ -1155,7 +1224,7 @@ func TestStorageRepairPolicyCoversFindingKinds(t *testing.T) {
 		{"broken_bucket_mapping", storageActionRemoveBrokenAccessURLs, []string{storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"syfon_broken_bucket_mapping", storageActionRemoveBrokenAccessURLs, []string{storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"storage_validation_mismatch", "", []string{storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionDeleteBoth}, storageActionabilityManualChoice},
-		{"git_syfon_metadata_mismatch", "", []string{storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionDeleteBoth}, storageActionabilityManualChoice},
+		{"git_syfon_metadata_mismatch", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
 		{"storage_object_missing", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"syfon_git_no_bucket", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"syfon_missing_bucket_object", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
@@ -1225,10 +1294,10 @@ func TestApplyStorageCleanupRepairMatrix(t *testing.T) {
 		{name: "repo orphan live", finding: applyFinding("repo_orphan_live_object", "s3://bucket/live", []string{"obj-live"}, nil), wantDeletedIDs: []string{"obj-live"}, wantStorageIDs: []string{"obj-live"}},
 		{name: "repo orphan stale", finding: applyFinding("repo_orphan_stale_record", "s3://bucket/stale", []string{"obj-stale"}, nil), wantDeletedIDs: []string{"obj-stale"}},
 		{name: "stale duplicate", finding: applyFinding("stale_duplicate_record", "data/a.txt", []string{"obj-old"}, nil), wantDeletedIDs: []string{"obj-old"}},
-		{name: "storage missing", finding: applyFinding("storage_object_missing", "data/missing.txt", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
-		{name: "syfon git no bucket", finding: applyFinding("syfon_git_no_bucket", "data/missing.txt", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
-		{name: "syfon missing bucket object", finding: applyFinding("syfon_missing_bucket_object", "s3://bucket/missing", []string{"obj-missing"}, nil), wantDeletedIDs: []string{"obj-missing"}},
-		{name: "git syfon mismatch delete both", finding: applyFinding("git_syfon_metadata_mismatch", "data/mismatch.txt", []string{"obj-mm"}, []string{"s3://bucket/mismatch"}), actions: []GitStorageCleanupApplyAction{{Kind: "git_syfon_metadata_mismatch", NormalizedPath: "data/mismatch.txt", Action: storageActionDeleteBoth}}, wantDeletedIDs: []string{"obj-mm"}, wantBucketURLs: []string{"s3://bucket/mismatch"}},
+		{name: "storage missing", finding: applyFinding("storage_object_missing", "data/missing.txt", []string{"obj-missing"}, []string{"s3://bucket/missing"}), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "syfon git no bucket", finding: applyFinding("syfon_git_no_bucket", "data/missing.txt", []string{"obj-missing"}, []string{"s3://bucket/missing"}), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "syfon missing bucket object", finding: applyFinding("syfon_missing_bucket_object", "s3://bucket/missing", []string{"obj-missing"}, []string{"s3://bucket/missing"}), wantDeletedIDs: []string{"obj-missing"}},
+		{name: "git syfon mismatch requires manual review", finding: applyFinding("git_syfon_metadata_mismatch", "data/mismatch.txt", []string{"obj-mm"}, []string{"s3://bucket/mismatch"}), wantManualPath: "data/mismatch.txt"},
 		{name: "storage mismatch delete both", finding: applyFinding("storage_validation_mismatch", "data/mismatch.txt", []string{"obj-mm"}, []string{"s3://bucket/mismatch"}), actions: []GitStorageCleanupApplyAction{{Kind: "storage_validation_mismatch", NormalizedPath: "data/mismatch.txt", Action: storageActionDeleteBoth}}, wantDeletedIDs: []string{"obj-mm"}, wantBucketURLs: []string{"s3://bucket/mismatch"}},
 		{name: "live duplicate conflict", finding: applyFinding("live_duplicate_conflict", "data/dup.txt", []string{"obj-a", "obj-b"}, nil), wantManualPath: "data/dup.txt"},
 		{name: "git only no syfon", finding: applyFinding("git_only_no_syfon", "data/git-only.txt", nil, nil), wantManualPath: "data/git-only.txt"},
@@ -1236,7 +1305,18 @@ func TestApplyStorageCleanupRepairMatrix(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			backend := &fakeStorageAnalyticsBackend{}
+			backend := &fakeStorageAnalyticsBackend{probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{}}
+			action := test.finding.DefaultAction
+			if len(test.actions) > 0 {
+				action = test.actions[0].Action
+			}
+			if cleanupVerificationExpectation(test.finding.Kind, action) == cleanupExpectationMissing {
+				backend.probeResults["cleanup-revalidate-0"] = gintegrationsyfon.BulkStorageProbeResult{
+					ID:        "cleanup-revalidate-0",
+					Status:    "not_found",
+					ErrorKind: "object_not_found",
+				}
+			}
 			service := NewStorageAnalyticsService(backend)
 			result, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "proj", nil, test.actions, []GitStorageCleanupApplyFinding{test.finding}, false, false, false, false, false)
 			if err != nil {
@@ -1351,13 +1431,9 @@ func TestApplyStorageCleanupValidation(t *testing.T) {
 	}{
 		{name: "unknown kind", finding: applyFinding("unknown_kind", "data/a.txt", []string{"obj-a"}, nil), wantErr: "unsupported cleanup finding kind"},
 		{name: "unsupported action", finding: applyFinding("bucket_only_object", "s3://bucket/a", nil, []string{"s3://bucket/a"}), actions: []GitStorageCleanupApplyAction{{Kind: "bucket_only_object", NormalizedPath: "s3://bucket/a", Action: storageActionDeleteSyfonRecord}}, wantErr: "not supported"},
-		{name: "action not advertised", finding: func() GitStorageCleanupApplyFinding {
-			finding := applyFinding("bucket_only_object", "s3://bucket/a", nil, []string{"s3://bucket/a"})
-			finding.AvailableActions = []string{storageActionInspectEvidence}
-			return finding
-		}(), wantErr: "not advertised"},
 		{name: "missing object ids", finding: applyFinding("repo_orphan_stale_record", "s3://bucket/a", nil, nil), wantErr: "missing object_ids"},
-		{name: "missing bucket urls", finding: applyFinding("bucket_only_object", "data/a.txt", nil, nil), wantErr: "missing bucket object URLs"},
+		{name: "metadata mismatch disallows deletion", finding: applyFinding("git_syfon_metadata_mismatch", "data/a.txt", []string{"obj-a"}, nil), actions: []GitStorageCleanupApplyAction{{Kind: "git_syfon_metadata_mismatch", NormalizedPath: "data/a.txt", Action: storageActionDeleteBucketObject}}, wantErr: "not supported"},
+		{name: "missing revalidation urls", finding: applyFinding("syfon_git_no_bucket", "data/a.txt", []string{"obj-a"}, nil), wantErr: "required for exact revalidation"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1369,7 +1445,40 @@ func TestApplyStorageCleanupValidation(t *testing.T) {
 	}
 }
 
-func TestBuildStorageCleanupAuditFlagsRecordWhenAnyAccessProbeIsDead(t *testing.T) {
+func TestApplyStorageCleanupUsesServerPolicyWhenAuditActionsAreStale(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{}}
+	service := NewStorageAnalyticsService(backend)
+	finding := applyFinding("bucket_syfon_no_git", "s3://bucket/no-git", []string{"obj-no-git"}, []string{"s3://bucket/no-git"})
+	// An audit may have been rendered before Gecko advertised this manual
+	// repair. The server policy, rather than this stale client snapshot, must
+	// decide whether the requested action is allowed.
+	finding.AvailableActions = []string{storageActionInspectEvidence}
+	response, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		[]string{finding.NormalizedPath},
+		[]GitStorageCleanupApplyAction{{
+			Kind:           finding.Kind,
+			NormalizedPath: finding.NormalizedPath,
+			Action:         storageActionDeleteBoth,
+		}},
+		[]GitStorageCleanupApplyFinding{finding},
+		false,
+		false,
+		false,
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("apply stale bucket + Syfon audit finding: %v", err)
+	}
+	assertStringSet(t, "deleted IDs", response.DeletedRecordIDs, []string{"obj-no-git"})
+	assertStringSet(t, "deleted bucket URLs", response.DeletedBucketObjectURLs, []string{"s3://bucket/no-git"})
+}
+
+func TestBuildStorageCleanupAuditAcceptsRecordWhenAnyAccessProbeIsLive(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -1412,9 +1521,10 @@ func TestBuildStorageCleanupAuditFlagsRecordWhenAnyAccessProbeIsDead(t *testing.
 	if err != nil {
 		t.Fatalf("build cleanup audit: %v", err)
 	}
-	finding := assertHasCleanupFinding(t, cleanup.Findings, "storage_object_missing", "data/a.txt")
-	if finding.Evidence == nil || !contains(finding.Evidence.AccessURLs, "s3://bucket/legacy-a") {
-		t.Fatalf("expected dead raw access URL evidence, got %+v", finding)
+	for _, finding := range cleanup.Findings {
+		if finding.NormalizedPath == "data/a.txt" && finding.Kind == "storage_object_missing" {
+			t.Fatalf("a live canonical locator must suppress a missing-record finding: %+v", finding)
+		}
 	}
 }
 
@@ -1750,8 +1860,11 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if backend.probeCalls != 0 {
 		t.Fatalf("expected validate mode to skip HEAD probes, got %d calls", backend.probeCalls)
 	}
-	if backend.listProbeCalls != 0 || len(backend.listProbeItems) != 0 {
-		t.Fatalf("expected project inventory validation to skip bulk LIST calls, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
+	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 1 {
+		t.Fatalf("expected one exact LIST for the inventory-missing candidate, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
+	}
+	if backend.listProbeItems[0].ObjectURL != "s3://bucket/syfon-only.txt" {
+		t.Fatalf("expected only the inventory-missing locator to be verified, got %+v", backend.listProbeItems)
 	}
 	if chain.Summary.BucketPathExists != nil || chain.Summary.BucketSummaryMode != "" {
 		t.Fatalf("expected validate mode not to claim bucket prefix summary, got %+v", chain.Summary)
@@ -1759,21 +1872,25 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if chain.Summary.ValidationMode != StorageChainValidationModeList {
 		t.Fatalf("expected LIST validation mode, got %+v", chain.Summary)
 	}
-	if chain.Summary.BucketObjectCount != 2 || chain.Summary.CountsByKind["bucket_only_object"] != 0 {
-		t.Fatalf("expected validate mode to count project inventory without bucket-only findings, got summary %+v", chain.Summary)
+	if chain.Summary.BucketObjectCount != 3 || chain.Summary.CountsByKind["bucket_only_object"] != 0 {
+		t.Fatalf("expected validate mode to merge the exact-present object without bucket-only findings, got summary %+v", chain.Summary)
 	}
 	if chain.Summary.CountsByKind["bucket_syfon_git_complete"] != 2 {
 		t.Fatalf("expected validate mode to count clean Syfon/Git/bucket join, got summary %+v", chain.Summary)
 	}
-	if chain.Summary.CountsByKind["syfon_missing_bucket_object"] != 1 {
-		t.Fatalf("expected validate mode to report missing Syfon bucket object, got summary %+v", chain.Summary)
+	if chain.Summary.CountsByKind["syfon_missing_bucket_object"] != 0 || chain.Summary.CountsByKind["bucket_syfon_no_git"] != 1 {
+		t.Fatalf("expected exact LIST presence to suppress the inventory false positive, got summary %+v", chain.Summary)
 	}
 	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
 		t.Fatalf("expected basename mismatch not to be a broken bucket mapping, got summary %+v", chain.Summary)
 	}
 	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
 	assertNoChainFinding(t, chain.Findings, "syfon_broken_bucket_mapping")
-	assertHasChainFinding(t, chain.Findings, "syfon_missing_bucket_object", "s3://bucket/syfon-only.txt")
+	assertNoChainFinding(t, chain.Findings, "syfon_missing_bucket_object")
+	finding := assertHasChainFinding(t, chain.Findings, "bucket_syfon_no_git", "s3://bucket/syfon-only.txt")
+	if finding.EvidenceStatus != "verified" || finding.Actionability != storageActionabilityInspectOnly || finding.DefaultAction != storageActionInspectEvidence {
+		t.Fatalf("expected verified but non-destructive Git-absence finding, got %+v", finding)
+	}
 }
 
 func TestBuildStorageChainAuditMetadataModeUsesMetadataValidation(t *testing.T) {
@@ -1895,7 +2012,8 @@ func TestBuildStorageChainAuditSuggestsFixForLargeSizeDrift(t *testing.T) {
 		t.Fatalf("build chain audit: %v", err)
 	}
 	finding := assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/a.txt")
-	if !strings.Contains(finding.SuggestedFix, "Syfon/Git size is 44 B, bucket inventory reports 40 B") {
+	if !strings.Contains(finding.SuggestedFix, "Syfon record size is 44 B, bucket inventory reports 40 B") ||
+		!strings.Contains(finding.SuggestedFix, "bucket object cannot have the current Git/Syfon SHA-256") {
 		t.Fatalf("expected size-drift suggested fix, got %+v", finding)
 	}
 	if finding.SuggestedAction != "" {
@@ -2082,12 +2200,28 @@ func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testin
 	if backend.listProjectAuditRecordsCalls != 1 || backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected root audit to load Syfon records and bucket inventory once, got records=%d bucket=%d", backend.listProjectAuditRecordsCalls, backend.listProjectBucketInventoryCalls)
 	}
+	cache.mu.Lock()
+	for key, entry := range cache.entries {
+		entry.value.RefreshDurationMillis = 123
+		cache.entries[key] = entry
+	}
+	cache.mu.Unlock()
+	cachedRoot, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build cached root chain audit: %v", err)
+	}
+	if !cachedRoot.Summary.AuditCacheHit || cachedRoot.Summary.AuditRefreshDurationMs != 123 {
+		t.Fatalf("expected cached root audit to include refresh duration, got %+v", cachedRoot.Summary)
+	}
 	subpath, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options)
 	if err != nil {
 		t.Fatalf("build subpath chain audit: %v", err)
 	}
 	if !subpath.Summary.AuditCacheHit || subpath.Summary.AuditCacheSource != "memory:root" {
 		t.Fatalf("expected subpath audit to project from root response cache, got %+v", subpath.Summary)
+	}
+	if subpath.Summary.AuditRefreshDurationMs != 123 {
+		t.Fatalf("expected subpath audit to include root refresh duration, got %+v", subpath.Summary)
 	}
 	if subpath.PathPrefix != "data" || subpath.Summary.GitTrackedFileCount != 1 {
 		t.Fatalf("expected data-scoped audit projection, got path=%q summary=%+v", subpath.PathPrefix, subpath.Summary)
@@ -2846,6 +2980,65 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	}
 }
 
+func TestBuildStorageChainAuditClassifiesSameBucketPathChecksumConflictAsMetadataMismatch(t *testing.T) {
+	const repoPath = "JHU/ashley_kiemen/hematoxylin_eosin_stain/Level_2/HTA201_3/HTA201_3_ometif/HTA201_3_1_0022.offsets.json"
+	const gitChecksum = "99ec07eaecf97dc1cd7b7c4fb717c0661062eb57013d51b81780cbd3a302e323"
+	const syfonChecksum = "6b33300205aa4730ace8a04147c9223d547b1bf4f54001602d4ec147b7841a4f"
+	const size = int64(43)
+	const canonicalURL = "s3://bforepc/bforepc-prod/" + repoPath
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		repoPath: lfsPointer(gitChecksum, size),
+	})
+	now := time.Date(2026, 7, 6, 18, 27, 23, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID:     "93fd2da3-7b66-5232-bb77-002b78cb8ade",
+			Name:         "HTA201_3_1_0022.offsets.json",
+			Checksum:     syfonChecksum,
+			Organization: "HTAN_INT",
+			Project:      "BForePC",
+			Size:         size,
+			UpdatedAt:    &now,
+			AccessURLs:   []string{"s3://bforepc-prod/" + repoPath},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "HTAN_INT",
+			ProjectID:    "BForePC",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: canonicalURL,
+			Bucket:    "bforepc",
+			Key:       "bforepc-prod/" + repoPath,
+			Path:      repoPath,
+			SizeBytes: size,
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash)
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	mismatch := assertHasChainFinding(t, findings, "git_syfon_metadata_mismatch", repoPath)
+	if mismatch.Actionability != storageActionabilityInspectOnly || mismatch.DefaultAction != storageActionInspectEvidence || !contains(mismatch.AvailableActions, storageActionInspectEvidence) {
+		t.Fatalf("expected checksum conflict to be inspect-only, got %+v", mismatch)
+	}
+	if contains(mismatch.AvailableActions, storageActionDeleteBoth) || contains(mismatch.AvailableActions, storageActionDeleteBucketObject) {
+		t.Fatalf("checksum conflict must not advertise bucket deletion, got %+v", mismatch.AvailableActions)
+	}
+	if !strings.Contains(mismatch.SuggestedFix, gitChecksum) || !strings.Contains(mismatch.SuggestedFix, syfonChecksum) {
+		t.Fatalf("expected both conflicting checksums in the suggested fix, got %q", mismatch.SuggestedFix)
+	}
+	for _, kind := range []string{"bucket_only_object", "bucket_syfon_no_git", "git_only_no_syfon"} {
+		if got := chain.Summary.CountsByKind[kind]; got != 0 {
+			t.Fatalf("expected same-path checksum conflict to suppress %s, got summary %+v", kind, chain.Summary)
+		}
+	}
+}
+
 func TestBuildStorageChainAuditAcceptsMappedNameAndSourcePathInventoryObjects(t *testing.T) {
 	sourceChecksum := "610cad76a473c4b0bf43f923b3bb907aac9ac2630d9c3f21aba1c531953c43e4"
 	mappedChecksum := "b71c3fcf28a6d2cf6e432b21a1734786708517f4808c22f9114abb73a60f4cc7"
@@ -2998,6 +3191,71 @@ func TestBuildStorageChainAuditUsesCanonicalInventoryCandidatesBeforeMissingBuck
 	}
 	if backend.listProbeCalls != 0 {
 		t.Fatalf("expected no Syfon bulk-list fallback call, got %d calls with items %+v", backend.listProbeCalls, backend.listProbeItems)
+	}
+}
+
+func TestBuildStorageChainAuditMetadataConfirmationSuppressesBForePCListFalsePositive(t *testing.T) {
+	const repoPath = "OHSU/koei_chin/visium_hd/4-R2/outs/binned_outputs/square_002um/filtered_feature_bc_matrix/barcodes.tsv.gz"
+	const checksum = "a9809ffd53130272f775ad1bbea3166dbb4853bc6fa73bfa7a51535c4bc4f599"
+	const size = int64(46063992)
+	const canonicalURL = "s3://bforepc/bforepc-prod/" + repoPath
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		repoPath: lfsPointer(checksum, size),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID:     "b5162717-bf49-528a-a2a8-47fbd3b0f090",
+			Name:         "barcodes.tsv.gz",
+			Checksum:     checksum,
+			Organization: "HTAN_INT",
+			Project:      "BForePC",
+			Size:         size,
+			AccessURLs:   []string{"s3://bforepc-prod/" + repoPath},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "HTAN_INT",
+			ProjectID:    "BForePC",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{},
+		listProbeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageListValidationRequestKey(canonicalURL, size, "barcodes.tsv.gz"): {
+				ID:        storageListValidationRequestKey(canonicalURL, size, "barcodes.tsv.gz"),
+				ObjectURL: canonicalURL,
+				Status:    "not_found",
+				ErrorKind: "object_not_found",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"HTAN_INT",
+		"BForePC",
+		refName,
+		"",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err != nil {
+		t.Fatalf("build BForePC chain audit: %v", err)
+	}
+	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 1 || backend.listProbeItems[0].ObjectURL != canonicalURL {
+		t.Fatalf("expected one exact LIST for %q, got calls=%d items=%+v", canonicalURL, backend.listProbeCalls, backend.listProbeItems)
+	}
+	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != canonicalURL {
+		t.Fatalf("expected one metadata confirmation for the false LIST miss at %q, got calls=%d items=%+v", canonicalURL, backend.probeCalls, backend.probeItems)
+	}
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
+		t.Fatalf("metadata presence must suppress the false LIST missing-bucket finding, got summary %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
+		t.Fatalf("expected the exact-present object to complete the chain, got summary %+v", chain.Summary)
 	}
 }
 
@@ -3263,7 +3521,7 @@ func TestCanonicalizeScopedStorageURLMatchesSyfonDownloadScopeResolution(t *test
 	}
 }
 
-func TestBuildStorageChainAuditFlagsExactPathMismatchWhenHashExistsElsewhereInBucket(t *testing.T) {
+func TestBuildStorageChainAuditDoesNotInferMappingMismatchFromRelocatedBasename(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"CONFIG/cbds-BForePC.json": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 23739),
 	})
@@ -3330,17 +3588,53 @@ func TestBuildStorageChainAuditFlagsExactPathMismatchWhenHashExistsElsewhereInBu
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 1 {
-		t.Fatalf("expected exact mapped-key miss to surface as broken bucket mapping, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
+		t.Fatalf("expected relocated basename not to imply a broken bucket mapping, got %+v", chain.Summary)
 	}
 	if got := chain.Summary.CountsByKind["bucket_only_object"]; got != 0 {
 		t.Fatalf("expected relocated hash not to be double-counted as bucket-only, got %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 0 {
-		t.Fatalf("expected exact mapped-key miss to block clean-chain count, got %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 1 {
+		t.Fatalf("expected exact mapped-key miss to remain a missing-object finding, got %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
-	assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", "CONFIG/cbds-BForePC.json")
+	assertHasChainFinding(t, findings, "syfon_git_no_bucket", "CONFIG/cbds-BForePC.json")
+}
+
+func TestClassifyStorageFindingDoesNotTreatRepeatedBasenameAsBrokenMapping(t *testing.T) {
+	record := projectRecordState{
+		ProjectRecord: gintegrationsyfon.ProjectRecord{
+			ObjectID:   "obj-a",
+			Checksum:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			Size:       100,
+			AccessURLs: []string{"s3://bucket-alias/path/features.tsv.gz"},
+		},
+		CanonicalAccessURLs: []string{"s3://bucket/root/path/features.tsv.gz"},
+		AccessProbes: []gintegrationsyfon.BulkStorageProbeResult{
+			{
+				ObjectURL:        "s3://bucket/root/path/features.tsv.gz",
+				Operation:        StorageChainValidationModeList,
+				Bucket:           "bucket",
+				Key:              "root/path/features.tsv.gz",
+				Status:           "not_found",
+				Exists:           false,
+				ErrorKind:        "object_not_found",
+				ValidationStatus: "unverifiable",
+			},
+		},
+	}
+	bucketObjects := map[string]gintegrationsyfon.ProjectBucketObject{
+		"s3://bucket/root/unrelated/features.tsv.gz": {
+			ObjectURL: "s3://bucket/root/unrelated/features.tsv.gz",
+			Bucket:    "bucket",
+			Key:       "root/unrelated/features.tsv.gz",
+			SizeBytes: 100,
+		},
+	}
+
+	if got := classifyStorageFinding(record, bucketObjects); got != storageFindingObjectMissing {
+		t.Fatalf("expected a repeated basename without a verified raw object to remain missing, got %s", got)
+	}
 }
 
 func TestClassifyStorageFindingSuppressesRawURLFailuresWhenScopedProbeMatches(t *testing.T) {
@@ -3454,8 +3748,8 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
-		t.Fatalf("expected repairable broken access method finding, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
+		t.Fatalf("expected the live canonical locator to keep the record connected, got %s", got)
 	}
 	broken := repairableBrokenAccessRecord(record)
 	if len(broken.AccessProbes) != 1 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" {
@@ -3706,33 +4000,29 @@ func TestApplyStorageCleanupDeletesSelectedBucketSyfonNoGitChainFinding(t *testi
 	if err != nil {
 		t.Fatalf("apply cleanup: %v", err)
 	}
-	if !contains(response.DeletedRecordIDs, "obj-no-git") {
-		t.Fatalf("expected selected Syfon record to be deleted, got %+v", response)
+	if !contains(response.DeletedRecordIDs, "obj-no-git") || !contains(response.DeletedBucketObjectURLs, "s3://bucket/no-git") {
+		t.Fatalf("expected selected record and bucket object deletion, got %+v", response)
 	}
-	if !contains(response.DeletedBucketObjectURLs, "s3://bucket/no-git") {
-		t.Fatalf("expected selected bucket object to be deleted, got %+v", response)
-	}
-	if !contains(backend.deletedIDs, "obj-no-git") {
-		t.Fatalf("expected backend Syfon delete, got %+v", backend.deletedIDs)
-	}
-	if !contains(backend.deletedBucketObjects, "s3://bucket/no-git") {
-		t.Fatalf("expected backend bucket delete, got %+v", backend.deletedBucketObjects)
+	if !contains(backend.deletedIDs, "obj-no-git") || !contains(backend.deletedBucketObjects, "s3://bucket/no-git") {
+		t.Fatalf("expected backend deletion, IDs=%v bucket=%v", backend.deletedIDs, backend.deletedBucketObjects)
 	}
 }
 
-func TestBuildStorageChainAuditMarksBucketSyfonNoGitActionable(t *testing.T) {
-	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport("bucket_syfon_no_git")
-	if actionability != storageActionabilityAutoRepair {
-		t.Fatalf("expected auto-repair actionability, got %q", actionability)
+func TestBuildStorageChainAuditMarksBucketSyfonNoGitManualRepair(t *testing.T) {
+	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupportForEvidence("bucket_syfon_no_git", "verified")
+	if actionability != storageActionabilityManualChoice {
+		t.Fatalf("expected manual-choice actionability, got %q", actionability)
 	}
 	if defaultAction != storageActionDeleteBoth {
 		t.Fatalf("expected delete-both default action, got %q", defaultAction)
 	}
 	if !supportsDryRun {
-		t.Fatal("expected bucket+Syfon/no-Git to support dry-run")
+		t.Fatal("manual repair must advertise a dry-run")
 	}
-	if !contains(availableActions, storageActionDeleteBoth) || !contains(availableActions, storageActionDeleteSyfonRecord) || !contains(availableActions, storageActionDeleteBucketObject) {
-		t.Fatalf("expected destructive chain actions, got %+v", availableActions)
+	for _, action := range []string{storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject} {
+		if !contains(availableActions, action) {
+			t.Fatalf("expected action %q, got %+v", action, availableActions)
+		}
 	}
 }
 

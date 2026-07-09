@@ -283,7 +283,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	findingKind := strings.TrimSpace(requestBody.FindingKind)
 	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_kind=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingKind, findingLimit)
 	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
-	forceAuditRefresh := requestBody.ForceAuditRefresh || requestBody.ForceBucketInventoryRefresh
+	forceAuditRefresh := requestBody.Refresh || requestBody.ForceAuditRefresh || requestBody.ForceBucketInventoryRefresh
 	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
@@ -323,6 +323,36 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	)
 	handler.logStorageChainAuditTimings(projectCtx, gitSubpath, probeMode, bucketMode, response, timings)
 	return writeErr
+}
+
+func (handler *Handler) handleGitProjectStorageChainRegisterGitOnlyPOST(ctx fiber.Ctx) error {
+	projectCtx, errResponse := handler.resolveGitAnalyticsContext(ctx)
+	if errResponse != nil {
+		return errResponse.Write(ctx)
+	}
+	requestBody := gitcore.GitOnlySyfonRegistrationRequest{}
+	if errResponse := parseOptionalAnalyticsBody(ctx, &requestBody, map[string]any{"project_id": projectCtx.projectID}); errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
+	projectCtx.applyRequestRef(requestBody.Ref)
+	requestBody.Ref = projectCtx.refName
+	requestBody.RepoPaths = normalizeAnalyticsPathList(requestBody.RepoPaths)
+	response, err := handler.storageAnalytics.RegisterGitOnlySyfonRecords(
+		ctx.Context(),
+		projectCtx.authorizationHeader,
+		projectCtx.organization,
+		projectCtx.project,
+		projectCtx.refName,
+		projectCtx.mirrorPath,
+		projectCtx.repo,
+		projectCtx.hash,
+		requestBody,
+	)
+	if err != nil {
+		return handler.writeGitAnalyticsError(ctx, projectCtx.projectID, projectCtx.refName, "", err)
+	}
+	return httputil.JSON(response, http.StatusOK).Write(ctx)
 }
 
 func formatStorageChainTimingSnapshot(timings *gitcore.StorageChainAuditTimings) string {
@@ -452,10 +482,14 @@ func (handler *Handler) parseCleanupAnalyticsRequest(ctx fiber.Ctx) (*gitAnalyti
 }
 
 func (handler *Handler) resolveGitAnalyticsContext(ctx fiber.Ctx) (*gitAnalyticsContext, *httputil.ErrorResponse) {
-	return handler.resolveGitAnalyticsContextWithTimings(ctx, nil)
+	return handler.resolveGitAnalyticsContextWithMirrorPolicy(ctx, nil, false)
 }
 
 func (handler *Handler) resolveGitAnalyticsContextWithTimings(ctx fiber.Ctx, timings *gitcore.StorageChainAuditTimings) (*gitAnalyticsContext, *httputil.ErrorResponse) {
+	return handler.resolveGitAnalyticsContextWithMirrorPolicy(ctx, timings, true)
+}
+
+func (handler *Handler) resolveGitAnalyticsContextWithMirrorPolicy(ctx fiber.Ctx, timings *gitcore.StorageChainAuditTimings, requireCurrentMirror bool) (*gitAnalyticsContext, *httputil.ErrorResponse) {
 	if handler.storageAnalytics == nil {
 		response := httputil.NewError("internal_error", "storage analytics service is not configured", http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)
@@ -482,9 +516,14 @@ func (handler *Handler) resolveGitAnalyticsContextWithTimings(ctx fiber.Ctx, tim
 		timings.StageStart("mirror_warmup")
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, requireCurrentMirror)
 		timings.Record("mirror_warmup", time.Since(start))
 		if err != nil {
+			if requireCurrentMirror {
+				response := httputil.NewError("integration_error", fmt.Sprintf("storage audit requires a current Git mirror: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
+				response.WriteLog(handler.logger)
+				return nil, response
+			}
 			handler.logger.Warning("failed to warm git mirror for %s analytics: %v", projectID, err)
 		}
 	}
@@ -572,7 +611,7 @@ func (handler *Handler) writeGitAnalyticsError(ctx fiber.Ctx, projectID string, 
 	if strings.Contains(errorMessage, "storage children cursor") {
 		statusCode = http.StatusBadRequest
 		errorType = "invalid_request"
-	} else if strings.Contains(errorMessage, "cleanup apply") || strings.Contains(errorMessage, "cleanup finding") || strings.Contains(errorMessage, "cleanup action") || strings.Contains(errorMessage, "unsupported cleanup") || strings.Contains(errorMessage, "selected cleanup paths") {
+	} else if strings.Contains(errorMessage, "cleanup apply") || strings.Contains(errorMessage, "cleanup finding") || strings.Contains(errorMessage, "cleanup action") || strings.Contains(errorMessage, "unsupported cleanup") || strings.Contains(errorMessage, "selected cleanup paths") || strings.Contains(errorMessage, "git-only syfon registration") {
 		statusCode = http.StatusBadRequest
 		errorType = "invalid_request"
 	} else if strings.Contains(errorMessage, "git tree path") {
@@ -604,7 +643,7 @@ func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsCont
 		bucketPathExists = strconv.FormatBool(*response.Summary.BucketPathExists)
 	}
 	handler.logger.Info(
-		"storage_chain_audit project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t audit_cache_hit=%t audit_cache_source=%s audit_cache_age_seconds=%d findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
+		"storage_chain_audit project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_exists=%s bucket_summary_mode=%s bucket_inventory_available=%t audit_cache_hit=%t audit_cache_source=%s audit_cache_age_seconds=%d audit_refresh_duration_ms=%d findings=%d returned_findings=%d findings_truncated=%t finding_limit=%d bucket_objects=%d syfon_records=%d git_files=%d %s",
 		projectCtx.projectID,
 		projectCtx.refName,
 		gitSubpath,
@@ -617,6 +656,7 @@ func (handler *Handler) logStorageChainAuditTimings(projectCtx *gitAnalyticsCont
 		response.Summary.AuditCacheHit,
 		response.Summary.AuditCacheSource,
 		response.Summary.AuditCacheAgeSeconds,
+		response.Summary.AuditRefreshDurationMs,
 		response.Summary.TotalFindings,
 		response.Summary.ReturnedFindings,
 		response.Summary.FindingsTruncated,

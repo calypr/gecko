@@ -37,6 +37,7 @@ const (
 	storageActionDeleteBucketObject     = "delete_bucket_object"
 	storageActionDeleteBoth             = "delete_both"
 	storageActionInspectEvidence        = "inspect_evidence"
+	storageActionCreateSyfonRecord      = "create_syfon_record"
 )
 
 type storageRepairPolicy struct {
@@ -50,13 +51,27 @@ func storageRepairPolicyForKind(kind string) storageRepairPolicy {
 	switch strings.TrimSpace(kind) {
 	case "bucket_only_object":
 		return autoRepairPolicy(storageActionDeleteBucketObject, storageActionInspectEvidence)
-	case "bucket_syfon_no_git", "repo_orphan_live_object":
+	case "bucket_syfon_no_git":
+		// Absence from Git is not sufficient to delete storage automatically, but
+		// a user may explicitly remove a verified Bucket + Syfon orphan.
+		return storageRepairPolicy{
+			actionability: storageActionabilityManualChoice,
+			actions: []string{
+				storageActionDeleteBoth,
+				storageActionDeleteSyfonRecord,
+				storageActionDeleteBucketObject,
+				storageActionInspectEvidence,
+			},
+			defaultAction:  storageActionDeleteBoth,
+			supportsDryRun: true,
+		}
+	case "repo_orphan_live_object":
 		return autoRepairPolicy(storageActionDeleteBoth, storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionInspectEvidence)
 	case "repo_orphan_stale_record", "stale_duplicate_record", "storage_object_missing", "syfon_git_no_bucket", "syfon_missing_bucket_object":
 		return autoRepairPolicy(storageActionDeleteSyfonRecord, storageActionInspectEvidence)
 	case "broken_access_url_error", "broken_bucket_mapping", "syfon_broken_bucket_mapping":
 		return autoRepairPolicy(storageActionRemoveBrokenAccessURLs, storageActionDeleteSyfonRecord, storageActionInspectEvidence)
-	case "storage_validation_mismatch", "git_syfon_metadata_mismatch":
+	case "storage_validation_mismatch":
 		return storageRepairPolicy{
 			actionability: storageActionabilityManualChoice,
 			actions: []string{
@@ -67,6 +82,15 @@ func storageRepairPolicyForKind(kind string) storageRepairPolicy {
 				storageActionInspectEvidence,
 			},
 			supportsDryRun: true,
+		}
+	case "git_syfon_metadata_mismatch":
+		// A mismatch cannot establish which of Git, Syfon, or the bucket is
+		// authoritative. Requiring an explicit out-of-band reconciliation keeps
+		// a stale checksum from becoming a destructive cleanup candidate.
+		return storageRepairPolicy{
+			actionability: storageActionabilityInspectOnly,
+			actions:       []string{storageActionInspectEvidence},
+			defaultAction: storageActionInspectEvidence,
 		}
 	default:
 		return storageRepairPolicy{
@@ -106,6 +130,7 @@ type storageAnalyticsBackend interface {
 	BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error
 	DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]gintegrationsyfon.ProjectBucketDeleteResult, error)
 	BulkUpdateAccessMethods(ctx context.Context, authorizationHeader string, updates map[string][]gintegrationsyfon.ProjectAccessMethod) error
+	RegisterProjectObjects(ctx context.Context, authorizationHeader string, candidates []gintegrationsyfon.ProjectObjectRegistration) ([]gintegrationsyfon.ProjectObjectRegistrationResult, error)
 }
 
 type StorageAnalyticsService struct {
@@ -117,6 +142,8 @@ type StorageAnalyticsService struct {
 	chainInputCache         map[string]cachedChainInputState
 	projectAuditCache       map[string]cachedProjectAuditRecordState
 	projectAuditWork        map[string]*inflightProjectAuditRecordState
+	chainAuditRefreshMu     sync.Mutex
+	chainAuditRefreshWork   map[string]*inflightStorageChainAuditRefresh
 	chainAuditResponseCache storageChainAuditResponseCache
 	exactProjectJoinCache   storageExactProjectJoinCache
 }
@@ -138,12 +165,13 @@ func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyti
 		return nil
 	}
 	return &StorageAnalyticsService{
-		storage:           storage,
-		projectJoinCache:  map[string]cachedProjectJoinState{},
-		projectJoinWork:   map[string]*inflightProjectJoinState{},
-		chainInputCache:   map[string]cachedChainInputState{},
-		projectAuditCache: map[string]cachedProjectAuditRecordState{},
-		projectAuditWork:  map[string]*inflightProjectAuditRecordState{},
+		storage:               storage,
+		projectJoinCache:      map[string]cachedProjectJoinState{},
+		projectJoinWork:       map[string]*inflightProjectJoinState{},
+		chainInputCache:       map[string]cachedChainInputState{},
+		projectAuditCache:     map[string]cachedProjectAuditRecordState{},
+		projectAuditWork:      map[string]*inflightProjectAuditRecordState{},
+		chainAuditRefreshWork: map[string]*inflightStorageChainAuditRefresh{},
 	}
 }
 
@@ -207,6 +235,7 @@ type storageCleanupApplyPlan struct {
 	RepoDeletePaths        []string
 	ManualPaths            []string
 	SkippedPaths           []string
+	Verifications          []storageCleanupVerification
 }
 
 type cleanupAuditModel struct {
@@ -456,7 +485,7 @@ func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx co
 		return service.buildStorageChainAuditWithResponseCache(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
 	}
 	if service.chainAuditResponseCache != nil && storageChainAuditRootResponseProjectionAllowed(gitSubpath, normalized) {
-		response, ok, err := service.projectStorageChainAuditFromRootResponseCache(ctx, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
+		response, ok, err := service.projectStorageChainAuditFromRootResponseCache(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
 		if err != nil {
 			return nil, err
 		}
@@ -508,7 +537,11 @@ func normalizeStorageChainAuditOptions(options StorageChainAuditOptions) (Storag
 }
 
 func (service *StorageAnalyticsService) buildStorageChainAuditWithResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
-	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, options.BucketPathPrefix, hash.String())
+	syfonRevision, err := service.loadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, options.BucketPathPrefix, hash.String(), syfonRevision)
 	cache := service.chainAuditResponseCache
 	if !options.ForceAuditRefresh {
 		start := time.Now()
@@ -519,7 +552,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditWithResponseCache(
 		}
 		if ok {
 			response := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
-			applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cache.Source(), "")
+			applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cached.RefreshDurationMillis, cache.Source(), "")
 			options.Timings.Record("audit_response_cache_hit", 0)
 			options.Timings.RecordMemory(
 				"audit_response_cache_hit",
@@ -534,30 +567,50 @@ func (service *StorageAnalyticsService) buildStorageChainAuditWithResponseCache(
 		options.Timings.Record("audit_response_cache_force_refresh", 0)
 	}
 
-	buildOptions := options
-	buildOptions.FindingKind = ""
-	buildOptions.FindingLimit = -1
-	response, err := service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, buildOptions)
+	cached, joinedRefresh, err := service.coalesceStorageChainAuditRefresh(ctx, cacheKey, func() (cachedStorageChainAuditResponse, error) {
+		buildOptions := options
+		buildOptions.FindingKind = ""
+		buildOptions.FindingLimit = -1
+		refreshStart := time.Now()
+		response, err := service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, buildOptions)
+		if err != nil {
+			return cachedStorageChainAuditResponse{}, err
+		}
+		response.Summary.SyfonRevision = syfonRevision
+		value := cachedStorageChainAuditResponse{
+			CachedAt:              time.Now(),
+			RefreshDurationMillis: time.Since(refreshStart).Milliseconds(),
+			Response:              *response,
+		}
+		cacheStart := time.Now()
+		if err := cache.Set(ctx, cacheKey, value, storageChainAuditCacheTTL()); err != nil {
+			logStorageChainAuditCacheError(options.Timings, cache.Source(), "set", err)
+		}
+		options.Timings.Record("audit_response_cache_store", time.Since(cacheStart))
+		return value, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	cachedAt := time.Now()
-	cacheStart := time.Now()
-	setErr := cache.Set(ctx, cacheKey, cachedStorageChainAuditResponse{CachedAt: cachedAt, Response: *response}, storageChainAuditCacheTTL())
-	options.Timings.Record("audit_response_cache_store", time.Since(cacheStart))
-	cacheError := ""
-	if setErr != nil {
-		cacheError = setErr.Error()
-		logStorageChainAuditCacheError(options.Timings, cache.Source(), "set", setErr)
+	if joinedRefresh {
+		options.Timings.Record("audit_response_refresh_join", 0)
 	}
-	projected := projectStorageChainAuditResponse(*response, options.FindingKind, options.FindingLimit)
-	applyStorageChainAuditCacheMetadata(projected, false, cachedAt, cache.Source(), cacheError)
+	projected := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
+	source := cache.Source()
+	if joinedRefresh {
+		source += ":refresh_join"
+	}
+	applyStorageChainAuditCacheMetadata(projected, false, cached.CachedAt, cached.RefreshDurationMillis, source, "")
 	return projected, nil
 }
 
-func (service *StorageAnalyticsService) projectStorageChainAuditFromRootResponseCache(ctx context.Context, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, bool, error) {
+func (service *StorageAnalyticsService) projectStorageChainAuditFromRootResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, bool, error) {
 	cache := service.chainAuditResponseCache
-	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, "", options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, "", hash.String())
+	syfonRevision, err := service.loadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
+	if err != nil {
+		return nil, false, err
+	}
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, "", options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, "", hash.String(), syfonRevision)
 	start := time.Now()
 	cached, ok, err := cache.Get(ctx, cacheKey)
 	options.Timings.Record("audit_response_root_cache_lookup", time.Since(start))
@@ -576,7 +629,7 @@ func (service *StorageAnalyticsService) projectStorageChainAuditFromRootResponse
 		return nil, false, err
 	}
 	response := projectStorageChainAuditResponseForSubpath(cached.Response, gitSubpath, inventory, options.FindingKind, options.FindingLimit)
-	applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cache.Source()+":root", "")
+	applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cached.RefreshDurationMillis, cache.Source()+":root", "")
 	options.Timings.Record("audit_response_root_cache_hit", 0)
 	options.Timings.RecordMemory(
 		"audit_response_root_cache_hit",
@@ -594,7 +647,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	bucketPathPrefix := options.BucketPathPrefix
 	start := time.Now()
 	options.Timings.StageStart("chain_setup_total")
-	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, bucketPathPrefix, options.Timings)
+	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, validationMode, bucketPathPrefix, options.ForceAuditRefresh, options.Timings)
 	options.Timings.Record("chain_setup_total", time.Since(start))
 	if inputs != nil && inputs.recordSet != nil {
 		options.Timings.RecordMemory(
@@ -609,7 +662,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.ForceAuditRefresh, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if storageView != nil {
 		options.Timings.RecordMemory(
@@ -624,7 +677,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	modelStart := time.Now()
 	options.Timings.StageStart("model_build")
 	includeBucketOrigin := bucketMode != StorageChainBucketModeValidate && storageView.bucketInventoryAvailable
-	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, includeBucketOrigin)
+	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, inputs.scopes, organization, project, includeBucketOrigin)
 	options.Timings.Record("model_build", time.Since(modelStart))
 	options.Timings.RecordMemory(
 		"model_build",
@@ -636,6 +689,8 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	model.Summary.BucketInventoryAvailable = storageView.bucketInventoryAvailable
 	model.Summary.BucketInventoryError = storageView.bucketInventoryError
 	model.Summary.ValidationMode = validationMode
+	model.Summary.GitRevision = hash.String()
+	model.Summary.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if inputs.bucketSummary != nil {
 		exists := inputs.bucketSummary.Exists
 		model.Summary.BucketPathExists = &exists
@@ -805,13 +860,14 @@ func logStorageChainAuditCacheError(timings *StorageChainAuditTimings, source st
 	timings.Logf("storage_chain_audit_cache_error %s source=%s operation=%s error=%q", strings.TrimSpace(timings.DebugPrefix), strings.TrimSpace(source), strings.TrimSpace(operation), err.Error())
 }
 
-func applyStorageChainAuditCacheMetadata(response *GitStorageChainAuditResponse, hit bool, cachedAt time.Time, source string, cacheError string) {
+func applyStorageChainAuditCacheMetadata(response *GitStorageChainAuditResponse, hit bool, cachedAt time.Time, refreshDurationMillis int64, source string, cacheError string) {
 	if response == nil || cachedAt.IsZero() {
 		return
 	}
 	response.Summary.AuditCacheHit = hit
 	response.Summary.AuditCachedAt = cachedAt.UTC().Format(time.RFC3339Nano)
 	response.Summary.AuditCacheAgeSeconds = int64(time.Since(cachedAt).Seconds())
+	response.Summary.AuditRefreshDurationMs = refreshDurationMillis
 	response.Summary.AuditCacheSource = strings.TrimSpace(source)
 	response.Summary.AuditCacheError = strings.TrimSpace(cacheError)
 }
@@ -867,12 +923,16 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 	if len(selectedFindings) == 0 {
 		return nil, fmt.Errorf("cleanup apply requires findings from a prior audit; refusing to rebuild audit during apply")
 	}
+	canonicalFindings, err := service.canonicalizeStorageCleanupFindings(ctx, authorizationHeader, organization, project, selectedFindings)
+	if err != nil {
+		return nil, err
+	}
 	actionSelection := indexCleanupActions(selectedActions)
 	plan := storageCleanupApplyPlan{
 		UpdateAccessMethods: make(map[string][]gintegrationsyfon.ProjectAccessMethod),
 	}
 	selected := indexCleanupSelection(selectedRepoPaths)
-	for _, finding := range selectedFindings {
+	for _, finding := range canonicalFindings {
 		if len(selected) > 0 && !storageApplyFindingSelected(selected, finding) {
 			continue
 		}
@@ -888,6 +948,69 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 		return nil, fmt.Errorf("selected cleanup paths did not match provided cleanup findings")
 	}
 	return service.executeStorageCleanupApplyPlan(ctx, authorizationHeader, organization, project, plan, dryRun)
+}
+
+func (service *StorageAnalyticsService) canonicalizeStorageCleanupFindings(ctx context.Context, authorizationHeader string, organization string, project string, findings []GitStorageCleanupApplyFinding) ([]GitStorageCleanupApplyFinding, error) {
+	if !storageCleanupFindingsContainStorageURL(findings) {
+		return append([]GitStorageCleanupApplyFinding(nil), findings...), nil
+	}
+	scopes, err := service.loadProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
+	if err != nil {
+		return nil, fmt.Errorf("load project storage scopes for cleanup apply: %w", err)
+	}
+	out := make([]GitStorageCleanupApplyFinding, 0, len(findings))
+	for _, finding := range findings {
+		clone := finding
+		clone.BucketObjectURL = canonicalizeCleanupStorageURL(finding.BucketObjectURL, scopes, organization, project)
+		clone.BucketObjectURLs = canonicalizeCleanupStorageURLs(finding.BucketObjectURLs, scopes, organization, project)
+		clone.AccessURLs = canonicalizeCleanupStorageURLs(finding.AccessURLs, scopes, organization, project)
+		if finding.Evidence != nil {
+			evidence := *finding.Evidence
+			evidence.BucketObjectURLs = canonicalizeCleanupStorageURLs(evidence.BucketObjectURLs, scopes, organization, project)
+			evidence.AccessURLs = canonicalizeCleanupStorageURLs(evidence.AccessURLs, scopes, organization, project)
+			clone.Evidence = &evidence
+		}
+		out = append(out, clone)
+	}
+	return out, nil
+}
+
+func storageCleanupFindingsContainStorageURL(findings []GitStorageCleanupApplyFinding) bool {
+	for _, finding := range findings {
+		candidates := []string{finding.NormalizedPath, finding.BucketObjectURL}
+		candidates = append(candidates, finding.BucketObjectURLs...)
+		candidates = append(candidates, finding.AccessURLs...)
+		if finding.Evidence != nil {
+			candidates = append(candidates, finding.Evidence.BucketObjectURLs...)
+			candidates = append(candidates, finding.Evidence.AccessURLs...)
+		}
+		for _, candidate := range candidates {
+			if _, _, ok := parseStorageURL(candidate); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func canonicalizeCleanupStorageURL(value string, scopes []domain.StorageBucketScope, organization string, project string) string {
+	if objectURL := canonicalizeScopedStorageURL(value, scopes, organization, project); objectURL != "" {
+		return objectURL
+	}
+	if objectURL := canonicalStorageURL("", "", value); objectURL != "" {
+		return objectURL
+	}
+	return strings.TrimSpace(value)
+}
+
+func canonicalizeCleanupStorageURLs(values []string, scopes []domain.StorageBucketScope, organization string, project string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if canonical := canonicalizeCleanupStorageURL(value, scopes, organization, project); canonical != "" {
+			out = append(out, canonical)
+		}
+	}
+	return uniqueStrings(out)
 }
 
 func resolveStorageCleanupApplyAction(finding GitStorageCleanupApplyFinding, actionSelection map[string]string, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool) (string, error) {
@@ -913,9 +1036,6 @@ func resolveStorageCleanupApplyAction(finding GitStorageCleanupApplyFinding, act
 	}
 	if !storageRepairActionAllowed(kind, action) {
 		return "", fmt.Errorf("cleanup action %q is not supported for finding kind %q", action, kind)
-	}
-	if len(finding.AvailableActions) > 0 && !stringSliceContains(finding.AvailableActions, action) {
-		return "", fmt.Errorf("cleanup action %q is not advertised for finding kind %q at %q", action, kind, finding.NormalizedPath)
 	}
 	return action, nil
 }
@@ -980,6 +1100,9 @@ func stringSliceContains(values []string, target string) bool {
 }
 
 func addStorageCleanupApplyFindingToPlan(plan *storageCleanupApplyPlan, finding GitStorageCleanupApplyFinding, action string) error {
+	if err := appendStorageCleanupVerification(plan, finding, action); err != nil {
+		return err
+	}
 	switch action {
 	case storageActionInspectEvidence:
 		plan.ManualPaths = append(plan.ManualPaths, finding.NormalizedPath)
@@ -1209,6 +1332,11 @@ func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx conte
 			DryRun:                  true,
 		}, nil
 	}
+	if err := service.verifyStorageCleanupApplyPlan(ctx, authorizationHeader, &plan); err != nil {
+		return nil, err
+	}
+	toDeleteBucketObjects = uniqueStrings(plan.DeleteBucketObjects)
+	skippedPaths = uniqueStrings(plan.SkippedPaths)
 	if len(plan.UpdateAccessMethods) > 0 {
 		if err := service.storage.BulkUpdateAccessMethods(ctx, authorizationHeader, plan.UpdateAccessMethods); err != nil {
 			return nil, fmt.Errorf("update syfon access methods: %w", err)
@@ -1308,14 +1436,14 @@ func storageApplyFindingBucketObjectURLs(finding GitStorageCleanupApplyFinding) 
 	candidates := []string{
 		finding.BucketObjectURL,
 	}
-	if canonicalStorageURL("", "", finding.NormalizedPath) != "" {
-		candidates = append(candidates, finding.NormalizedPath)
-	}
 	candidates = append(candidates, finding.BucketObjectURLs...)
 	candidates = append(candidates, finding.AccessURLs...)
 	if finding.Evidence != nil {
 		candidates = append(candidates, finding.Evidence.BucketObjectURLs...)
 		candidates = append(candidates, finding.Evidence.AccessURLs...)
+	}
+	if len(uniqueCleanupSelectionCandidates(candidates)) == 0 && canonicalStorageURL("", "", finding.NormalizedPath) != "" {
+		candidates = append(candidates, finding.NormalizedPath)
 	}
 	return uniqueCleanupSelectionCandidates(candidates)
 }
@@ -2389,29 +2517,21 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if hasExactPathBucketMismatch(record, resolution, bucketObjectsByURL) {
 		return storageFindingBrokenBucketMap
 	}
-	if len(repairableBrokenAccessProbes(record)) > 0 {
-		return storageFindingBrokenBucketMap
-	}
+	assessment := assessStorageRecordEvidence(record, len(resolution.matchedBucketObjectURLs) > 0)
 	if resolution.hasAcceptedCanonicalProbe {
 		return storageFindingNone
 	}
 	if inventoryHasValidationMismatch(record, resolution.matchedBucketObjectURLs, bucketObjectsByURL) {
 		return storageFindingValidationMismatch
 	}
-	if resolution.hasValidationMismatch {
+	if resolution.hasValidationMismatch || assessment.MetadataMismatch {
 		return storageFindingValidationMismatch
 	}
-	if len(resolution.matchedBucketObjectURLs) > 0 {
-		if resolution.hasPresentRawAccessProbe && resolution.hasBrokenRawAccessProbe {
-			return storageFindingBrokenBucketMap
-		}
-		if resolution.hasPresentRawAccessProbe && resolution.hasMissingRawAccessProbe {
-			return storageFindingObjectMissing
-		}
-		if resolution.hasPresentRawAccessProbe && resolution.hasRawAccessProbeError {
-			return storageFindingProbeError
-		}
+	if resolution.hasAcceptedCanonicalProbe || assessment.Present {
 		return storageFindingNone
+	}
+	if len(repairableBrokenAccessProbes(record)) > 0 || assessment.MappingBroken {
+		return storageFindingBrokenBucketMap
 	}
 	if len(record.AccessProbes) == 0 {
 		if len(bucketObjectsByURL) > 0 && len(resolution.candidateURLs) > 0 {
@@ -2419,66 +2539,23 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 		}
 		return storageFindingNone
 	}
-	if resolution.hasPresentProbe {
-		if resolution.hasPresentRawAccessProbe && resolution.hasBrokenRawAccessProbe {
-			return storageFindingBrokenBucketMap
-		}
-		if resolution.hasPresentRawAccessProbe && resolution.hasMissingRawAccessProbe {
-			return storageFindingObjectMissing
-		}
-		if resolution.hasPresentRawAccessProbe && resolution.hasRawAccessProbeError {
-			return storageFindingProbeError
-		}
-		return storageFindingNone
-	}
-	if resolution.hasBrokenMappingProbe {
-		return storageFindingBrokenBucketMap
-	}
-	if resolution.hasMissingProbe {
+	if assessment.Missing {
 		return storageFindingObjectMissing
 	}
-	if resolution.hasProbeError {
+	if resolution.hasProbeError || assessment.Status == "unknown" {
 		return storageFindingProbeError
 	}
 	return storageFindingNone
 }
 
 func hasExactPathBucketMismatch(record projectRecordState, resolution recordStorageResolution, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
-	if len(bucketObjectsByURL) == 0 || len(resolution.matchedBucketObjectURLs) > 0 {
-		return false
-	}
-	expectedBucketURLs := resolution.candidateURLs
-	if len(expectedBucketURLs) == 0 {
-		return false
-	}
-	expectedBasenames := make(map[string]struct{}, len(expectedBucketURLs))
-	for _, accessURL := range expectedBucketURLs {
-		_, key, ok := parseStorageURL(accessURL)
-		if !ok {
-			continue
-		}
-		name := strings.TrimSpace(path.Base(key))
-		if name == "" {
-			continue
-		}
-		expectedBasenames[name] = struct{}{}
-	}
-	if len(expectedBasenames) == 0 {
-		return false
-	}
-	for _, item := range bucketObjectsByURL {
-		itemName := strings.TrimSpace(path.Base(strings.TrimSpace(item.Key)))
-		if itemName == "" {
-			continue
-		}
-		if _, ok := expectedBasenames[itemName]; !ok {
-			continue
-		}
-		if record.Size > 0 && item.SizeBytes > 0 && item.SizeBytes != record.Size {
-			continue
-		}
-		return true
-	}
+	// A basename or size match elsewhere in a project bucket is not evidence
+	// that this record's mapping is wrong: BForePC contains many repeated names
+	// such as features.tsv.gz. Mapping failures must come from an explicit
+	// resolver/probe error, not an inventory-side similarity heuristic.
+	_ = record
+	_ = resolution
+	_ = bucketObjectsByURL
 	return false
 }
 
@@ -2648,9 +2725,10 @@ func buildBucketOnlyFinding(item gintegrationsyfon.ProjectBucketObject) GitStora
 
 func buildChainBucketOnlyFinding(item gintegrationsyfon.ProjectBucketObject) GitStorageChainFinding {
 	objectURL := canonicalStorageURL(item.Bucket, item.Key, item.ObjectURL)
-	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport("bucket_only_object")
+	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupportForEvidence("bucket_only_object", "verified")
 	return GitStorageChainFinding{
 		Kind:              "bucket_only_object",
+		EvidenceStatus:    "verified",
 		NormalizedPath:    objectURL,
 		ObjectIDs:         []string{},
 		AccessURLs:        []string{objectURL},
@@ -2699,7 +2777,8 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 	if evidence != nil {
 		evidence.BucketObjectURLs = uniqueStrings(append(evidence.BucketObjectURLs, bucketObjectURLs...))
 	}
-	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupport(kind)
+	evidenceStatus := storageEvidenceStatus(record, len(bucketObjectURLs) > 0)
+	actionability, availableActions, defaultAction, supportsDryRun := storageChainActionSupportForEvidence(kind, evidenceStatus)
 	primaryProbe := selectChainProbe(record, bucketObjectURLs)
 	suggestedFix := suggestedFixForChainFinding(kind, record)
 	suggestedAction := suggestedActionForChainFinding(kind, record)
@@ -2711,6 +2790,7 @@ func buildChainRecordFindingsWithOptions(kind string, record projectRecordState,
 	for _, path := range paths {
 		findings = append(findings, GitStorageChainFinding{
 			Kind:              kind,
+			EvidenceStatus:    evidenceStatus,
 			NormalizedPath:    path,
 			Checksum:          strings.TrimSpace(record.Checksum),
 			SourcePaths:       uniqueStrings(gitPaths),
@@ -2757,12 +2837,12 @@ func suggestedFixForChainFinding(kind string, record projectRecordState) string 
 		if probe.SizeBytes != nil {
 			bucketSize = *probe.SizeBytes
 		}
-		mismatches = append(mismatches, fmt.Sprintf("Syfon/Git size is %s, bucket inventory reports %s", formatAuditSize(record.Size), formatAuditSize(bucketSize)))
+		mismatches = append(mismatches, fmt.Sprintf("Syfon record size is %s, bucket inventory reports %s", formatAuditSize(record.Size), formatAuditSize(bucketSize)))
 	}
 	if len(mismatches) == 0 {
 		return "Bucket object exists, but its storage evidence does not match the Syfon/Git record. Review the record and bucket object before applying a destructive fix."
 	}
-	return strings.Join(mismatches, ". ") + ". Update the stale Syfon metadata or delete and recreate the record after confirming the bucket object is authoritative."
+	return strings.Join(mismatches, ". ") + ". Because the byte lengths differ, the bucket object cannot have the current Git/Syfon SHA-256. Recompute the bucket object's SHA-256 before manually reconciling Git and Syfon."
 }
 
 func recordHasAccessProbeMismatch(record projectRecordState, mismatch string) bool {
@@ -2965,11 +3045,18 @@ func resolveRecordStorage(record projectRecordState, bucketObjectsByURL map[stri
 		}
 		switch status {
 		case "not_found":
+			if strings.TrimSpace(probe.Operation) == StorageChainValidationModeInventory {
+				resolution.hasProbeError = true
+				if rawAccessProbe {
+					resolution.hasRawAccessProbeError = true
+				}
+				continue
+			}
 			resolution.hasMissingProbe = true
 			if rawAccessProbe {
 				resolution.hasMissingRawAccessProbe = true
 			}
-		case "forbidden", "unsupported", "invalid", "error":
+		case "unknown", "forbidden", "unsupported", "invalid", "error":
 			resolution.hasProbeError = true
 			if rawAccessProbe {
 				resolution.hasRawAccessProbeError = true
@@ -2995,10 +3082,21 @@ func accessURLsForStorage(record projectRecordState) []string {
 }
 
 func probeAccessURLsForRecord(record projectRecordState) []string {
+	urls := make([]string, 0, len(record.CanonicalAccessURLs)+len(record.AccessURLs)+len(record.AccessProbes))
 	if len(record.CanonicalAccessURLs) > 0 {
-		return record.CanonicalAccessURLs
+		urls = append(urls, record.CanonicalAccessURLs...)
+	} else {
+		urls = append(urls, rawAccessURLsForRecord(record)...)
 	}
-	return rawAccessURLsForRecord(record)
+	for _, probe := range record.AccessProbes {
+		if strings.TrimSpace(probe.Operation) != StorageChainValidationModeInventory || strings.TrimSpace(probe.Status) != "unknown" {
+			continue
+		}
+		if objectURL := syfonProbeObjectURL(probe); objectURL != "" {
+			urls = append(urls, objectURL)
+		}
+	}
+	return uniqueStrings(urls)
 }
 
 func rawAccessURLsForRecord(record projectRecordState) []string {
@@ -3134,11 +3232,7 @@ func syfonProbeObjectURL(probe gintegrationsyfon.BulkStorageProbeResult) string 
 
 func syfonProbeIsBrokenAccess(probe gintegrationsyfon.BulkStorageProbeResult) bool {
 	switch strings.TrimSpace(probe.ErrorKind) {
-	case "missing_access_url", "credential_missing":
-		return true
-	}
-	switch strings.TrimSpace(probe.Status) {
-	case "missing", "forbidden", "unsupported", "invalid", "error":
+	case "missing_access_url", "scope_not_found", "credential_missing":
 		return true
 	}
 	return false

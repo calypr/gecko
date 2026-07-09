@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	defaultStorageChainAuditCacheTTL = 24 * time.Hour
-	storageChainAuditCacheKeyPrefix  = "gecko:storage_chain_audit:v1:"
+	defaultStorageChainAuditCacheTTL = 5 * time.Minute
+	storageChainAuditCacheKeyPrefix  = "gecko:storage_chain_audit:v2:"
 	storageExactJoinCacheKeyPrefix   = "gecko:storage_exact_join:v1:"
 )
 
@@ -29,8 +29,44 @@ type storageChainAuditResponseCache interface {
 }
 
 type cachedStorageChainAuditResponse struct {
-	CachedAt time.Time                    `json:"cached_at"`
-	Response GitStorageChainAuditResponse `json:"response"`
+	CachedAt              time.Time                    `json:"cached_at"`
+	RefreshDurationMillis int64                        `json:"refresh_duration_ms,omitempty"`
+	Response              GitStorageChainAuditResponse `json:"response"`
+}
+
+type inflightStorageChainAuditRefresh struct {
+	done  chan struct{}
+	value cachedStorageChainAuditResponse
+	err   error
+}
+
+// coalesceStorageChainAuditRefresh ensures a root audit has one authoritative
+// refresh result per cache key. The UI can issue overlapping forced refreshes;
+// without this guard, a partial bucket LIST from the later request can replace
+// the completed response from the earlier request.
+func (service *StorageAnalyticsService) coalesceStorageChainAuditRefresh(ctx context.Context, key string, refresh func() (cachedStorageChainAuditResponse, error)) (cachedStorageChainAuditResponse, bool, error) {
+	service.chainAuditRefreshMu.Lock()
+	if work := service.chainAuditRefreshWork[key]; work != nil {
+		service.chainAuditRefreshMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return cachedStorageChainAuditResponse{}, true, ctx.Err()
+		case <-work.done:
+			return cloneCachedStorageChainAuditResponse(work.value), true, work.err
+		}
+	}
+	work := &inflightStorageChainAuditRefresh{done: make(chan struct{})}
+	service.chainAuditRefreshWork[key] = work
+	service.chainAuditRefreshMu.Unlock()
+
+	value, err := refresh()
+	service.chainAuditRefreshMu.Lock()
+	work.value = cloneCachedStorageChainAuditResponse(value)
+	work.err = err
+	delete(service.chainAuditRefreshWork, key)
+	close(work.done)
+	service.chainAuditRefreshMu.Unlock()
+	return value, false, err
 }
 
 type storageExactProjectJoinCache interface {
@@ -291,13 +327,14 @@ func storageChainAuditCacheTTL() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func storageChainAuditResponseCacheKey(organization string, project string, ref string, gitSubpath string, probeMode string, validationMode string, bucketMode string, bucketPathPrefix string, hash string) string {
+func storageChainAuditResponseCacheKey(organization string, project string, ref string, gitSubpath string, probeMode string, validationMode string, bucketMode string, bucketPathPrefix string, hash string, syfonRevision string) string {
 	body := fmt.Sprintf(
-		"org=%s\nproject=%s\nref=%s\nhash=%s\ngit_subpath=%s\nprobe_mode=%s\nvalidation_mode=%s\nbucket_mode=%s\nbucket_path_prefix=%s",
+		"org=%s\nproject=%s\nref=%s\nhash=%s\nsyfon_revision=%s\ngit_subpath=%s\nprobe_mode=%s\nvalidation_mode=%s\nbucket_mode=%s\nbucket_path_prefix=%s",
 		strings.TrimSpace(organization),
 		strings.TrimSpace(project),
 		strings.TrimSpace(ref),
 		strings.TrimSpace(hash),
+		strings.TrimSpace(syfonRevision),
 		normalizeRepoSubpath(gitSubpath),
 		strings.TrimSpace(probeMode),
 		strings.TrimSpace(validationMode),
@@ -321,8 +358,9 @@ func storageExactProjectJoinCacheKey(organization string, project string, hash s
 
 func cloneCachedStorageChainAuditResponse(value cachedStorageChainAuditResponse) cachedStorageChainAuditResponse {
 	return cachedStorageChainAuditResponse{
-		CachedAt: value.CachedAt,
-		Response: cloneStorageChainAuditResponse(value.Response),
+		CachedAt:              value.CachedAt,
+		RefreshDurationMillis: value.RefreshDurationMillis,
+		Response:              cloneStorageChainAuditResponse(value.Response),
 	}
 }
 
