@@ -70,8 +70,15 @@ func TestRegisterGitOnlySyfonRecordsRefusesBucketSizeMismatch(t *testing.T) {
 	actualSize := int64(99)
 	backend := &fakeStorageAnalyticsBackend{
 		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket/root"}},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: objectURL,
+			Bucket:    "bucket",
+			Key:       "root/data/a.bin",
+			Path:      "data/a.bin",
+			SizeBytes: 99,
+		}},
 		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
-			"git-only-register-0": {ID: "git-only-register-0", ObjectURL: objectURL, Exists: true, Status: "present", SizeBytes: &actualSize},
+			"git-only-register-0-0": {ID: "git-only-register-0-0", ObjectURL: objectURL, Exists: true, Status: "present", SizeBytes: &actualSize},
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
@@ -84,5 +91,39 @@ func TestRegisterGitOnlySyfonRecordsRefusesBucketSizeMismatch(t *testing.T) {
 	}
 	if len(backend.registeredObjects) != 0 || len(response.Results) != 1 || response.Results[0].Status != "skipped" {
 		t.Fatalf("expected size mismatch to block registration, got response=%+v registrations=%+v", response, backend.registeredObjects)
+	}
+}
+
+func TestRegisterGitOnlySyfonRecordsFindsChecksumKeyedBucketObjectFromInventory(t *testing.T) {
+	checksum := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/a.bin": lfsPointer(checksum, 100),
+	})
+	objectURL := "s3://bucket/root/" + checksum
+	backend := &fakeStorageAnalyticsBackend{
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket/root"}},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL:  objectURL,
+			Bucket:     "bucket",
+			Key:        "root/" + checksum,
+			Path:       checksum,
+			SizeBytes:  100,
+			MetaSHA256: checksum,
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	response, err := service.RegisterGitOnlySyfonRecords(context.Background(), "Bearer token", "org", "proj", refName, mirrorPath, repo, hash, GitOnlySyfonRegistrationRequest{
+		ExpectedGitRevision: hash.String(),
+		RepoPaths:           []string{"data/a.bin"},
+	})
+	if err != nil {
+		t.Fatalf("register missing Syfon record: %v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Status != "created" || response.Results[0].BucketObjectURL != objectURL {
+		t.Fatalf("expected checksum-keyed inventory object to be registered, got %+v", response)
+	}
+	if len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != objectURL {
+		t.Fatalf("expected registration to probe the inventory-resolved checksum object, got %+v", backend.probeItems)
 	}
 }

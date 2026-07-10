@@ -676,7 +676,8 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	}
 	modelStart := time.Now()
 	options.Timings.StageStart("model_build")
-	includeBucketOrigin := bucketMode != StorageChainBucketModeValidate && storageView.bucketInventoryAvailable
+	includeBucketOrigin := storageView.bucketInventoryAvailable &&
+		(bucketMode == StorageChainBucketModeItems || validationMode == StorageChainValidationModeList)
 	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, inputs.scopes, organization, project, includeBucketOrigin)
 	options.Timings.Record("model_build", time.Since(modelStart))
 	options.Timings.RecordMemory(
@@ -1371,9 +1372,10 @@ func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx conte
 		}
 		deletedBucketObjectURLs = uniqueStrings(deletedBucketObjectURLs)
 	}
-	if len(plan.UpdateAccessMethods) > 0 || len(toDelete) > 0 {
+	if len(plan.UpdateAccessMethods) > 0 || len(toDelete) > 0 || len(toDeleteBucketObjects) > 0 {
 		service.evictProjectJoinCache(organization, project)
 		service.evictProjectAuditRecordCache(organization, project)
+		service.evictProjectChainInputCache(organization, project)
 	}
 	for _, objectID := range toDelete {
 		success := true

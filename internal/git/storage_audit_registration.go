@@ -21,6 +21,10 @@ type gitOnlyRegistrationCandidate struct {
 	resultIndexes []int
 }
 
+type gitOnlyBucketCandidate struct {
+	url string
+}
+
 // RegisterGitOnlySyfonRecords restores only missing Syfon records. It always
 // re-reads the Git LFS pointer, confirms the current scoped bucket object, and
 // rejects size drift before sending a DRS registration request to Syfon.
@@ -72,6 +76,10 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 	if err != nil {
 		return nil, fmt.Errorf("load project storage scopes before registration: %w", err)
 	}
+	bucketObjects, bucketObjectsByURL, err := service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+	if err != nil {
+		return nil, fmt.Errorf("load project bucket inventory before registration: %w", err)
+	}
 	probes := make([]gintegrationsyfon.BulkStorageProbeItem, 0, len(results))
 	probeResultIndexes := make(map[string]int, len(results))
 	for index := range results {
@@ -84,20 +92,22 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 			result.Reason = "a Syfon record for this SHA-256 already exists"
 			continue
 		}
-		urls := projectScopeRepoPathObjectURLs([]string{result.NormalizedPath}, scopes, organization, project)
-		if len(urls) != 1 {
+		candidates := gitOnlyBucketCandidates(result.NormalizedPath, result.Checksum, scopes, organization, project, bucketObjects, bucketObjectsByURL)
+		if len(candidates) == 0 {
 			result.Status = "skipped"
-			result.Reason = gitOnlyRegistrationScopeReason(urls, scopes, organization, project)
+			result.Reason = "no bucket object matched the audited Git path or SHA-256 in the configured project mappings"
 			continue
 		}
-		probeID := fmt.Sprintf("git-only-register-%d", index)
 		size := result.GitSizeBytes
-		probes = append(probes, gintegrationsyfon.BulkStorageProbeItem{
-			ID:                probeID,
-			ObjectURL:         urls[0],
-			ExpectedSizeBytes: &size,
-		})
-		probeResultIndexes[probeID] = index
+		for candidateIndex, candidate := range candidates {
+			probeID := fmt.Sprintf("git-only-register-%d-%d", index, candidateIndex)
+			probes = append(probes, gintegrationsyfon.BulkStorageProbeItem{
+				ID:                probeID,
+				ObjectURL:         candidate.url,
+				ExpectedSizeBytes: &size,
+			})
+			probeResultIndexes[probeID] = index
+		}
 	}
 	if len(probes) > 0 {
 		observed, err := service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, probes)
@@ -111,6 +121,9 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 		for _, item := range probes {
 			index := probeResultIndexes[item.ID]
 			result := &results[index]
+			if result.Status == "eligible" {
+				continue
+			}
 			probe, ok := byProbeID[item.ID]
 			if !ok {
 				result.Status = "skipped"
@@ -123,16 +136,19 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 			}
 			result.BucketSizeBytes = derefInt64(probe.SizeBytes)
 			if !probe.Exists || strings.TrimSpace(probe.Status) != "present" {
-				result.Status = "skipped"
-				result.Reason = "mapped bucket object is not currently present"
 				continue
 			}
 			if probe.SizeBytes == nil || *probe.SizeBytes != result.GitSizeBytes {
-				result.Status = "skipped"
-				result.Reason = fmt.Sprintf("Git LFS size is %d B but bucket size is %d B", result.GitSizeBytes, result.BucketSizeBytes)
 				continue
 			}
 			result.Status = "eligible"
+			result.Reason = "bucket object matched the audited Git path or SHA-256 and passed size verification"
+		}
+		for index := range results {
+			if results[index].Status == "" {
+				results[index].Status = "skipped"
+				results[index].Reason = fmt.Sprintf("Git LFS size is %d B but no matched bucket object is present at that size", results[index].GitSizeBytes)
+			}
 		}
 	}
 	candidates := buildGitOnlyRegistrationCandidates(results)
@@ -157,13 +173,80 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 			for _, resultIndex := range candidate.resultIndexes {
 				results[resultIndex].Status = "created"
 				results[resultIndex].ObjectID = objectID
-				results[resultIndex].Reason = "Syfon record created after Git pointer and bucket size verification; bucket SHA-256 was not available for verification"
+				results[resultIndex].Reason = "Syfon record created after Git pointer and bucket object verification"
 			}
 		}
 		service.evictProjectJoinCache(organization, project)
 		service.evictProjectAuditRecordCache(organization, project)
 	}
 	return &GitOnlySyfonRegistrationResponse{GitRevision: hash.String(), Results: results}, nil
+}
+
+func gitOnlyBucketCandidates(repoPath string, checksum string, scopes []domain.StorageBucketScope, organization string, project string, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) []gitOnlyBucketCandidate {
+	pathURLs := projectScopeRepoPathObjectURLs([]string{repoPath}, scopes, organization, project)
+	checksumURLs := projectScopeRepoPathObjectURLs([]string{checksum}, scopes, organization, project)
+	auditCandidates := make([]gitOnlyBucketCandidate, 0)
+	seen := make(map[string]struct{})
+	addAuditCandidate := func(objectURL string) {
+		canonical := canonicalStorageURL("", "", objectURL)
+		if canonical == "" {
+			return
+		}
+		if _, ok := bucketObjectsByURL[canonical]; !ok {
+			return
+		}
+		if _, ok := seen[canonical]; ok {
+			return
+		}
+		seen[canonical] = struct{}{}
+		auditCandidates = append(auditCandidates, gitOnlyBucketCandidate{url: canonical})
+	}
+	for _, objectURL := range pathURLs {
+		addAuditCandidate(objectURL)
+	}
+	for _, objectURL := range checksumURLs {
+		addAuditCandidate(objectURL)
+	}
+	for _, object := range bucketObjects {
+		objectURL := canonicalStorageURL(object.Bucket, object.Key, object.ObjectURL)
+		if objectURL == "" || normalizeAnalyticsChecksum(object.MetaSHA256) != checksum || !objectBelongsToProjectScope(objectURL, scopes, organization, project) {
+			continue
+		}
+		addAuditCandidate(objectURL)
+	}
+	if len(auditCandidates) > 0 {
+		return auditCandidates
+	}
+
+	// Inventory may be unavailable for a newly uploaded object. Keep the
+	// recheck conservative by probing both supported storage layouts rather
+	// than assuming only the Git-path layout.
+	generated := make([]gitOnlyBucketCandidate, 0, len(pathURLs)+len(checksumURLs))
+	for _, objectURL := range append(pathURLs, checksumURLs...) {
+		canonical := canonicalStorageURL("", "", objectURL)
+		if canonical == "" {
+			continue
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		generated = append(generated, gitOnlyBucketCandidate{url: canonical})
+	}
+	return generated
+}
+
+func objectBelongsToProjectScope(objectURL string, scopes []domain.StorageBucketScope, organization string, project string) bool {
+	bucket, _, ok := parseStorageURL(objectURL)
+	if !ok {
+		return false
+	}
+	for _, scope := range scopes {
+		if storageScopeApplies(scope, organization, project) && strings.EqualFold(strings.TrimSpace(scope.Bucket), bucket) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedGitOnlyRegistrationPaths(paths []string) []string {

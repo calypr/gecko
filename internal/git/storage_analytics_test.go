@@ -1339,6 +1339,61 @@ func TestApplyStorageCleanupRepairMatrix(t *testing.T) {
 	}
 }
 
+func TestApplyStorageCleanupBucketOnlyDeletionEvictsChainInputCache(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cacheKey := service.projectChainInputCacheKey("org", "proj")
+	service.chainInputCache[cacheKey] = cachedChainInputState{
+		expiresAt:     time.Now().Add(time.Minute),
+		projectScopes: backend.projectScopes,
+	}
+	service.chainInputCache[cacheKey+"::bucket-validation-inventory::"] = cachedChainInputState{
+		expiresAt: time.Now().Add(time.Minute),
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: "s3://bucket/only",
+			Bucket:    "bucket",
+			Key:       "only",
+		}},
+		bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{
+			"s3://bucket/only": {ObjectURL: "s3://bucket/only", Bucket: "bucket", Key: "only"},
+		},
+	}
+	service.chainInputCache["org/other::bucket-validation-inventory::"] = cachedChainInputState{
+		expiresAt: time.Now().Add(time.Minute),
+	}
+
+	_, err := service.ApplyStorageCleanup(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		nil,
+		nil,
+		[]GitStorageCleanupApplyFinding{applyFinding("bucket_only_object", "s3://bucket/only", nil, []string{"s3://bucket/only"})},
+		false,
+		false,
+		true,
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("apply bucket-only cleanup: %v", err)
+	}
+	if _, ok := service.chainInputCache[cacheKey]; ok {
+		t.Fatalf("expected project chain input cache to be evicted, got %+v", service.chainInputCache)
+	}
+	if _, ok := service.chainInputCache[cacheKey+"::bucket-validation-inventory::"]; ok {
+		t.Fatalf("expected project bucket inventory cache to be evicted, got %+v", service.chainInputCache)
+	}
+	if _, ok := service.chainInputCache["org/other::bucket-validation-inventory::"]; !ok {
+		t.Fatalf("expected another project's cache entry to remain, got %+v", service.chainInputCache)
+	}
+}
+
 func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1897,6 +1952,58 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	}
 }
 
+func TestBuildStorageChainAuditDefaultListExposesBucketOnlyObjects(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     "obj-present",
+				Checksum:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Organization: "org",
+				Project:      "proj",
+				Size:         100,
+				AccessURLs:   []string{"s3://bucket/present.txt"},
+			},
+		},
+		projectScopes: []domain.StorageBucketScope{
+			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
+		},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{
+			{ObjectURL: "s3://bucket/present.txt", Bucket: "bucket", Key: "present.txt", SizeBytes: 100},
+			{ObjectURL: "s3://bucket/loose.txt", Bucket: "bucket", Key: "loose.txt", SizeBytes: 25},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(
+		context.Background(),
+		"Bearer token",
+		"org",
+		"proj",
+		refName,
+		"",
+		mirrorPath,
+		repo,
+		hash,
+		StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate},
+	)
+	if err != nil {
+		t.Fatalf("build default chain audit: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 1 {
+		t.Fatalf("expected default list audit to load bucket inventory, got %d calls", backend.listProjectBucketInventoryCalls)
+	}
+	if got := chain.Summary.CountsByKind["bucket_only_object"]; got != 1 {
+		t.Fatalf("expected one bucket-only finding, got summary %+v", chain.Summary)
+	}
+	finding := assertHasChainFinding(t, chain.Findings, "bucket_only_object", "s3://bucket/loose.txt")
+	if finding.DefaultAction != storageActionDeleteBucketObject || len(finding.ObjectIDs) != 0 {
+		t.Fatalf("expected bucket-only deletion evidence without Syfon IDs, got %+v", finding)
+	}
+}
+
 func TestBuildStorageChainAuditMetadataModeUsesMetadataValidation(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
@@ -1952,6 +2059,9 @@ func TestBuildStorageChainAuditMetadataModeUsesMetadataValidation(t *testing.T) 
 	}
 	if chain.Summary.ValidationMode != StorageChainValidationModeMetadata {
 		t.Fatalf("expected metadata validation mode, got %+v", chain.Summary)
+	}
+	if got := chain.Summary.CountsByKind["bucket_only_object"]; got != 0 {
+		t.Fatalf("metadata validation must not claim bucket-only coverage, got summary %+v", chain.Summary)
 	}
 	finding := assertHasChainFinding(t, chain.Findings, "git_syfon_metadata_mismatch", "data/a.txt")
 	if finding.Evidence == nil || !contains(finding.Evidence.StorageOperations, StorageChainValidationModeMetadata) {

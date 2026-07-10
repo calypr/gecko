@@ -98,14 +98,6 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 	bucketCh := make(chan bucketResult, 1)
 
 	go func() {
-		if bucketMode == StorageChainBucketModeValidate && validationMode != StorageChainValidationModeList {
-			timings.Record("syfon_bucket_inventory_skipped", 0)
-			bucketCh <- bucketResult{
-				bucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
-				bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{},
-			}
-			return
-		}
 		start := time.Now()
 		timings.StageStart("repo_index")
 		inventory, err := service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
@@ -136,6 +128,14 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		scopeCh <- scopeResult{scopes: scopes, err: err}
 	}()
 	go func() {
+		if bucketMode == StorageChainBucketModeValidate && validationMode != StorageChainValidationModeList {
+			timings.Record("syfon_bucket_inventory_skipped", 0)
+			bucketCh <- bucketResult{
+				bucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
+				bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{},
+			}
+			return
+		}
 		start := time.Now()
 		timings.StageStart("syfon_bucket_inventory")
 		var bucketObjects []gintegrationsyfon.ProjectBucketObject
@@ -551,6 +551,18 @@ func (service *StorageAnalyticsService) updateChainInputCache(cacheKey string, u
 	state.expiresAt = time.Now().Add(chainInputCacheTTL)
 	update(&state)
 	service.chainInputCache[cacheKey] = state
+}
+
+func (service *StorageAnalyticsService) evictProjectChainInputCache(organization string, project string) {
+	baseKey := service.projectChainInputCacheKey(organization, project)
+	prefix := baseKey + "::"
+	service.chainInputMu.Lock()
+	defer service.chainInputMu.Unlock()
+	for key := range service.chainInputCache {
+		if key == baseKey || strings.HasPrefix(key, prefix) {
+			delete(service.chainInputCache, key)
+		}
+	}
 }
 
 func cloneBucketInventory(bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject) {
@@ -1425,7 +1437,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 			}
 			acc.add("bucket_syfon_no_git", buildChainRecordFindings("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.")...)
 		case storageFindingBrokenAccessURL, storageFindingProbeError:
-			findings := buildChainRecordFindings("probe_error", record, gitPaths, bucketMatches, "Storage probes could not confirm this mapped object; Gecko does not treat it as missing or offer cleanup.")
+			findings := buildChainRecordFindings("probe_error", record, gitPaths, bucketMatches, "Storage probes could not confirm this mapped object. Gecko does not treat it as missing; after review, you may delete the Syfon record.")
 			acc.findings = append(acc.findings, findings...)
 			acc.addCount("probe_error", chainPathCount(gitPaths))
 		case storageFindingNone:

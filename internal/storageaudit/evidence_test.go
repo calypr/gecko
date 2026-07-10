@@ -61,6 +61,9 @@ func TestAssessLetsPresentLocatorWinOverMissingAlias(t *testing.T) {
 }
 
 func TestAutomaticRepairRequiresVerifiedMissingEvidence(t *testing.T) {
+	if !AllowsAutomaticRepair("bucket_only_object", EvidenceVerified) {
+		t.Fatal("verified bucket-only inventory evidence should allow bucket deletion")
+	}
 	if AllowsAutomaticRepair("syfon_git_no_bucket", EvidenceUnknown) {
 		t.Fatal("unknown evidence must not allow automatic repair")
 	}
