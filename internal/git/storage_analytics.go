@@ -294,14 +294,6 @@ type projectAuditRecordValidator struct {
 	RecordRevision          string
 }
 
-func BuildGitRepoInventory(ref string, gitSubpath string, repo *gogit.Repository, hash plumbing.Hash) ([]RepoInventoryFile, error) {
-	index, err := buildRepoAnalyticsIndex(ref, repo, hash)
-	if err != nil {
-		return nil, err
-	}
-	return filterRepoInventoryFiles(index, gitSubpath)
-}
-
 func (service *StorageAnalyticsService) BuildStorageSummary(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitStorageSummaryResponse, error) {
 	index, inventory, recordsByChecksum, usageByObjectID, err := service.loadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
 	if err != nil {
@@ -470,10 +462,6 @@ func (service *StorageAnalyticsService) BuildStorageCleanupAudit(ctx context.Con
 		IncludesRepoManifest: model.IncludesRepoManifest,
 		PathPrefix:           model.PathPrefix,
 	}, model, nil
-}
-
-func (service *StorageAnalyticsService) BuildStorageChainAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*GitStorageChainAuditResponse, error) {
-	return service.BuildStorageChainAuditWithOptions(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, StorageChainAuditOptions{})
 }
 
 func (service *StorageAnalyticsService) BuildStorageChainAuditWithOptions(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options StorageChainAuditOptions) (*GitStorageChainAuditResponse, error) {
@@ -1483,20 +1471,6 @@ func cleanupActionKey(kind string, path string) string {
 	return strings.TrimSpace(kind) + "::" + normalizeRepoSubpath(path)
 }
 
-func cleanupActionForFinding(index map[string]string, finding GitStorageCleanupFinding) string {
-	if len(index) == 0 {
-		return ""
-	}
-	path := normalizeRepoSubpath(finding.NormalizedPath)
-	if path == "" {
-		return ""
-	}
-	if action := strings.TrimSpace(index[cleanupActionKey(finding.Kind, path)]); action != "" {
-		return action
-	}
-	return strings.TrimSpace(index[cleanupActionKey("", path)])
-}
-
 func (service *StorageAnalyticsService) loadJoinState(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, forceRefresh bool) (*repoAnalyticsIndex, []RepoInventoryFile, map[string][]projectRecordState, map[string]gintegrationsyfon.FileUsage, error) {
 	index, err := loadOrBuildRepoAnalyticsIndex(ctx, mirrorPath, ref, repo, hash)
 	if err != nil {
@@ -2453,11 +2427,6 @@ func storageCleanupActionSupport(kind string) (string, []string, string, bool) {
 	return policy.actionability, append([]string(nil), policy.actions...), policy.defaultAction, policy.supportsDryRun
 }
 
-func storageChainActionSupport(kind string) (string, []string, string, bool) {
-	policy := storageRepairPolicyForKind(kind)
-	return policy.actionability, append([]string(nil), policy.actions...), policy.defaultAction, policy.supportsDryRun
-}
-
 func compareRecordState(left projectRecordState, right projectRecordState) int {
 	if left.Usage.DownloadCount != right.Usage.DownloadCount {
 		if left.Usage.DownloadCount > right.Usage.DownloadCount {
@@ -2843,11 +2812,6 @@ func suggestedFixForChainFinding(kind string, record projectRecordState) string 
 		return "Bucket object exists, but its storage evidence does not match the Syfon/Git record. Review the record and bucket object before applying a destructive fix."
 	}
 	return strings.Join(mismatches, ". ") + ". Because the byte lengths differ, the bucket object cannot have the current Git/Syfon SHA-256. Recompute the bucket object's SHA-256 before manually reconciling Git and Syfon."
-}
-
-func recordHasAccessProbeMismatch(record projectRecordState, mismatch string) bool {
-	_, ok := firstAccessProbeMismatch(record, mismatch)
-	return ok
 }
 
 func firstAccessProbeMismatch(record projectRecordState, mismatch string) (GitStorageCleanupAccessProbe, bool) {

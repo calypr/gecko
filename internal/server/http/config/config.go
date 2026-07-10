@@ -145,16 +145,3 @@ func (handler *Handler) resolveProjectConfigParams(ctx fiber.Ctx) (string, strin
 	}
 	return handler.resolveConfigParams(ctx)
 }
-
-func mergeErrorDetails(base map[string]any, extra map[string]any) map[string]any {
-	if len(extra) == 0 {
-		return base
-	}
-	if base == nil {
-		base = map[string]any{}
-	}
-	for k, v := range extra {
-		base[k] = v
-	}
-	return base
-}

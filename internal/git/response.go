@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -268,47 +267,6 @@ func BuildGitRefsResponse(projectID string, defaultBranch string, repo *gogit.Re
 		return strings.ToLower(refs[i].Name) < strings.ToLower(refs[j].Name)
 	})
 	return &GitProjectRefsResponse{ProjectID: projectID, DefaultBranch: defaultBranch, Refs: refs}, nil
-}
-
-func BuildGitFileResponse(projectID string, ref string, path string, repo *gogit.Repository, hash plumbing.Hash) (*GitProjectFileResponse, error) {
-	commit, err := repo.CommitObject(hash)
-	if err != nil {
-		return nil, fmt.Errorf("load commit for ref %s: %w", ref, err)
-	}
-	tree, err := commit.Tree()
-	if err != nil {
-		return nil, fmt.Errorf("load git tree for ref %s: %w", ref, err)
-	}
-	normalizedPath := strings.Trim(strings.TrimSpace(path), "/")
-	if normalizedPath == "" {
-		return nil, fmt.Errorf("file path is required")
-	}
-	file, err := tree.File(normalizedPath)
-	if err != nil {
-		return nil, fmt.Errorf("load git file %s: %w", normalizedPath, err)
-	}
-	reader, err := file.Reader()
-	if err != nil {
-		return nil, fmt.Errorf("open git file %s: %w", normalizedPath, err)
-	}
-	defer reader.Close()
-	const inlineLimit = 256 * 1024
-	contentBytes, err := io.ReadAll(io.LimitReader(reader, inlineLimit+1))
-	if err != nil {
-		return nil, fmt.Errorf("read git file content for %s: %w", normalizedPath, err)
-	}
-	if len(contentBytes) > inlineLimit {
-		contentBytes = contentBytes[:inlineLimit]
-	}
-	return &GitProjectFileResponse{
-		ProjectID:  projectID,
-		Ref:        ref,
-		Path:       normalizedPath,
-		Name:       filepath.Base(normalizedPath),
-		Hash:       file.Hash.String(),
-		Size:       file.Size,
-		LFSPointer: ParseGitLFSPointer(contentBytes),
-	}, nil
 }
 
 func BuildGitHubFileResponse(projectID string, ref string, path string, metadata *github.RepositoryContent, contentBytes []byte) *GitProjectFileResponse {

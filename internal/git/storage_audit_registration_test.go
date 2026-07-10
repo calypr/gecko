@@ -30,7 +30,7 @@ func TestRegisterGitOnlySyfonRecordsUsesScopedBucketEvidence(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	audit, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash)
+	audit, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build audit: %v", err)
 	}

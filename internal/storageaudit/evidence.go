@@ -13,6 +13,7 @@ const (
 	OperationInventory = "inventory"
 	OperationList      = "list"
 	OperationMetadata  = "metadata"
+	OperationDownload  = "download"
 )
 
 type Probe struct {
@@ -56,10 +57,10 @@ func Assess(probes []Probe, bucketObserved bool) Assessment {
 			assessment.Present = true
 			assessment.Status = EvidenceVerified
 		}
-		// Exact LIST is useful for discovering a candidate, but some S3-compatible
-		// backends can return an empty page under load without returning an error.
-		// Only a metadata lookup (HEAD) is authoritative enough to prove absence.
-		if operation == OperationMetadata && status == "not_found" && (errorKind == "" || errorKind == "object_not_found") {
+		// S3-compatible backends can report a false miss for LIST or HEAD while a
+		// download-compatible GET still succeeds. Only an explicit GET-style probe
+		// may prove absence and unlock destructive repair.
+		if operation == OperationDownload && status == "not_found" && (errorKind == "" || errorKind == "object_not_found") {
 			assessment.Missing = true
 			assessment.Status = EvidenceVerified
 		}

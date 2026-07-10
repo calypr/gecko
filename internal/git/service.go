@@ -224,13 +224,6 @@ func (service *GitService) ListInstallationRepositories(ctx context.Context, aut
 	return service.fenceAPI.ListInstallationRepositories(ctx, authorizationHeader, organization, owner, installationID)
 }
 
-func (service *GitService) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity GitRepositoryIdentity) (GitRepositoryInstallationStatus, error) {
-	if service.fenceAPI == nil {
-		return GitRepositoryInstallationStatus{}, fmt.Errorf("fence client is not initialized")
-	}
-	return service.fenceAPI.RequestInstallationStatus(ctx, authorizationHeader, organization, identity)
-}
-
 func (service *GitService) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity GitRepositoryIdentity, access string) (string, error) {
 	if service.fenceAPI == nil {
 		return "", fmt.Errorf("fence client is not initialized")

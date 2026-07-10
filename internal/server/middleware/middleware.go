@@ -147,28 +147,6 @@ func parseResourceAccessSnapshot(payload map[string]any) (ResourceAccessSnapshot
 	return snapshot, nil
 }
 
-func snapshotAllows(raw any, method, service string) bool {
-	entries, ok := raw.([]any)
-	if !ok {
-		return false
-	}
-	for _, entry := range entries {
-		record, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		entryMethod, _ := record["method"].(string)
-		entryService, _ := record["service"].(string)
-		if entryMethod != method && entryMethod != "*" {
-			continue
-		}
-		if entryService == "*" || service == "*" || entryService == service {
-			return true
-		}
-	}
-	return false
-}
-
 func ResourceAccessAllows(snapshot ResourceAccessSnapshot, resourcePath, method, service string) bool {
 	entries := snapshot[resourcePath]
 	for _, entry := range entries {

@@ -74,16 +74,6 @@ func TestSyncRepositoryMirrorPullsUpdatesAndReadsTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve updated HEAD: %v", err)
 	}
-	fileResponse, err := BuildGitFileResponse("org-a/proj-a", refName, "README.md", mirrorRepo, hash)
-	if err != nil {
-		t.Fatalf("build updated file response: %v", err)
-	}
-	if fileResponse.Name != "README.md" {
-		t.Fatalf("expected README.md file name, got %q", fileResponse.Name)
-	}
-	if fileResponse.Hash == "" {
-		t.Fatal("expected file hash to be populated")
-	}
 }
 
 func TestBuildGitRefsResponseIncludesRemoteBranches(t *testing.T) {
@@ -164,22 +154,12 @@ func TestBuildGitRefsResponseIncludesRemoteBranches(t *testing.T) {
 		t.Fatalf("expected benchmarking branch in refs response, got %+v", refsResponse.Refs)
 	}
 
-	refName, hash, err := ResolveGitReference(mirrorRepo, "benchmarking", defaultBranch)
+	refName, _, err := ResolveGitReference(mirrorRepo, "benchmarking", defaultBranch)
 	if err != nil {
 		t.Fatalf("resolve benchmarking branch: %v", err)
 	}
 	if refName != "benchmarking" {
 		t.Fatalf("expected resolved ref name benchmarking, got %q", refName)
-	}
-	fileResponse, err := BuildGitFileResponse("org-a/proj-a", refName, "benchmark.txt", mirrorRepo, hash)
-	if err != nil {
-		t.Fatalf("build branch file response: %v", err)
-	}
-	if fileResponse.Name != "benchmark.txt" {
-		t.Fatalf("expected benchmark.txt file name, got %q", fileResponse.Name)
-	}
-	if fileResponse.Hash == "" {
-		t.Fatal("expected branch file hash to be populated")
 	}
 }
 

@@ -55,16 +55,6 @@ func repoAnalyticsCacheKey(mirrorPath string, hash plumbing.Hash) string {
 	return strings.TrimSpace(mirrorPath) + "::" + hash.String()
 }
 
-func (cache *repoAnalyticsIndexMemoryCache) get(mirrorPath string, hash plumbing.Hash) *repoAnalyticsIndex {
-	cache.mu.RLock()
-	defer cache.mu.RUnlock()
-	entry := cache.entries[repoAnalyticsCacheKey(mirrorPath, hash)]
-	if entry == nil {
-		return nil
-	}
-	return entry
-}
-
 func (cache *repoAnalyticsIndexMemoryCache) put(mirrorPath string, hash plumbing.Hash, index *repoAnalyticsIndex) {
 	if index == nil {
 		return

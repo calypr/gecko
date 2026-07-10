@@ -75,16 +75,6 @@ func TestBuildGitResponsesDetectLFSPointers(t *testing.T) {
 		t.Fatalf("unexpected lfs size: %d", treePointer.Size)
 	}
 
-	fileResponse, err := BuildGitFileResponse("org-a/proj-a", refName, "data/tcga.tumor.ensembl.tsv", mirrorRepo, hash)
-	if err != nil {
-		t.Fatalf("build file response: %v", err)
-	}
-	if fileResponse.LFSPointer == nil {
-		t.Fatalf("expected file response to include lfs pointer metadata")
-	}
-	if fileResponse.LFSPointer.OID != treePointer.OID {
-		t.Fatalf("expected matching lfs oid, got %q and %q", fileResponse.LFSPointer.OID, treePointer.OID)
-	}
 }
 
 func TestBuildGitTreeResponseDefaultsToCheapFields(t *testing.T) {

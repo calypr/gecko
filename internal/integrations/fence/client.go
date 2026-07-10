@@ -181,26 +181,6 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, authorization
 	return payload.Repositories, nil
 }
 
-func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity domain.GitRepositoryIdentity) (domain.GitRepositoryInstallationStatus, error) {
-	var payload fenceGitHubInstallationStatusResponse
-	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
-		"action":       "repository_installation",
-		"owner":        identity.Owner,
-		"repo":         identity.Repo,
-		"organization": organization,
-	}, &payload); err != nil {
-		return domain.GitRepositoryInstallationStatus{}, err
-	}
-	return domain.GitRepositoryInstallationStatus{
-		Installed:           payload.Installed,
-		InstallationID:      payload.InstallationID,
-		Target:              strings.TrimSpace(payload.Target),
-		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
-		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
-	}, nil
-}
-
 func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
 	requestedAccess := strings.TrimSpace(access)
 	if requestedAccess == "" {

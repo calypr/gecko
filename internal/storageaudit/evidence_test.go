@@ -26,15 +26,27 @@ func TestAssessTreatsExactListMissAsUnconfirmed(t *testing.T) {
 	}
 }
 
-func TestAssessTreatsMetadataMissAsVerified(t *testing.T) {
+func TestAssessTreatsMetadataMissAsUnconfirmed(t *testing.T) {
 	assessment := Assess([]Probe{{
 		Operation:        OperationMetadata,
 		Status:           "not_found",
 		ErrorKind:        "object_not_found",
 		ValidationStatus: "unverifiable",
 	}}, false)
-	if assessment.Status != EvidenceVerified || !assessment.Missing || !assessment.HasExactEvidence {
-		t.Fatalf("expected metadata absence to be verified, got %+v", assessment)
+	if assessment.Status != EvidenceUnknown || assessment.Missing || !assessment.HasExactEvidence {
+		t.Fatalf("expected metadata absence to require a download-compatible probe, got %+v", assessment)
+	}
+}
+
+func TestAssessTreatsDownloadMissAsVerified(t *testing.T) {
+	assessment := Assess([]Probe{{
+		Operation:        OperationDownload,
+		Status:           "not_found",
+		ErrorKind:        "object_not_found",
+		ValidationStatus: "unverifiable",
+	}}, false)
+	if assessment.Status != EvidenceVerified || !assessment.Missing {
+		t.Fatalf("expected a download miss to verify absence, got %+v", assessment)
 	}
 }
 

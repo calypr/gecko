@@ -115,34 +115,6 @@ func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, met
 	}
 }
 
-func BaseConfigsAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method, service, resourcePath string) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
-		authorizationHeader := ctx.Get("Authorization")
-		if authorizationHeader == "" {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeMissingAuthorization, "Authorization token not provided", http.StatusUnauthorized, nil, nil))
-		}
-
-		if _, ok := authzHandler.(*FenceUserAccessHandler); !ok {
-			return writeError(ctx, logger, httputil.NewError("internal_server_error", "Invalid JWT handler configuration", http.StatusInternalServerError, nil, nil))
-		}
-
-		allowed, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, method, service, resourcePath)
-		if err != nil {
-			if serverErr, ok := err.(*ggmw.ServerError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
-			}
-			if accessErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(accessErr.StatusCode), accessErr.Message, accessErr.StatusCode, nil, nil))
-			}
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
-		}
-		if !allowed {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeForbidden, fmt.Sprintf("User does not have required %s permission on resource %s", method, "/programs"), http.StatusForbidden, map[string]any{"resource": resourcePath, "method": method}, nil))
-		}
-		return ctx.Next()
-	}
-}
-
 func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method string) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		authorizationHeader := ctx.Get("Authorization")
@@ -410,35 +382,6 @@ func serviceErrorType(code int) apierror.Type {
 func writeError(ctx fiber.Ctx, logger arborist.Logger, response *httputil.ErrorResponse) error {
 	response.WriteLog(logger)
 	return response.Write(ctx)
-}
-
-// Migrated from internal/authz
-func GetProjectsFromToken(ctx fiber.Ctx, authzHandler ResourceAccessHandler, method string, service string) ([]any, *httputil.ErrorResponse) {
-	token := ctx.Get("Authorization")
-	if token == "" {
-		return nil, httputil.NewError(apierror.TypeMissingAuthorization, "Authorization token not provided", http.StatusUnauthorized, nil, nil)
-	}
-	anyList, err := authzHandler.GetAllowedResources(token, method, service)
-	if err != nil {
-		if serverErr, ok := err.(*AccessError); ok {
-			return nil, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
-		}
-		return nil, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil)
-	}
-	return anyList, nil
-}
-
-// Migrated from internal/authz
-func ParseAccess(resourceList []string, resource string, method string) *httputil.ErrorResponse {
-	if len(resourceList) == 0 {
-		return httputil.NewError(apierror.TypeForbidden, fmt.Sprintf("User is not allowed to %s on any resource path", method), http.StatusForbidden, map[string]any{"resource": resource, "method": method}, nil)
-	}
-	for _, v := range resourceList {
-		if v == resource {
-			return nil
-		}
-	}
-	return httputil.NewError(apierror.TypeForbidden, fmt.Sprintf("User is not allowed to %s on resource path: %s", method, resource), http.StatusForbidden, map[string]any{"resource": resource, "method": method}, nil)
 }
 
 func CleanAccessToken(raw string) string {

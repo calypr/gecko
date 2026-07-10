@@ -122,17 +122,6 @@ func TestGeneralAuthMware_ConvertAnyToStringSliceError(t *testing.T) {
 	assert.Contains(t, body, "Element 123 is not a string")
 }
 
-func TestGeneralAuthMware_ParseAccessDenied(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/:projectId", servermw.GeneralAuth(srv.Logger, &MockJWTHandler{AllowedResources: []string{"/programs/other/projects/test"}}, "read", "*"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodGet, "/ohsu-test", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	assert.Contains(t, body, "User is not allowed to read on resource path")
-}
-
 func TestConfigAuthMiddleware_MethodNotAllowed(t *testing.T) {
 	srv := setupServer()
 	app := fiber.New()
@@ -152,26 +141,6 @@ func TestConfigAuthMiddleware_Nav_PublicGET(t *testing.T) {
 	app.Get("/config/nav/:configId", servermw.ConfigAuth(srv.Logger, &MockJWTHandler{}), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
 	resp, _ := runFiber(app, httptest.NewRequest(http.MethodGet, "/config/nav/default", nil), t)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestBaseConfigsAuthMiddleware_NoAuthorization(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/", servermw.BaseConfigsAuth(srv.Logger, &MockJWTHandler{}, "read", "*", "/programs"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	resp, body := runFiber(app, httptest.NewRequest(http.MethodGet, "/", nil), t)
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	assert.Contains(t, body, "Authorization token not provided")
-}
-
-func TestBaseConfigsAuthMiddleware_InvalidJWTHandler(t *testing.T) {
-	srv := setupServer()
-	app := fiber.New()
-	app.Get("/", servermw.BaseConfigsAuth(srv.Logger, &MockJWTHandler{}, "read", "*", "/programs"), func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer dummy")
-	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	assert.Contains(t, body, "Invalid JWT handler configuration")
 }
 
 func TestConfigAuthMiddleware_Project_PublicGET(t *testing.T) {

@@ -393,19 +393,6 @@ func TestProjectConfigAuthAllowsAdminWildcardResource(t *testing.T) {
 	}
 }
 
-func TestSnapshotAllowsAcceptsWildcardMethod(t *testing.T) {
-	raw := []any{
-		map[string]any{
-			"method":  "*",
-			"service": "*",
-		},
-	}
-
-	if !snapshotAllows(raw, "delete", "*") {
-		t.Fatalf("expected wildcard method/service snapshot entry to allow delete")
-	}
-}
-
 func TestGitProjectAuthForbiddenIncludesRequestAccessDetails(t *testing.T) {
 	logger := &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}
 	app := fiber.New()

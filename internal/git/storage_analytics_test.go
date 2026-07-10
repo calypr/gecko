@@ -367,9 +367,13 @@ func TestBuildGitRepoInventoryAndStorageAnalytics(t *testing.T) {
 		"data/nested/b.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
 		"plain.txt":         "not lfs\n",
 	})
-	inventory, err := BuildGitRepoInventory(refName, "data", repo, hash)
+	index, err := buildRepoAnalyticsIndex(refName, repo, hash)
 	if err != nil {
-		t.Fatalf("build repo inventory: %v", err)
+		t.Fatalf("build repo analytics index: %v", err)
+	}
+	inventory, err := filterRepoInventoryFiles(index, "data")
+	if err != nil {
+		t.Fatalf("filter repo inventory: %v", err)
 	}
 	if len(inventory) != 4 {
 		t.Fatalf("expected 4 lfs files under data, got %+v", inventory)
@@ -1700,7 +1704,7 @@ func TestBuildStorageChainAuditUsesBucketFirstFindingKinds(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -1746,7 +1750,7 @@ func TestBuildStorageChainAuditUsesProjectAuditSourcesAndTargetsProbes(t *testin
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -2691,7 +2695,7 @@ func TestBuildStorageChainAuditSurfacesMetadataMismatchAndEvidence(t *testing.T)
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -2884,7 +2888,7 @@ func TestBuildStorageChainAuditUsesScopedProjectRecordsForGitJoin(t *testing.T) 
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -2953,7 +2957,7 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -3017,7 +3021,7 @@ func TestBuildStorageChainAuditClassifiesSameBucketPathChecksumConflictAsMetadat
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -3584,7 +3588,7 @@ func TestBuildStorageChainAuditDoesNotInferMappingMismatchFromRelocatedBasename(
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "CONFIG", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "CONFIG", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -3821,7 +3825,7 @@ func TestBuildStorageChainAuditNormalizesChecksumJoinKeys(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
@@ -3931,7 +3935,7 @@ func TestBuildStorageChainAuditReturnsFullFindings(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	chain, err := service.BuildStorageChainAudit(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{})
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}

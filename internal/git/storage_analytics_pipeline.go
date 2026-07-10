@@ -351,14 +351,6 @@ func applyScopeCanonicalization(recordSet *storageAuditRecordSet, scopes []domai
 	}
 }
 
-func (service *StorageAnalyticsService) loadProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (*storageAuditRecordSet, error) {
-	projectRecords, err := service.storage.ListProjectAuditRecords(ctx, authorizationHeader, organization, project, pathPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list syfon project audit records: %w", err)
-	}
-	return buildProjectAuditRecordSet(projectRecords), nil
-}
-
 func (service *StorageAnalyticsService) loadCachedProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string) (*storageAuditRecordSet, error) {
 	projectRecords, err := service.loadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
 	if err != nil {
@@ -469,54 +461,6 @@ func projectAuditRecordValidatorFromSummary(summary gintegrationsyfon.ProjectMet
 	}
 }
 
-func filterProjectAuditRecordSet(recordSet *storageAuditRecordSet, pathPrefix string, scopes []domain.StorageBucketScope, organization string, project string) *storageAuditRecordSet {
-	if recordSet == nil || normalizeRepoSubpath(pathPrefix) == "" {
-		return recordSet
-	}
-	filtered := make(map[string][]projectRecordState, len(recordSet.allProjectRecords))
-	for checksum, group := range recordSet.allProjectRecords {
-		for _, record := range group {
-			if projectAuditRecordMatchesPathPrefix(record.ProjectRecord, pathPrefix, scopes, organization, project) {
-				filtered[checksum] = append(filtered[checksum], record)
-			}
-		}
-	}
-	return &storageAuditRecordSet{
-		recordsByChecksum: cloneRecordStateMap(filtered),
-		allProjectRecords: cloneRecordStateMap(filtered),
-	}
-}
-
-func projectAuditRecordMatchesPathPrefix(record gintegrationsyfon.ProjectRecord, pathPrefix string, scopes []domain.StorageBucketScope, organization string, project string) bool {
-	normalizedPrefix := normalizeRepoSubpath(pathPrefix)
-	if normalizedPrefix == "" {
-		return true
-	}
-	for _, accessURL := range projectAuditRecordPathURLs(record, scopes, organization, project) {
-		_, key, ok := parseStorageURL(accessURL)
-		if !ok {
-			continue
-		}
-		key = normalizeRepoSubpath(key)
-		if key == normalizedPrefix || strings.HasPrefix(key, normalizedPrefix+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func projectAuditRecordPathURLs(record gintegrationsyfon.ProjectRecord, scopes []domain.StorageBucketScope, organization string, project string) []string {
-	out := make([]string, 0, len(record.AccessURLs)+len(record.AccessMethods)*2)
-	out = append(out, record.AccessURLs...)
-	for _, method := range record.AccessMethods {
-		if trimmed := strings.TrimSpace(method.URL); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	out = append(out, canonicalizeRecordAccessURLs(out, scopes, organization, project)...)
-	return uniqueStrings(out)
-}
-
 func (service *StorageAnalyticsService) loadProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
 	bucketObjects, err := service.storage.ListProjectBucketObjects(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
@@ -591,34 +535,6 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInvento
 	})
 	objects, lookup := cloneBucketInventory(bucketObjects, bucketObjectsByURL)
 	return objects, lookup, nil
-}
-
-func (service *StorageAnalyticsService) loadCachedProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error) {
-	cacheKey := service.projectChainInputCacheKey(organization, project) + "::bucket-summary::" + strings.TrimSpace(mode)
-	service.chainInputMu.RLock()
-	cached, ok := service.chainInputCache[cacheKey]
-	service.chainInputMu.RUnlock()
-	if ok && time.Now().Before(cached.expiresAt) && cached.bucketSummary != nil {
-		summary := *cached.bucketSummary
-		return &summary, nil
-	}
-	summary, err := service.storage.ListProjectBucketSummary(ctx, authorizationHeader, organization, project, mode)
-	if err != nil {
-		return nil, err
-	}
-	service.updateChainInputCache(cacheKey, func(state *cachedChainInputState) {
-		if summary == nil {
-			state.bucketSummary = nil
-			return
-		}
-		copy := *summary
-		state.bucketSummary = &copy
-	})
-	if summary == nil {
-		return nil, nil
-	}
-	copy := *summary
-	return &copy, nil
 }
 
 func (service *StorageAnalyticsService) projectChainInputCacheKey(organization string, project string) string {
@@ -945,52 +861,6 @@ func inventoryMissingProbe(record projectRecordState, objectURL string, expected
 		NameMatch:            &nameMatch,
 		ValidationMismatches: []string{},
 	}
-}
-
-func (service *StorageAnalyticsService) loadStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet) (*storageAuditStorageView, error) {
-	scopes, err := service.loadProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
-	if err != nil {
-		return nil, err
-	}
-	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
-	view := &storageAuditStorageView{
-		scopes:                   scopes,
-		recordsByChecksum:        recordSet.recordsByChecksum,
-		allProjectRecords:        recordSet.allProjectRecords,
-		bucketObjects:            []gintegrationsyfon.ProjectBucketObject{},
-		bucketObjectsByURL:       map[string]gintegrationsyfon.ProjectBucketObject{},
-		bucketInventoryAvailable: true,
-	}
-	bucketObjects, bucketObjectsByURL, err := service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, "")
-	if err != nil {
-		if !shouldDegradeBucketInventory(err) {
-			return nil, err
-		}
-		view.bucketInventoryAvailable = false
-		view.bucketInventoryError = strings.TrimSpace(err.Error())
-		probedRecordSet, probeErr := service.attachProjectStorageProbes(ctx, authorizationHeader, recordSet)
-		if probeErr != nil {
-			return nil, probeErr
-		}
-		view.recordsByChecksum = probedRecordSet.recordsByChecksum
-		view.allProjectRecords = probedRecordSet.allProjectRecords
-		view.bucketObjects, view.bucketObjectsByURL = synthesizeBucketInventoryFromProbes(probedRecordSet.allProjectRecords)
-		return view, nil
-	}
-	view.bucketObjects = bucketObjects
-	view.bucketObjectsByURL = bucketObjectsByURL
-
-	probeCandidates := selectTargetedProbeRecordSet(recordSet, bucketObjectsByURL)
-	if probeCandidates != nil {
-		probedSubset, probeErr := service.attachProjectStorageProbes(ctx, authorizationHeader, probeCandidates)
-		if probeErr != nil {
-			return nil, probeErr
-		}
-		merged := mergeRecordSetProbes(recordSet, probedSubset)
-		view.recordsByChecksum = merged.recordsByChecksum
-		view.allProjectRecords = merged.allProjectRecords
-	}
-	return view, nil
 }
 
 func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, inventory []RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
@@ -1567,7 +1437,7 @@ func buildSyfonOriginChainFindings(index storageChainIndex, acc *chainAuditAccum
 			}
 			acc.add("bucket_syfon_no_git", buildChainRecordFindings("bucket_syfon_no_git", record, nil, bucketMatches, "Bucket object and Syfon record matched, but no Git-tracked file matched this checksum.")...)
 		case storageFindingBrokenAccessURL, storageFindingProbeError:
-			findings := buildChainRecordFindings("probe_error", record, gitPaths, bucketMatches, "Bucket verification failed before Gecko could classify this record cleanly.")
+			findings := buildChainRecordFindings("probe_error", record, gitPaths, bucketMatches, "Storage probes could not confirm this mapped object; Gecko does not treat it as missing or offer cleanup.")
 			acc.findings = append(acc.findings, findings...)
 			acc.addCount("probe_error", chainPathCount(gitPaths))
 		case storageFindingNone:
