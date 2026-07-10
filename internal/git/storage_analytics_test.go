@@ -1919,11 +1919,8 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if backend.probeCalls != 0 {
 		t.Fatalf("expected validate mode to skip HEAD probes, got %d calls", backend.probeCalls)
 	}
-	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 1 {
-		t.Fatalf("expected one exact LIST for the inventory-missing candidate, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
-	}
-	if backend.listProbeItems[0].ObjectURL != "s3://bucket/syfon-only.txt" {
-		t.Fatalf("expected only the inventory-missing locator to be verified, got %+v", backend.listProbeItems)
+	if backend.listProbeCalls != 0 {
+		t.Fatalf("expected complete Syfon inventory to skip exact LIST fallback, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
 	}
 	if chain.Summary.BucketPathExists != nil || chain.Summary.BucketSummaryMode != "" {
 		t.Fatalf("expected validate mode not to claim bucket prefix summary, got %+v", chain.Summary)
@@ -1931,24 +1928,23 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if chain.Summary.ValidationMode != StorageChainValidationModeList {
 		t.Fatalf("expected LIST validation mode, got %+v", chain.Summary)
 	}
-	if chain.Summary.BucketObjectCount != 3 || chain.Summary.CountsByKind["bucket_only_object"] != 0 {
-		t.Fatalf("expected validate mode to merge the exact-present object without bucket-only findings, got summary %+v", chain.Summary)
+	if chain.Summary.BucketObjectCount != 2 || chain.Summary.CountsByKind["bucket_only_object"] != 0 {
+		t.Fatalf("expected validate mode to preserve the complete inventory, got summary %+v", chain.Summary)
 	}
 	if chain.Summary.CountsByKind["bucket_syfon_git_complete"] != 2 {
 		t.Fatalf("expected validate mode to count clean Syfon/Git/bucket join, got summary %+v", chain.Summary)
 	}
-	if chain.Summary.CountsByKind["syfon_missing_bucket_object"] != 0 || chain.Summary.CountsByKind["bucket_syfon_no_git"] != 1 {
-		t.Fatalf("expected exact LIST presence to suppress the inventory false positive, got summary %+v", chain.Summary)
+	if chain.Summary.CountsByKind["probe_error"] != 1 || chain.Summary.CountsByKind["bucket_syfon_no_git"] != 0 {
+		t.Fatalf("expected complete-inventory miss to remain a probe error, got summary %+v", chain.Summary)
 	}
 	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
 		t.Fatalf("expected basename mismatch not to be a broken bucket mapping, got summary %+v", chain.Summary)
 	}
 	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
 	assertNoChainFinding(t, chain.Findings, "syfon_broken_bucket_mapping")
-	assertNoChainFinding(t, chain.Findings, "syfon_missing_bucket_object")
-	finding := assertHasChainFinding(t, chain.Findings, "bucket_syfon_no_git", "s3://bucket/syfon-only.txt")
-	if finding.EvidenceStatus != "verified" || finding.Actionability != storageActionabilityInspectOnly || finding.DefaultAction != storageActionInspectEvidence {
-		t.Fatalf("expected verified but non-destructive Git-absence finding, got %+v", finding)
+	finding := assertHasChainFinding(t, chain.Findings, "probe_error", "s3://bucket/syfon-only.txt")
+	if finding.EvidenceStatus != "unknown" || finding.Actionability != storageActionabilityManualChoice || finding.DefaultAction != storageActionDeleteSyfonRecord {
+		t.Fatalf("expected inventory-miss probe error with a manual remediation choice, got %+v", finding)
 	}
 }
 
@@ -2374,6 +2370,7 @@ func TestBuildStorageChainAuditForceRefreshBypassesResponseCache(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 	service.chainAuditResponseCache = newMemoryStorageChainAuditResponseCache()
+	service.projectBucketCache = newMemoryProjectBucketInventoryCache()
 	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
 
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
@@ -2387,8 +2384,52 @@ func TestBuildStorageChainAuditForceRefreshBypassesResponseCache(t *testing.T) {
 	if refreshed.Summary.AuditCacheHit {
 		t.Fatalf("expected forced response to rebuild fresh, got %+v", refreshed.Summary)
 	}
+	if backend.listProjectBucketInventoryCalls != 1 {
+		t.Fatalf("expected forced refresh to reuse the bucket inventory during its cooldown, got %d calls", backend.listProjectBucketInventoryCalls)
+	}
+}
+
+func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: "s3://bucket/data/present.txt",
+			Bucket:    "bucket",
+			Key:       "data/present.txt",
+			Path:      "data/present.txt",
+			SizeBytes: 100,
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newMemoryProjectBucketInventoryCache()
+	service.projectBucketCache = cache
+
+	objects, _, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "")
+	if err != nil || len(objects) != 1 {
+		t.Fatalf("seed cached bucket inventory: objects=%d err=%v", len(objects), err)
+	}
+	key := projectBucketInventoryCacheKey("org", "proj", "")
+	cache.mu.Lock()
+	entry := cache.entries[key]
+	entry.value.CachedAt = time.Now().Add(-projectBucketInventoryRefreshInterval - time.Second)
+	cache.entries[key] = entry
+	cache.mu.Unlock()
+	service.chainInputMu.Lock()
+	chainKey := service.projectChainInputCacheKey("org", "proj") + "::bucket-validation-inventory::"
+	chainEntry := service.chainInputCache[chainKey]
+	chainEntry.expiresAt = time.Now().Add(-time.Second)
+	service.chainInputCache[chainKey] = chainEntry
+	service.chainInputMu.Unlock()
+	backend.listProjectBucketObjectsErr = fmt.Errorf("provider returned an incomplete listing")
+
+	objects, lookup, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "")
+	if err != nil {
+		t.Fatalf("expected stale inventory fallback, got %v", err)
+	}
+	if len(objects) != 1 || len(lookup) != 1 {
+		t.Fatalf("expected cached inventory after failed refresh, got objects=%d lookup=%d", len(objects), len(lookup))
+	}
 	if backend.listProjectBucketInventoryCalls != 2 {
-		t.Fatalf("expected forced refresh to reload bucket inventory, got %d calls", backend.listProjectBucketInventoryCalls)
+		t.Fatalf("expected one seed scan and one failed refresh, got %d calls", backend.listProjectBucketInventoryCalls)
 	}
 }
 

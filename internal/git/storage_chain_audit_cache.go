@@ -18,8 +18,14 @@ import (
 
 const (
 	defaultStorageChainAuditCacheTTL = 5 * time.Minute
-	storageChainAuditCacheKeyPrefix  = "gecko:storage_chain_audit:v2:"
-	storageExactJoinCacheKeyPrefix   = "gecko:storage_exact_join:v1:"
+	// projectBucketInventoryRefreshInterval controls when Gecko asks Syfon for
+	// a newer inventory. The cache retains the last successful result longer so
+	// an intermittent provider failure does not turn into a user-facing 502.
+	projectBucketInventoryRefreshInterval = 10 * time.Minute
+	projectBucketInventoryStaleTTL        = 24 * time.Hour
+	storageChainAuditCacheKeyPrefix       = "gecko:storage_chain_audit:v2:"
+	storageExactJoinCacheKeyPrefix        = "gecko:storage_exact_join:v1:"
+	projectBucketInventoryKeyPrefix       = "gecko:project_bucket_inventory:v1:"
 )
 
 type storageChainAuditResponseCache interface {
@@ -81,6 +87,17 @@ type cachedExactProjectJoinState struct {
 	UsageByObjectID   map[string]gintegrationsyfon.FileUsage `json:"usage_by_object_id"`
 }
 
+type projectBucketInventoryCache interface {
+	Get(ctx context.Context, key string) (cachedProjectBucketInventory, bool, error)
+	Set(ctx context.Context, key string, value cachedProjectBucketInventory, ttl time.Duration) error
+	Source() string
+}
+
+type cachedProjectBucketInventory struct {
+	CachedAt time.Time                               `json:"cached_at"`
+	Objects  []gintegrationsyfon.ProjectBucketObject `json:"objects"`
+}
+
 type memoryStorageChainAuditResponseCache struct {
 	mu      sync.RWMutex
 	entries map[string]memoryStorageChainAuditResponseEntry
@@ -129,6 +146,44 @@ type memoryStorageExactProjectJoinCache struct {
 	entries map[string]memoryStorageExactProjectJoinEntry
 }
 
+type memoryProjectBucketInventoryCache struct {
+	mu      sync.RWMutex
+	entries map[string]memoryProjectBucketInventoryEntry
+}
+
+type memoryProjectBucketInventoryEntry struct {
+	value     cachedProjectBucketInventory
+	expiresAt time.Time
+}
+
+func newMemoryProjectBucketInventoryCache() *memoryProjectBucketInventoryCache {
+	return &memoryProjectBucketInventoryCache{entries: map[string]memoryProjectBucketInventoryEntry{}}
+}
+
+func (cache *memoryProjectBucketInventoryCache) Get(_ context.Context, key string) (cachedProjectBucketInventory, bool, error) {
+	cache.mu.RLock()
+	entry, ok := cache.entries[key]
+	cache.mu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		if ok {
+			cache.mu.Lock()
+			delete(cache.entries, key)
+			cache.mu.Unlock()
+		}
+		return cachedProjectBucketInventory{}, false, nil
+	}
+	return cloneCachedProjectBucketInventory(entry.value), true, nil
+}
+
+func (cache *memoryProjectBucketInventoryCache) Set(_ context.Context, key string, value cachedProjectBucketInventory, ttl time.Duration) error {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	cache.entries[key] = memoryProjectBucketInventoryEntry{value: cloneCachedProjectBucketInventory(value), expiresAt: time.Now().Add(ttl)}
+	return nil
+}
+
+func (cache *memoryProjectBucketInventoryCache) Source() string { return "memory" }
+
 type memoryStorageExactProjectJoinEntry struct {
 	value     cachedExactProjectJoinState
 	expiresAt time.Time
@@ -175,6 +230,10 @@ type redisStorageExactProjectJoinCache struct {
 	client *redis.Client
 }
 
+type redisProjectBucketInventoryCache struct {
+	client *redis.Client
+}
+
 func newRedisStorageChainAuditResponseCache(redisURL string) (*redisStorageChainAuditResponseCache, error) {
 	options, err := redis.ParseURL(strings.TrimSpace(redisURL))
 	if err != nil {
@@ -194,6 +253,19 @@ func newRedisStorageExactProjectJoinCache(redisURL string) (*redisStorageExactPr
 		return nil, err
 	}
 	cache := &redisStorageExactProjectJoinCache{client: redis.NewClient(options)}
+	if err := cache.client.Ping(context.Background()).Err(); err != nil {
+		_ = cache.client.Close()
+		return nil, err
+	}
+	return cache, nil
+}
+
+func newRedisProjectBucketInventoryCache(redisURL string) (*redisProjectBucketInventoryCache, error) {
+	options, err := redis.ParseURL(strings.TrimSpace(redisURL))
+	if err != nil {
+		return nil, err
+	}
+	cache := &redisProjectBucketInventoryCache{client: redis.NewClient(options)}
 	if err := cache.client.Ping(context.Background()).Err(); err != nil {
 		_ = cache.client.Close()
 		return nil, err
@@ -261,6 +333,34 @@ func (cache *redisStorageExactProjectJoinCache) Source() string {
 	return "redis"
 }
 
+func (cache *redisProjectBucketInventoryCache) Get(ctx context.Context, key string) (cachedProjectBucketInventory, bool, error) {
+	raw, err := cache.client.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return cachedProjectBucketInventory{}, false, nil
+	}
+	if err != nil {
+		return cachedProjectBucketInventory{}, false, err
+	}
+	var value cachedProjectBucketInventory
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return cachedProjectBucketInventory{}, false, err
+	}
+	if value.CachedAt.IsZero() {
+		value.CachedAt = time.Now()
+	}
+	return cloneCachedProjectBucketInventory(value), true, nil
+}
+
+func (cache *redisProjectBucketInventoryCache) Set(ctx context.Context, key string, value cachedProjectBucketInventory, ttl time.Duration) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return cache.client.Set(ctx, key, raw, ttl).Err()
+}
+
+func (cache *redisProjectBucketInventoryCache) Source() string { return "redis" }
+
 func NewStorageChainAuditResponseCacheFromEnv() storageChainAuditResponseCache {
 	if !storageChainAuditCacheEnabled() {
 		return nil
@@ -287,6 +387,20 @@ func NewStorageExactProjectJoinCacheFromEnv() storageExactProjectJoinCache {
 		}
 	}
 	return newMemoryStorageExactProjectJoinCache()
+}
+
+func NewProjectBucketInventoryCacheFromEnv() projectBucketInventoryCache {
+	if !storageChainAuditCacheEnabled() {
+		return nil
+	}
+	redisURL := storageChainAuditRedisURLFromEnv()
+	if redisURL != "" {
+		cache, err := newRedisProjectBucketInventoryCache(redisURL)
+		if err == nil {
+			return cache
+		}
+	}
+	return newMemoryProjectBucketInventoryCache()
 }
 
 func storageChainAuditRedisURLFromEnv() string {
@@ -356,12 +470,22 @@ func storageExactProjectJoinCacheKey(organization string, project string, hash s
 	return storageExactJoinCacheKeyPrefix + hex.EncodeToString(sum[:])
 }
 
+func projectBucketInventoryCacheKey(organization string, project string, bucketPathPrefix string) string {
+	body := fmt.Sprintf("org=%s\nproject=%s\nbucket_path_prefix=%s", strings.TrimSpace(organization), strings.TrimSpace(project), normalizeRepoSubpath(bucketPathPrefix))
+	sum := sha256.Sum256([]byte(body))
+	return projectBucketInventoryKeyPrefix + hex.EncodeToString(sum[:])
+}
+
 func cloneCachedStorageChainAuditResponse(value cachedStorageChainAuditResponse) cachedStorageChainAuditResponse {
 	return cachedStorageChainAuditResponse{
 		CachedAt:              value.CachedAt,
 		RefreshDurationMillis: value.RefreshDurationMillis,
 		Response:              cloneStorageChainAuditResponse(value.Response),
 	}
+}
+
+func cloneCachedProjectBucketInventory(value cachedProjectBucketInventory) cachedProjectBucketInventory {
+	return cachedProjectBucketInventory{CachedAt: value.CachedAt, Objects: append([]gintegrationsyfon.ProjectBucketObject(nil), value.Objects...)}
 }
 
 func cloneStorageChainAuditResponse(response GitStorageChainAuditResponse) GitStorageChainAuditResponse {

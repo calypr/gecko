@@ -158,6 +158,7 @@ type StorageAnalyticsService struct {
 	chainAuditRefreshWork   map[string]*inflightStorageChainAuditRefresh
 	chainAuditResponseCache storageChainAuditResponseCache
 	exactProjectJoinCache   storageExactProjectJoinCache
+	projectBucketCache      projectBucketInventoryCache
 }
 
 type StorageFolderTimings struct {
@@ -193,6 +194,7 @@ func (service *StorageAnalyticsService) EnableStorageChainAuditResponseCacheFrom
 	}
 	service.chainAuditResponseCache = NewStorageChainAuditResponseCacheFromEnv()
 	service.exactProjectJoinCache = NewStorageExactProjectJoinCacheFromEnv()
+	service.projectBucketCache = NewProjectBucketInventoryCacheFromEnv()
 }
 
 type RepoInventoryFile struct {

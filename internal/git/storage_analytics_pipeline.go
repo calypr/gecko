@@ -142,11 +142,10 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		var bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 		var err error
 		if bucketMode == StorageChainBucketModeValidate {
-			if forceRefresh {
-				bucketObjects, bucketObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
-			} else {
-				bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
-			}
+			// Full bucket LIST calls are expensive on some providers. Reuse the
+			// validated project inventory during the cooldown instead of issuing a
+			// second Syfon scan for every audit or Git ref.
+			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
 		} else {
 			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 		}
@@ -519,6 +518,22 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketInventory(ctx con
 
 func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
 	cacheKey := service.projectChainInputCacheKey(organization, project) + "::bucket-validation-inventory::" + normalizeRepoSubpath(bucketPathPrefix)
+	var stale cachedProjectBucketInventory
+	var hasStale bool
+	if cache := service.projectBucketCache; cache != nil {
+		redisKey := projectBucketInventoryCacheKey(organization, project, bucketPathPrefix)
+		cached, ok, err := cache.Get(ctx, redisKey)
+		if err != nil {
+			log.Printf("syfon_project_bucket_inventory_cache_error org=%s project=%s path_prefix=%q source=%s operation=get error=%q", organization, project, bucketPathPrefix, cache.Source(), err.Error())
+		} else if ok && time.Since(cached.CachedAt) < projectBucketInventoryRefreshInterval {
+			objects, lookup := buildBucketObjectLookup(cached.Objects)
+			log.Printf("syfon_project_bucket_inventory_cache_hit org=%s project=%s path_prefix=%q source=%s object_count=%d age_seconds=%d", organization, project, bucketPathPrefix, cache.Source(), len(objects), int64(time.Since(cached.CachedAt).Seconds()))
+			return objects, lookup, nil
+		} else if ok {
+			stale = cached
+			hasStale = true
+		}
+	}
 	service.chainInputMu.RLock()
 	cached, ok := service.chainInputCache[cacheKey]
 	service.chainInputMu.RUnlock()
@@ -528,7 +543,21 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInvento
 	}
 	bucketObjects, bucketObjectsByURL, err := service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
+		if hasStale {
+			objects, lookup := buildBucketObjectLookup(stale.Objects)
+			log.Printf("syfon_project_bucket_inventory_cache_stale_fallback org=%s project=%s path_prefix=%q source=%s object_count=%d age_seconds=%d refresh_error=%q", organization, project, bucketPathPrefix, service.projectBucketCache.Source(), len(objects), int64(time.Since(stale.CachedAt).Seconds()), err.Error())
+			return objects, lookup, nil
+		}
 		return nil, nil, err
+	}
+	if cache := service.projectBucketCache; cache != nil && len(bucketObjects) > 0 {
+		redisKey := projectBucketInventoryCacheKey(organization, project, bucketPathPrefix)
+		value := cachedProjectBucketInventory{CachedAt: time.Now(), Objects: append([]gintegrationsyfon.ProjectBucketObject(nil), bucketObjects...)}
+		if err := cache.Set(ctx, redisKey, value, projectBucketInventoryStaleTTL); err != nil {
+			log.Printf("syfon_project_bucket_inventory_cache_error org=%s project=%s path_prefix=%q source=%s operation=set error=%q", organization, project, bucketPathPrefix, cache.Source(), err.Error())
+		} else {
+			log.Printf("syfon_project_bucket_inventory_cache_store org=%s project=%s path_prefix=%q source=%s object_count=%d refresh_interval_seconds=%d stale_ttl_seconds=%d", organization, project, bucketPathPrefix, cache.Source(), len(bucketObjects), int64(projectBucketInventoryRefreshInterval.Seconds()), int64(projectBucketInventoryStaleTTL.Seconds()))
+		}
 	}
 	service.updateChainInputCache(cacheKey, func(state *cachedChainInputState) {
 		state.bucketObjects, state.bucketObjectsByURL = cloneBucketInventory(bucketObjects, bucketObjectsByURL)
@@ -906,20 +935,7 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			}
 			timings.Record("inventory_list_validation", time.Since(validateStart))
 
-			candidateStart := time.Now()
-			candidates := selectInventoryMissRecordSet(probedRecordSet)
-			timings.Record("exact_list_candidate_selection", time.Since(candidateStart))
-			if candidates != nil {
-				probeStart := time.Now()
-				exactRecordSet, probeErr := service.attachProjectStorageListValidations(ctx, authorizationHeader, candidates)
-				timings.Record("targeted_exact_list_validation", time.Since(probeStart))
-				if probeErr != nil {
-					return nil, probeErr
-				}
-				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
-				view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, exactRecordSet)
-			}
-			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
+			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", 0)
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum
 			view.allProjectRecords = probedRecordSet.allProjectRecords
 			return view, nil
