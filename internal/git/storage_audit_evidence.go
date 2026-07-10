@@ -50,7 +50,7 @@ func storageChainActionSupportForEvidence(kind string, evidenceStatus string) (s
 	}
 	policy := storageRepairPolicyForKind(kind)
 	if policy.actionability == storageActionabilityAutoRepair && !storageaudit.AllowsAutomaticRepair(kind, storageaudit.EvidenceStatus(evidenceStatus)) {
-		policy = storageRepairPolicyForKind("probe_error")
+		policy = inspectOnlyStorageRepairPolicy()
 	}
 	return policy.actionability, append([]string(nil), policy.actions...), policy.defaultAction, policy.supportsDryRun
 }

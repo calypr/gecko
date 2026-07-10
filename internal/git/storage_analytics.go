@@ -87,18 +87,30 @@ func storageRepairPolicyForKind(kind string) storageRepairPolicy {
 		// A mismatch cannot establish which of Git, Syfon, or the bucket is
 		// authoritative. Requiring an explicit out-of-band reconciliation keeps
 		// a stale checksum from becoming a destructive cleanup candidate.
+		return inspectOnlyStorageRepairPolicy()
+	case "probe_error":
+		// Probe errors do not prove that the object is absent, but the audit user
+		// may explicitly discard the affected Syfon records after reviewing them.
 		return storageRepairPolicy{
-			actionability: storageActionabilityInspectOnly,
-			actions:       []string{storageActionInspectEvidence},
-			defaultAction: storageActionInspectEvidence,
+			actionability: storageActionabilityManualChoice,
+			actions: []string{
+				storageActionDeleteSyfonRecord,
+				storageActionInspectEvidence,
+			},
+			defaultAction:  storageActionDeleteSyfonRecord,
+			supportsDryRun: true,
 		}
 	default:
-		return storageRepairPolicy{
-			actionability:  storageActionabilityInspectOnly,
-			actions:        []string{storageActionInspectEvidence},
-			defaultAction:  storageActionInspectEvidence,
-			supportsDryRun: false,
-		}
+		return inspectOnlyStorageRepairPolicy()
+	}
+}
+
+func inspectOnlyStorageRepairPolicy() storageRepairPolicy {
+	return storageRepairPolicy{
+		actionability:  storageActionabilityInspectOnly,
+		actions:        []string{storageActionInspectEvidence},
+		defaultAction:  storageActionInspectEvidence,
+		supportsDryRun: false,
 	}
 }
 

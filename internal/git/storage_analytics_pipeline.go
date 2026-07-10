@@ -906,18 +906,6 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 				}
 				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
 				view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, exactRecordSet)
-
-				confirmationCandidates := selectInventoryMissRecordSet(exactRecordSet)
-				if confirmationCandidates != nil {
-					confirmationStart := time.Now()
-					confirmedRecordSet, confirmationErr := service.attachProjectStorageProbes(ctx, authorizationHeader, confirmationCandidates)
-					timings.Record("targeted_metadata_confirmation", time.Since(confirmationStart))
-					if confirmationErr != nil {
-						return nil, confirmationErr
-					}
-					probedRecordSet = mergeRecordSetProbes(probedRecordSet, confirmedRecordSet)
-					view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, confirmedRecordSet)
-				}
 			}
 			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum

@@ -1234,7 +1234,7 @@ func TestStorageRepairPolicyCoversFindingKinds(t *testing.T) {
 		{"syfon_missing_bucket_object", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityAutoRepair},
 		{"git_only_no_syfon", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
 		{"storage_probe_error", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
-		{"probe_error", storageActionInspectEvidence, []string{storageActionInspectEvidence}, storageActionabilityInspectOnly},
+		{"probe_error", storageActionDeleteSyfonRecord, []string{storageActionDeleteSyfonRecord}, storageActionabilityManualChoice},
 	}
 	for _, test := range tests {
 		t.Run(test.kind, func(t *testing.T) {
@@ -3198,7 +3198,7 @@ func TestBuildStorageChainAuditUsesCanonicalInventoryCandidatesBeforeMissingBuck
 	}
 }
 
-func TestBuildStorageChainAuditMetadataConfirmationSuppressesBForePCListFalsePositive(t *testing.T) {
+func TestBuildStorageChainAuditBForePCListMissIsProbeErrorWithoutMetadataConfirmation(t *testing.T) {
 	const repoPath = "OHSU/koei_chin/visium_hd/4-R2/outs/binned_outputs/square_002um/filtered_feature_bc_matrix/barcodes.tsv.gz"
 	const checksum = "a9809ffd53130272f775ad1bbea3166dbb4853bc6fa73bfa7a51535c4bc4f599"
 	const size = int64(46063992)
@@ -3252,14 +3252,14 @@ func TestBuildStorageChainAuditMetadataConfirmationSuppressesBForePCListFalsePos
 	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 1 || backend.listProbeItems[0].ObjectURL != canonicalURL {
 		t.Fatalf("expected one exact LIST for %q, got calls=%d items=%+v", canonicalURL, backend.listProbeCalls, backend.listProbeItems)
 	}
-	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != canonicalURL {
-		t.Fatalf("expected one metadata confirmation for the false LIST miss at %q, got calls=%d items=%+v", canonicalURL, backend.probeCalls, backend.probeItems)
+	if backend.probeCalls != 0 {
+		t.Fatalf("expected no metadata confirmation for the LIST miss at %q, got calls=%d items=%+v", canonicalURL, backend.probeCalls, backend.probeItems)
 	}
 	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
-		t.Fatalf("metadata presence must suppress the false LIST missing-bucket finding, got summary %+v", chain.Summary)
+		t.Fatalf("LIST miss must not become a missing-bucket finding, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
-		t.Fatalf("expected the exact-present object to complete the chain, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["probe_error"]; got != 1 {
+		t.Fatalf("expected the exact LIST miss to remain a probe error, got summary %+v", chain.Summary)
 	}
 }
 
