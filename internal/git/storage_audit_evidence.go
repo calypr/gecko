@@ -48,6 +48,12 @@ func storageChainActionSupportForEvidence(kind string, evidenceStatus string) (s
 			storageActionCreateSyfonRecord,
 			false
 	}
+	if strings.TrimSpace(kind) == "git_syfon_metadata_mismatch" && strings.TrimSpace(evidenceStatus) == string(storageaudit.EvidenceVerified) {
+		return storageActionabilityManualChoice,
+			[]string{storageActionDeleteSyfonRecord, storageActionDeleteBucketObject, storageActionDeleteBoth, storageActionInspectEvidence},
+			"",
+			true
+	}
 	policy := storageRepairPolicyForKind(kind)
 	if policy.actionability == storageActionabilityAutoRepair && !storageaudit.AllowsAutomaticRepair(kind, storageaudit.EvidenceStatus(evidenceStatus)) {
 		policy = inspectOnlyStorageRepairPolicy()

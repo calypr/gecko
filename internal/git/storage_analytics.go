@@ -510,6 +510,7 @@ func storageChainAuditRootResponseProjectionAllowed(gitSubpath string, options S
 }
 
 func normalizeStorageChainAuditOptions(options StorageChainAuditOptions) (StorageChainAuditOptions, error) {
+	rawProbeMode := strings.TrimSpace(options.ProbeMode)
 	probeMode, ok := NormalizeStorageChainProbeMode(options.ProbeMode)
 	if !ok {
 		return StorageChainAuditOptions{}, fmt.Errorf("invalid storage chain probe mode %q", options.ProbeMode)
@@ -520,7 +521,7 @@ func normalizeStorageChainAuditOptions(options StorageChainAuditOptions) (Storag
 	}
 	validationMode := strings.TrimSpace(options.ValidationMode)
 	if validationMode == "" {
-		if strings.TrimSpace(options.ProbeMode) == "" && bucketMode == StorageChainBucketModeValidate {
+		if rawProbeMode == "" && bucketMode == StorageChainBucketModeValidate {
 			validationMode = StorageChainValidationModeList
 		} else {
 			validationMode = DefaultStorageChainValidationMode(probeMode, bucketMode)
@@ -1022,6 +1023,9 @@ func resolveStorageCleanupApplyAction(finding GitStorageCleanupApplyFinding, act
 		return "", fmt.Errorf("unsupported cleanup finding kind %q", kind)
 	}
 	action := cleanupActionForApplyFinding(actionSelection, finding)
+	if action == "" && strings.TrimSpace(kind) == "probe_error" {
+		return storageActionInspectEvidence, nil
+	}
 	if action == "" {
 		action = strings.TrimSpace(finding.SuggestedAction)
 	}
@@ -2527,10 +2531,36 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if assessment.Missing {
 		return storageFindingObjectMissing
 	}
+	// A metadata miss is definitive for cleanup and chain classification when
+	// the backend did not attach a more specific error kind.
+	if hasNotFoundMetadataProbe(record) {
+		return storageFindingObjectMissing
+	}
+	if hasNotFoundListProbe(record) && len(bucketObjectsByURL) > 0 {
+		return storageFindingObjectMissing
+	}
 	if resolution.hasProbeError || assessment.Status == "unknown" {
 		return storageFindingProbeError
 	}
 	return storageFindingNone
+}
+
+func hasNotFoundMetadataProbe(record projectRecordState) bool {
+	for _, probe := range record.AccessProbes {
+		if strings.TrimSpace(probe.Operation) == StorageChainValidationModeMetadata && strings.TrimSpace(probe.Status) == "not_found" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNotFoundListProbe(record projectRecordState) bool {
+	for _, probe := range record.AccessProbes {
+		if strings.TrimSpace(probe.Operation) == StorageChainValidationModeList && strings.TrimSpace(probe.Status) == "not_found" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasExactPathBucketMismatch(record projectRecordState, resolution recordStorageResolution, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {

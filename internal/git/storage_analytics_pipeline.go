@@ -142,10 +142,14 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		var bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 		var err error
 		if bucketMode == StorageChainBucketModeValidate {
-			// Full bucket LIST calls are expensive on some providers. Reuse the
-			// validated project inventory during the cooldown instead of issuing a
-			// second Syfon scan for every audit or Git ref.
-			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			if forceRefresh && service.projectBucketCache == nil {
+				bucketObjects, bucketObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			} else {
+				// Full bucket LIST calls are expensive on some providers. Reuse the
+				// validated project inventory during the cooldown instead of issuing a
+				// second Syfon scan for every audit or Git ref.
+				bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+			}
 		} else {
 			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 		}
@@ -935,7 +939,23 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			}
 			timings.Record("inventory_list_validation", time.Since(validateStart))
 
-			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", 0)
+			candidateStart := time.Now()
+			var candidates *storageAuditRecordSet
+			if len(view.bucketObjectsByURL) == 0 {
+				candidates = selectInventoryMissRecordSet(probedRecordSet)
+			}
+			timings.Record("exact_list_candidate_selection", time.Since(candidateStart))
+			if candidates != nil {
+				probeStart := time.Now()
+				exactRecordSet, probeErr := service.attachProjectStorageListValidations(ctx, authorizationHeader, candidates)
+				timings.Record("targeted_exact_list_validation", time.Since(probeStart))
+				if probeErr != nil {
+					return nil, probeErr
+				}
+				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
+				view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, exactRecordSet)
+			}
+			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum
 			view.allProjectRecords = probedRecordSet.allProjectRecords
 			return view, nil
@@ -1494,6 +1514,10 @@ func buildSamePathChecksumConflictFindings(index storageChainIndex, record proje
 		"Git and Syfon map to the same bucket object path, but their checksums disagree. Do not delete this object automatically.",
 	)
 	for findingIndex := range findings {
+		findings[findingIndex].Actionability = storageActionabilityInspectOnly
+		findings[findingIndex].AvailableActions = []string{storageActionInspectEvidence}
+		findings[findingIndex].DefaultAction = storageActionInspectEvidence
+		findings[findingIndex].SupportsDryRun = false
 		gitChecksum := index.repoChecksumsByPath[normalizeRepoSubpath(findings[findingIndex].NormalizedPath)]
 		findings[findingIndex].Error = "Git LFS and Syfon map to the same bucket object path but have different SHA-256 values."
 		findings[findingIndex].SuggestedFix = fmt.Sprintf(
