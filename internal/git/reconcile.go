@@ -240,6 +240,12 @@ func (service *ReconcileService) BuildOrganizationStatus(ctx context.Context, or
 			}
 		}
 		installation := buildInstallationStatus(responsePayload, state, identity.Owner)
+		workflowStage := ""
+		if strings.TrimSpace(cfg.SrcRepo) == "" {
+			workflowStage = GitWorkflowStageAwaitingGitHubConnect
+		} else if installation.Installed {
+			workflowStage = GitWorkflowStageGitHubConnected
+		}
 		integrations := ProjectIntegrationStatus{
 			GitHub: ProjectIntegrationCheck{
 				Pass: installation.Installed,
@@ -247,11 +253,11 @@ func (service *ReconcileService) BuildOrganizationStatus(ctx context.Context, or
 			Storage: deriveStorageIntegrationCheck(buckets, bucketsErr, parts[0], parts[1]),
 		}
 		if strings.TrimSpace(cfg.SrcRepo) == "" {
-			integrations.GitHub.Reason = "missing_repository_link"
+			integrations.GitHub.Reason = GitWorkflowStageAwaitingGitHubConnect
 			if responsePayload.AppInstalled {
-				integrations.GitHub.Details = "GitHub App is installed for this organization, but this project is not linked to a repository yet"
+				integrations.GitHub.Details = "Project creation is complete. Finish the GitHub connect step to link this project to a repository."
 			} else {
-				integrations.GitHub.Details = "No GitHub repository is linked to this project"
+				integrations.GitHub.Details = "Project creation is complete. Connect GitHub for this organization, then finish the GitHub connect step for this project."
 			}
 		} else if !installation.Installed {
 			integrations.GitHub.Reason = "missing_github_connection"
@@ -264,6 +270,7 @@ func (service *ReconcileService) BuildOrganizationStatus(ctx context.Context, or
 			Project:                   parts[1],
 			ResourcePath:              ProgramProjectResourcePath(parts[0], parts[1]),
 			Repository:                identity,
+			WorkflowStage:             workflowStage,
 			Configured:                configured,
 			Integrations:              integrations,
 			Accessible:                readable,

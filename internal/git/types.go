@@ -9,8 +9,10 @@ import (
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/integrations/fence"
 	gitapi "github.com/calypr/gecko/internal/integrations/github"
+	"github.com/calypr/gecko/internal/storageaudit"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -22,6 +24,9 @@ const (
 
 	GitInstallationNotConnected = "not_connected"
 	GitInstallationConnected    = "connected"
+
+	GitWorkflowStageAwaitingGitHubConnect = "awaiting_github_connect"
+	GitWorkflowStageGitHubConnected       = "github_connected"
 )
 
 type GitServiceConfig struct {
@@ -53,6 +58,7 @@ type GitProjectStatusResponse struct {
 	RequestAccessResourcePath       string                  `json:"request_access_resource_path,omitempty"`
 	Config                          appconfig.ProjectConfig `json:"config"`
 	Repository                      GitRepositoryIdentity   `json:"repository"`
+	WorkflowStage                   string                  `json:"workflow_stage,omitempty"`
 	InstallationState               string                  `json:"installation_state"`
 	InstallationID                  *int64                  `json:"installation_id,omitempty"`
 	InstallationTarget              string                  `json:"installation_target,omitempty"`
@@ -77,7 +83,6 @@ type GitOrganizationConnectResponse struct {
 // GitRepositoryInstallationStatus is an alias for domain.GitRepositoryInstallationStatus.
 type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
 
-
 type ProjectIntegrationCheck struct {
 	Pass    bool   `json:"pass"`
 	Reason  string `json:"reason,omitempty"`
@@ -94,6 +99,7 @@ type GitOrganizationProjectStatus struct {
 	Project                   string                          `json:"project"`
 	ResourcePath              string                          `json:"resource_path"`
 	Repository                GitRepositoryIdentity           `json:"repository"`
+	WorkflowStage             string                          `json:"workflow_stage,omitempty"`
 	Configured                bool                            `json:"configured"`
 	Readiness                 *CalyprProjectReadiness         `json:"readiness,omitempty"`
 	Integrations              ProjectIntegrationStatus        `json:"integrations"`
@@ -163,8 +169,6 @@ type CalyprProjectSetupResponse struct {
 // GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
 type GitHubInstallationRepository = domain.GitHubInstallationRepository
 
-
-
 type GitOrganizationStatusResponse struct {
 	Organization        string                         `json:"organization"`
 	Connected           bool                           `json:"connected"`
@@ -228,11 +232,36 @@ type GitTreeEntry struct {
 	LFSPointer     *GitLFSPointerInfo `json:"lfs_pointer,omitempty"`
 }
 
+type GitTreeResponseOptions struct {
+	IncludeSize         bool
+	IncludeLastModified bool
+	IncludeLFSPointer   bool
+	Limit               int
+}
+
 type GitProjectTreeResponse struct {
-	ProjectID string         `json:"project_id"`
-	Ref       string         `json:"ref"`
-	Path      string         `json:"path"`
-	Entries   []GitTreeEntry `json:"entries"`
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
+}
+
+type GitManifestResponseOptions struct {
+	Limit     int
+	Cursor    string
+	FilesOnly bool
+}
+
+type GitProjectManifestResponse struct {
+	ProjectID  string         `json:"project_id"`
+	Ref        string         `json:"ref"`
+	Path       string         `json:"path"`
+	EntryCount int            `json:"entry_count"`
+	HasMore    bool           `json:"has_more"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+	Entries    []GitTreeEntry `json:"entries"`
 }
 
 type GitProjectFileResponse struct {
@@ -252,6 +281,94 @@ type GitLFSPointerInfo struct {
 	OID     string `json:"oid"`
 	Size    int64  `json:"size"`
 }
+
+type GitRepoAnalyticsChild struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Type       string `json:"type"`
+	FileCount  int    `json:"file_count"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type GitRepoAnalyticsDirectory struct {
+	Path             string                  `json:"path"`
+	DirectChildCount int                     `json:"direct_child_count"`
+	FileCount        int                     `json:"file_count"`
+	TotalBytes       int64                   `json:"total_bytes"`
+	Children         []GitRepoAnalyticsChild `json:"children"`
+}
+
+type GitRepoAnalyticsIndexSidecar struct {
+	SchemaVersion int                         `json:"schema_version"`
+	CommitHash    string                      `json:"commit_hash"`
+	RefName       string                      `json:"ref_name"`
+	GeneratedAt   time.Time                   `json:"generated_at"`
+	Files         []RepoInventoryFile         `json:"files"`
+	Directories   []GitRepoAnalyticsDirectory `json:"directories"`
+}
+
+type GitStorageSummaryResponse struct {
+	Path               string `json:"path"`
+	Source             string `json:"source,omitempty"`
+	FileCount          int    `json:"file_count"`
+	RecordCount        int    `json:"record_count"`
+	DirectChildCount   int    `json:"direct_child_count"`
+	TotalBytes         int64  `json:"total_bytes"`
+	DownloadCount      int64  `json:"download_count"`
+	LastDownloadTime   string `json:"last_download_time,omitempty"`
+	LatestUpdateTime   string `json:"latest_update_time,omitempty"`
+	DuplicatePathCount int    `json:"duplicate_path_count"`
+}
+
+type GitStorageChildResponseItem struct {
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Type             string `json:"type"`
+	FileCount        int    `json:"file_count"`
+	RecordCount      int    `json:"record_count"`
+	TotalBytes       int64  `json:"total_bytes"`
+	DownloadCount    int64  `json:"download_count"`
+	LastDownloadTime string `json:"last_download_time,omitempty"`
+	LatestUpdateTime string `json:"latest_update_time,omitempty"`
+}
+
+type GitStorageChildrenResponse struct {
+	Items      []GitStorageChildResponseItem `json:"items"`
+	HasMore    bool                          `json:"has_more"`
+	NextCursor string                        `json:"next_cursor,omitempty"`
+}
+
+type GitStorageFolderResponse struct {
+	Summary  GitStorageSummaryResponse  `json:"summary"`
+	Children GitStorageChildrenResponse `json:"children"`
+}
+
+type GitProjectDiffAuditRequest = storageaudit.ProjectDiffAuditRequest
+type GitAuditEvidence = storageaudit.Evidence
+type GitProjectDiffFinding = storageaudit.ProjectDiffFinding
+type GitProjectDiffSummary = storageaudit.ProjectDiffSummary
+type GitProjectDiffAuditResponse = storageaudit.ProjectDiffAuditResponse
+
+type GitStorageCleanupAuditRequest = storageaudit.CleanupAuditRequest
+type GitStorageChainAuditRequest = storageaudit.ChainAuditRequest
+type GitStorageChainFinding = storageaudit.ChainFinding
+type GitStorageChainAuditSummary = storageaudit.ChainSummary
+type GitStorageChainIssueGroup = storageaudit.ChainIssueGroup
+type GitStorageChainAuditResponse = storageaudit.ChainAuditResponse
+type GitOnlySyfonRegistrationRequest = storageaudit.GitOnlySyfonRegistrationRequest
+type GitOnlySyfonRegistrationResult = storageaudit.GitOnlySyfonRegistrationResult
+type GitOnlySyfonRegistrationResponse = storageaudit.GitOnlySyfonRegistrationResponse
+type GitStorageCleanupAccessProbe = storageaudit.CleanupAccessProbe
+type GitStorageCleanupAccessMethod = storageaudit.CleanupAccessMethod
+type GitStorageCleanupRecordAudit = storageaudit.CleanupRecordAudit
+type GitStorageCleanupFinding = storageaudit.CleanupFinding
+type GitStorageCleanupApplyAction = storageaudit.CleanupApplyAction
+type GitStorageCleanupApplyFinding = storageaudit.CleanupApplyFinding
+type GitStorageCleanupAuditSummary = storageaudit.CleanupAuditSummary
+type GitStorageCleanupAuditResponse = storageaudit.CleanupAuditResponse
+type GitStorageCleanupApplyRequest = storageaudit.CleanupApplyRequest
+type GitStorageCleanupPurgeResult = storageaudit.CleanupPurgeResult
+type GitStorageCleanupApplyResponse = storageaudit.CleanupApplyResponse
 
 type GitUploadSessionFileManifest struct {
 	Name string `json:"name"`
@@ -310,10 +427,8 @@ type GitUploadSessionResponse struct {
 // GitHubRepositoryMetadata is an alias for domain.GitHubRepositoryMetadata.
 type GitHubRepositoryMetadata = domain.GitHubRepositoryMetadata
 
-
 // HTTPStatusError is an alias for domain.HTTPStatusError.
 type HTTPStatusError = domain.HTTPStatusError
-
 
 func NewGitService(config GitServiceConfig) *GitService {
 	if config.GitHubAPIBase == "" {
@@ -321,7 +436,7 @@ func NewGitService(config GitServiceConfig) *GitService {
 	}
 	client := config.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+		client = httpclient.NewServiceClient(20 * time.Second)
 	}
 	return &GitService{
 		config:    config,
@@ -372,8 +487,6 @@ type StorageBucket = domain.StorageBucket
 // StorageConfig is an alias for domain.StorageConfig.
 type StorageConfig = domain.StorageConfig
 
-
 func ProgramProjectResourcePath(organization, project string) string {
 	return fmt.Sprintf("/programs/%s/projects/%s", organization, project)
 }
-

@@ -65,49 +65,6 @@ func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStat
 	}
 }
 
-func TestRequestInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
-	var receivedAuth string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		receivedAuth = request.Header.Get("Authorization")
-		if request.URL.Path != "/credentials/github" {
-			t.Fatalf("unexpected request path: %s", request.URL.Path)
-		}
-		if request.Method != http.MethodPost {
-			t.Fatalf("unexpected request method: %s", request.Method)
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(map[string]any{
-			"installed":       true,
-			"installation_id": 42,
-			"target":          "HTAN_INT",
-			"target_type":     "Organization",
-			"html_url":        "https://github.com/organizations/HTAN_INT/settings/installations/42",
-		})
-	}))
-	defer server.Close()
-
-	client := NewClient(server.Client(), Config{BaseURL: server.URL})
-	status, err := client.RequestInstallationStatus(context.Background(), "Bearer user-token", "HTAN_INT", domain.GitRepositoryIdentity{
-		Owner: "HTAN_INT",
-		Repo:  "BForePC",
-	})
-	if err != nil {
-		t.Fatalf("request installation status: %v", err)
-	}
-	if !status.Installed {
-		t.Fatal("expected installed status")
-	}
-	if status.InstallationID == nil || *status.InstallationID != 42 {
-		t.Fatalf("unexpected installation id: %+v", status.InstallationID)
-	}
-	if status.Target != "HTAN_INT" {
-		t.Fatalf("unexpected target: %q", status.Target)
-	}
-	if receivedAuth != "Bearer user-token" {
-		t.Fatalf("expected forwarded authorization header, got %q", receivedAuth)
-	}
-}
-
 func TestListInstallationRepositoriesForwardsAuthorizationAndParsesRepositories(t *testing.T) {
 	var receivedAuth string
 	var receivedBody map[string]any
@@ -139,7 +96,7 @@ func TestListInstallationRepositoriesForwardsAuthorizationAndParsesRepositories(
 	defer server.Close()
 
 	client := NewClient(server.Client(), Config{BaseURL: server.URL})
-	repositories, err := client.ListInstallationRepositories(context.Background(), "Bearer user-token", 42)
+	repositories, err := client.ListInstallationRepositories(context.Background(), "Bearer user-token", "Ellrott_Lab", "EllrottLab", 42)
 	if err != nil {
 		t.Fatalf("list installation repositories: %v", err)
 	}
@@ -151,6 +108,12 @@ func TestListInstallationRepositoriesForwardsAuthorizationAndParsesRepositories(
 	}
 	if receivedBody["installation_id"] != float64(42) {
 		t.Fatalf("expected installation id in request body, got %#v", receivedBody)
+	}
+	if receivedBody["organization"] != "Ellrott_Lab" {
+		t.Fatalf("expected organization in request body, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "EllrottLab" {
+		t.Fatalf("expected owner in request body, got %#v", receivedBody)
 	}
 	if len(repositories) != 1 {
 		t.Fatalf("expected one repository, got %+v", repositories)

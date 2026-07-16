@@ -9,6 +9,7 @@ import (
 	"github.com/bmeg/grip/gripql"
 	"github.com/calypr/gecko/internal/git"
 	geckologging "github.com/calypr/gecko/internal/logging"
+	"github.com/calypr/gecko/internal/presentation"
 	httpapi "github.com/calypr/gecko/internal/server/http"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/calypr/gecko/internal/thumbnail"
@@ -19,15 +20,16 @@ import (
 )
 
 type Server struct {
-	db             *sqlx.DB
-	jwtApp         arborist.JWTDecoder
-	Logger         *geckologging.Handler
-	stmts          *arborist.CachedStmts
-	qdrantClient   *qdrant.Client
-	gripqlClient   *gripql.Client
-	gripGraphName  string
-	gitService     *git.GitService
-	thumbnailStore thumbnail.Manager
+	db                *sqlx.DB
+	jwtApp            arborist.JWTDecoder
+	Logger            *geckologging.Handler
+	stmts             *arborist.CachedStmts
+	qdrantClient      *qdrant.Client
+	gripqlClient      *gripql.Client
+	gripGraphName     string
+	gitService        *git.GitService
+	thumbnailStore    thumbnail.Manager
+	presentationStore presentation.Manager
 }
 
 func NewServer() *Server { return &Server{} }
@@ -69,6 +71,11 @@ func (server *Server) WithThumbnailStore(store thumbnail.Manager) *Server {
 	return server
 }
 
+func (server *Server) WithPresentationStore(store presentation.Manager) *Server {
+	server.presentationStore = store
+	return server
+}
+
 func (server *Server) Init() (*Server, error) {
 	if server.jwtApp == nil {
 		return nil, errors.New("gecko server initialized without JWT app")
@@ -99,8 +106,8 @@ func (server *Server) Init() (*Server, error) {
 func (server *Server) MakeRouter() *fiber.App {
 	app := fiber.New(fiber.Config{
 		ReadBufferSize: 32 * 1024,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
 	})
 
 	app.Use(func(ctx fiber.Ctx) error {
@@ -116,14 +123,15 @@ func (server *Server) MakeRouter() *fiber.App {
 	app.Use(servermw.RequestLogger(server.Logger))
 
 	httpapi.Register(app, httpapi.Dependencies{
-		DB:             server.db,
-		Logger:         server.Logger,
-		JWTApp:         server.jwtApp,
-		QdrantClient:   server.qdrantClient,
-		GripqlClient:   server.gripqlClient,
-		GripGraphName:  server.gripGraphName,
-		GitService:     server.gitService,
-		ThumbnailStore: server.thumbnailStore,
+		DB:                server.db,
+		Logger:            server.Logger,
+		JWTApp:            server.jwtApp,
+		QdrantClient:      server.qdrantClient,
+		GripqlClient:      server.gripqlClient,
+		GripGraphName:     server.gripGraphName,
+		GitService:        server.gitService,
+		ThumbnailStore:    server.thumbnailStore,
+		PresentationStore: server.presentationStore,
 	})
 	return app
 }

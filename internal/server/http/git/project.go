@@ -66,6 +66,14 @@ func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string
 		response.WriteLog(handler.logger)
 		return "", "", "", appconfig.ProjectConfig{}, git.GitRepositoryIdentity{}, response
 	}
+	if strings.TrimSpace(cfg.SrcRepo) == "" {
+		response := httputil.NewError("conflict", fmt.Sprintf("GitHub connection has not been completed for %s", projectID), http.StatusConflict, map[string]any{
+			"project_id":     projectID,
+			"workflow_stage": git.GitWorkflowStageAwaitingGitHubConnect,
+		}, nil)
+		response.WriteLog(handler.logger)
+		return "", "", "", appconfig.ProjectConfig{}, git.GitRepositoryIdentity{}, response
+	}
 	identity, err := git.ParseRepositoryIdentity(cfg.SrcRepo)
 	if err != nil {
 		response := httputil.NewError("validation_failed", fmt.Sprintf("invalid src_repo for %s: %s", projectID, err), http.StatusBadRequest, map[string]any{"project_id": projectID, "src_repo": cfg.SrcRepo}, nil)
@@ -97,14 +105,14 @@ func (handler *Handler) loadGitProjectState(projectID string, identity git.GitRe
 	return state, nil
 }
 
-func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizationHeader string, projectID string, identity git.GitRepositoryIdentity, state *geckodb.GitProjectState) (*geckodb.GitProjectState, error) {
+func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizationHeader string, projectID string, identity git.GitRepositoryIdentity, state *geckodb.GitProjectState, requireCurrentMirror bool) (*geckodb.GitProjectState, error) {
 	if state == nil || !state.InstallationID.Valid {
 		return state, nil
 	}
 	if strings.TrimSpace(state.MirrorPath) == "" {
 		return state, nil
 	}
-	if _, err := os.Stat(state.MirrorPath); err == nil {
+	if !shouldRefreshMirrorForRead(state.MirrorPath, requireCurrentMirror) {
 		return state, nil
 	}
 	org, project, _ := strings.Cut(projectID, "/")
@@ -126,6 +134,15 @@ func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizat
 		return nil, fmt.Errorf("persist refreshed git project state: %w", err)
 	}
 	return updatedState, nil
+}
+
+func mirrorExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func shouldRefreshMirrorForRead(mirrorPath string, requireCurrentMirror bool) bool {
+	return requireCurrentMirror || !mirrorExists(mirrorPath)
 }
 
 func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
@@ -211,7 +228,7 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 	if authorizationHeader != "" {
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state)
+		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
 			handler.logger.Warning("failed to warm git mirror for %s: %v", projectID, err)
 		}

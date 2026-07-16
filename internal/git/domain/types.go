@@ -39,6 +39,13 @@ type StorageBucket struct {
 	Resources []string
 }
 
+type StorageBucketScope struct {
+	Bucket       string
+	Organization string
+	ProjectID    string
+	Path         string
+}
+
 type StorageConfig struct {
 	Bucket              string
 	Provider            string

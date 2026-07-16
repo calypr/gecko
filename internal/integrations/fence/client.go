@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/httpclient"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
@@ -24,7 +26,7 @@ type Client struct {
 
 func NewClient(client *http.Client, config Config) *Client {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	return &Client{client: client, config: config}
 }
@@ -166,35 +168,17 @@ func (c *Client) RequestOrganizationInstallationStatus(ctx context.Context, auth
 	}, nil
 }
 
-func (c *Client) ListInstallationRepositories(ctx context.Context, authorizationHeader string, installationID int64) ([]domain.GitHubInstallationRepository, error) {
+func (c *Client) ListInstallationRepositories(ctx context.Context, authorizationHeader string, organization string, owner string, installationID int64) ([]domain.GitHubInstallationRepository, error) {
 	var payload fenceGitHubInstallationRepositoriesResponse
 	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
 		"action":          "installation_repositories",
+		"organization":    organization,
+		"owner":           owner,
 		"installation_id": installationID,
 	}, &payload); err != nil {
 		return nil, err
 	}
 	return payload.Repositories, nil
-}
-
-func (c *Client) RequestInstallationStatus(ctx context.Context, authorizationHeader string, organization string, identity domain.GitRepositoryIdentity) (domain.GitRepositoryInstallationStatus, error) {
-	var payload fenceGitHubInstallationStatusResponse
-	if err := c.requestFenceGitHubBroker(ctx, authorizationHeader, map[string]any{
-		"action":       "repository_installation",
-		"owner":        identity.Owner,
-		"repo":         identity.Repo,
-		"organization": organization,
-	}, &payload); err != nil {
-		return domain.GitRepositoryInstallationStatus{}, err
-	}
-	return domain.GitRepositoryInstallationStatus{
-		Installed:           payload.Installed,
-		InstallationID:      payload.InstallationID,
-		Target:              strings.TrimSpace(payload.Target),
-		TargetType:          strings.TrimSpace(payload.TargetType),
-		HTMLURL:             strings.TrimSpace(payload.HTMLURL),
-		RepositorySelection: strings.TrimSpace(payload.RepositorySelection),
-	}, nil
 }
 
 func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {

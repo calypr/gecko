@@ -95,10 +95,6 @@ func ConfigPUTGeneric(db *sqlx.DB, configId string, configType string, data any)
 	return ConfigPUTGenericContext(context.Background(), db, configId, configType, data)
 }
 
-func ConfigPUTGenericTx(tx *sqlx.Tx, configId string, configType string, data any) error {
-	return ConfigPUTGenericTxContext(context.Background(), tx, configId, configType, data)
-}
-
 func ConfigPUTGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string, data any) error {
 	if db == nil {
 		return nil

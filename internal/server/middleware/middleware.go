@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/apierror"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -35,7 +37,7 @@ type FenceUserAccessHandler struct {
 
 func NewFenceUserAccessHandler(client *http.Client) *FenceUserAccessHandler {
 	if client == nil {
-		client = http.DefaultClient
+		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	return &FenceUserAccessHandler{client: client}
 }
@@ -143,28 +145,6 @@ func parseResourceAccessSnapshot(payload map[string]any) (ResourceAccessSnapshot
 		snapshot[resource] = records
 	}
 	return snapshot, nil
-}
-
-func snapshotAllows(raw any, method, service string) bool {
-	entries, ok := raw.([]any)
-	if !ok {
-		return false
-	}
-	for _, entry := range entries {
-		record, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		entryMethod, _ := record["method"].(string)
-		entryService, _ := record["service"].(string)
-		if entryMethod != method && entryMethod != "*" {
-			continue
-		}
-		if entryService == "*" || service == "*" || entryService == service {
-			return true
-		}
-	}
-	return false
 }
 
 func ResourceAccessAllows(snapshot ResourceAccessSnapshot, resourcePath, method, service string) bool {

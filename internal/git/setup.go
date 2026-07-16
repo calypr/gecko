@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/integrations/syfon"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/golang-jwt/jwt/v5"
@@ -24,6 +26,8 @@ type SetupService struct {
 	storage      *syfon.Manager
 	accessChecks *servermw.FenceUserAccessHandler
 }
+
+var arboristHTTPClient = httpclient.NewServiceClient(30 * time.Second)
 
 func NewSetupService(db *sqlx.DB, gitService *GitService, storage *syfon.Manager, accessChecks *servermw.FenceUserAccessHandler) *SetupService {
 	return &SetupService{
@@ -228,7 +232,7 @@ func createAuthzOwnedDescendant(ctx context.Context, authorizationHeader string,
 	}
 	req.Header.Set("Authorization", authorizationHeader)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := arboristHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request arborist descendant create: %w", err)
 	}
@@ -250,7 +254,7 @@ func DeleteAuthzResource(ctx context.Context, authorizationHeader, resourcePath 
 		return fmt.Errorf("build arborist resource delete request: %w", err)
 	}
 	req.Header.Set("Authorization", authorizationHeader)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := arboristHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request arborist resource delete: %w", err)
 	}

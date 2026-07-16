@@ -9,14 +9,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func (handler *Handler) authenticatedUserID(ctx fiber.Ctx) (string, *httputil.ErrorResponse) {
-	return handler.AuthenticatedUserID(ctx)
-}
-
-func (handler *Handler) writeAppError(ctx fiber.Ctx, err error) error {
-	return handler.WriteAppError(ctx, err)
-}
-
 func writeAppError(ctx fiber.Ctx, logger any, err error) error {
 	_ = logger
 	if appErr, ok := err.(*git.Error); ok {

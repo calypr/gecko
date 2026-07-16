@@ -3,7 +3,6 @@ package middleware
 import (
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 )
 
@@ -62,19 +61,4 @@ func ResourceListAllowsOrganization(resources []string, organization string) boo
 		}
 	}
 	return false
-}
-
-func ResourceListAllowedOrganizations(resources []string) []string {
-	seen := make(map[string]struct{})
-	for _, resource := range resources {
-		if organization, ok := ResourcePathOrganization(resource); ok {
-			seen[organization] = struct{}{}
-		}
-	}
-	organizations := make([]string, 0, len(seen))
-	for organization := range seen {
-		organizations = append(organizations, organization)
-	}
-	sort.Strings(organizations)
-	return organizations
 }

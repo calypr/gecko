@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -139,33 +138,6 @@ func OpenRepository(path string) (*gogit.Repository, error) {
 		return nil, fmt.Errorf("open git repository at %s: %w", path, err)
 	}
 	return repo, nil
-}
-
-func lookupGitPathLastModified(repo *gogit.Repository, from plumbing.Hash, path string) (*time.Time, error) {
-	normalizedPath := strings.Trim(strings.TrimSpace(path), "/")
-	if normalizedPath == "" {
-		return nil, nil
-	}
-
-	iter, err := repo.Log(&gogit.LogOptions{
-		From:  from,
-		Order: gogit.LogOrderCommitterTime,
-		PathFilter: func(candidate string) bool {
-			trimmed := strings.Trim(strings.TrimSpace(candidate), "/")
-			return trimmed == normalizedPath || strings.HasPrefix(trimmed, normalizedPath+"/")
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-
-	commit, err := iter.Next()
-	if err != nil {
-		return nil, err
-	}
-	lastModifiedAt := commit.Committer.When.UTC()
-	return &lastModifiedAt, nil
 }
 
 func ParseGitLFSPointer(content []byte) *GitLFSPointerInfo {

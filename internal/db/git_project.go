@@ -143,10 +143,6 @@ func UpsertGitProjectState(db *sqlx.DB, state GitProjectState) error {
 	return UpsertGitProjectStateContext(context.Background(), db, state)
 }
 
-func UpsertGitProjectStateTx(tx *sqlx.Tx, state GitProjectState) error {
-	return UpsertGitProjectStateTxContext(context.Background(), tx, state)
-}
-
 func UpsertGitProjectStateContext(ctx context.Context, db *sqlx.DB, state GitProjectState) error {
 	if db == nil {
 		return nil

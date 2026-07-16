@@ -18,6 +18,7 @@ import (
 	"github.com/calypr/gecko/internal/git"
 	integrationfence "github.com/calypr/gecko/internal/integrations/fence"
 	integrationgithub "github.com/calypr/gecko/internal/integrations/github"
+	"github.com/calypr/gecko/internal/presentation"
 	server "github.com/calypr/gecko/internal/server"
 	"github.com/calypr/gecko/internal/thumbnail"
 )
@@ -86,6 +87,7 @@ func main() {
 		})
 		serverBuilder = serverBuilder.WithGitService(gitService)
 		serverBuilder = serverBuilder.WithThumbnailStore(thumbnail.NewFilesystemStore(gitDataDir))
+		serverBuilder = serverBuilder.WithPresentationStore(presentation.NewFilesystemStore(gitDataDir))
 	}
 
 	if qdrantHost != "" && qdrantPort != 0 {
