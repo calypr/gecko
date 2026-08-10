@@ -40,7 +40,7 @@ func ConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fibe
 			switch method {
 			case fiber.MethodGet:
 				permMethod = "read"
-			case fiber.MethodPut, fiber.MethodDelete:
+			case fiber.MethodPut, fiber.MethodPost, fiber.MethodDelete:
 				permMethod = "create"
 			default:
 				return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, fmt.Sprintf("Unsupported HTTP method %s on %s", method, ctx.Path()), http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
