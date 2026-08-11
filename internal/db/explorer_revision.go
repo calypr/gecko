@@ -26,11 +26,13 @@ CREATE TABLE IF NOT EXISTS config_schema.explorer_config_revision (
  diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
  created_by TEXT NULL,
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
- updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
- UNIQUE(config_id, digest)
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS explorer_config_revision_config_idx ON config_schema.explorer_config_revision(config_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS explorer_config_revision_active_idx ON config_schema.explorer_config_revision(config_id) WHERE status = 'ACTIVE';
+ALTER TABLE config_schema.explorer_config_revision DROP CONSTRAINT IF EXISTS explorer_config_revision_config_id_digest_key;
+CREATE UNIQUE INDEX IF NOT EXISTS explorer_config_revision_identity_idx ON config_schema.explorer_config_revision
+ (config_id,digest,COALESCE(parent_revision_id,''),COALESCE(target_execution_id,''));
 UPDATE config_schema.explorer_config_revision
 SET target_execution_id = NULLIF(diagnostics->>'targetExecutionId', '')
 WHERE target_execution_id IS NULL
@@ -70,6 +72,22 @@ func InsertExplorerRevision(ctx context.Context, db *sqlx.DB, r *ExplorerRevisio
  (id,config_id,project_id,parent_revision_id,digest,overlay,status,target_execution_id,diagnostics,created_by)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, r.ID, r.ConfigID, r.ProjectID, nullString(r.ParentRevisionID), r.Digest, r.Overlay, r.Status, nullString(r.TargetExecutionID), r.Diagnostics, nullString(r.CreatedBy))
 	return err
+}
+
+// ExplorerRevisionByIdentity returns an exact retry of the same candidate.
+// Digest alone is insufficient: the same overlay may be published against a
+// later active parent or a newly materialized Loom execution.
+func ExplorerRevisionByIdentity(ctx context.Context, db *sqlx.DB, configID, digest string, parentRevisionID, targetExecutionID sql.NullString) (*ExplorerRevision, error) {
+	var r ExplorerRevision
+	err := db.QueryRowContext(ctx, `SELECT id,config_id,project_id,parent_revision_id,digest,overlay,status,target_execution_id,target_generation,target_schema_digest,diagnostics,created_by,created_at,updated_at FROM config_schema.explorer_config_revision WHERE config_id=$1 AND digest=$2 AND parent_revision_id IS NOT DISTINCT FROM $3 AND target_execution_id IS NOT DISTINCT FROM $4`, configID, digest, nullString(parentRevisionID), nullString(targetExecutionID)).Scan(
+		&r.ID, &r.ConfigID, &r.ProjectID, &r.ParentRevisionID, &r.Digest, &r.Overlay, &r.Status, &r.TargetExecutionID, &r.TargetGeneration, &r.TargetSchemaDigest, &r.Diagnostics, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func GetExplorerRevision(ctx context.Context, db *sqlx.DB, configID, id string) (*ExplorerRevision, error) {

@@ -150,6 +150,74 @@ func TestIncompatibleRevisionErrorUsesStableDiagnostic(t *testing.T) {
 	}
 }
 
+func TestActiveRevisionValidationRetryDoesNotDemoteRevision(t *testing.T) {
+	database, mock, closeDB := activeRevisionDB(t)
+	defer closeDB()
+	handler := &Handler{db: database}
+	app := fiber.New()
+	app.Post("/:configId/revisions/:revisionId/validate", handler.handleExplorerRevisionValidate)
+
+	req := httptest.NewRequest(http.MethodPost, "/project-1/revisions/rev-active/validate", strings.NewReader(`{"loomExecutionId":"exec-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"status":"VALID"`) {
+		t.Fatalf("validation retry body = %s", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActiveRevisionPublishRetryIsIdempotent(t *testing.T) {
+	database, mock, closeDB := activeRevisionDB(t)
+	defer closeDB()
+	handler := &Handler{db: database}
+	app := fiber.New()
+	app.Post("/:configId/revisions/:revisionId/publish", handler.handleExplorerRevisionPublish)
+
+	req := httptest.NewRequest(http.MethodPost, "/project-1/revisions/rev-active/publish", strings.NewReader(`{"loomExecutionId":"exec-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"status":"ACTIVE"`) {
+		t.Fatalf("publish retry body = %s", body)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func activeRevisionDB(t *testing.T) (*sqlx.DB, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	rawDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	columns := []string{"id", "config_id", "project_id", "parent_revision_id", "digest", "overlay", "status", "target_execution_id", "target_generation", "target_schema_digest", "diagnostics", "created_by", "created_at", "updated_at"}
+	diagnostics := []byte(`{"revisionId":"rev-active","status":"VALID","errors":[],"warnings":[],"acknowledgedOmissions":[]}`)
+	rows := sqlmock.NewRows(columns).AddRow("rev-active", "project-1", "project-1", "rev-parent", "digest", []byte(`{"schemaVersion":2}`), statusActive, "exec-1", "generation-1", "schema-1", diagnostics, nil, now, now)
+	mock.ExpectQuery("SELECT id,config_id,project_id,parent_revision_id,digest,overlay,status,target_execution_id,target_generation,target_schema_digest,diagnostics,created_by,created_at,updated_at FROM config_schema.explorer_config_revision WHERE config_id=\\$1 AND id=\\$2").
+		WithArgs("project-1", "rev-active").
+		WillReturnRows(rows)
+	return sqlx.NewDb(rawDB, "sqlmock"), mock, func() { _ = rawDB.Close() }
+}
+
 func TestReconcilePublishingPromotesAfterLoomActivation(t *testing.T) {
 	loomServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/graphql/graph" {

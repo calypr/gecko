@@ -86,25 +86,35 @@ func (handler *Handler) handleExplorerRevisionCreate(ctx fiber.Ctx) error {
 	}
 	data, _ := json.Marshal(req.Overlay)
 	digest := digestJSON(data)
-	diagnostics, _ := json.Marshal(map[string]any{"errors": []diagnostic{}, "warnings": []diagnostic{}})
-	r := &geckodb.ExplorerRevision{ID: uuid.NewString(), ConfigID: ctx.Params("configId"), ProjectID: req.Overlay.ProjectID, Digest: digest, Overlay: data, Status: statusDraft, Diagnostics: diagnostics}
-	if req.ParentRevisionID != "" {
-		r.ParentRevisionID = sql.NullString{String: req.ParentRevisionID, Valid: true}
-	} else {
+	parentRevisionID := sql.NullString{String: req.ParentRevisionID, Valid: req.ParentRevisionID != ""}
+	var active *geckodb.ExplorerRevision
+	if !parentRevisionID.Valid {
 		// Automated publishers normally omit parentRevisionId. Capture the
-		// current active head at draft creation so an ordinary second release is
-		// optimistic-concurrency safe instead of conflicting after Loom moves.
-		active, err := geckodb.ActiveExplorerRevision(ctx.Context(), handler.db, ctx.Params("configId"))
+		// current active head so ordinary publication is optimistic-concurrency
+		// safe. The parent is part of retry identity because the same overlay may
+		// be republished after the active head advances.
+		var err error
+		active, err = geckodb.ActiveExplorerRevision(ctx.Context(), handler.db, ctx.Params("configId"))
 		if err != nil {
 			return revisionError(ctx, http.StatusInternalServerError, "could not resolve active explorer revision", err)
 		}
 		if active != nil {
-			r.ParentRevisionID = sql.NullString{String: active.ID, Valid: true}
+			parentRevisionID = sql.NullString{String: active.ID, Valid: true}
 		}
 	}
-	if req.TargetExecutionID != "" {
-		r.TargetExecutionID = sql.NullString{String: req.TargetExecutionID, Valid: true}
+	targetExecutionID := sql.NullString{String: req.TargetExecutionID, Valid: req.TargetExecutionID != ""}
+	if active != nil && active.Digest == digest && sameNullString(active.TargetExecutionID, targetExecutionID) {
+		// A complete ETL retry after publication should reuse the already-active
+		// revision without creating a self-parented successor.
+		return httputil.JSON(revisionJSON(active), http.StatusOK).Write(ctx)
 	}
+	if existing, err := geckodb.ExplorerRevisionByIdentity(ctx.Context(), handler.db, ctx.Params("configId"), digest, parentRevisionID, targetExecutionID); err != nil {
+		return revisionError(ctx, http.StatusInternalServerError, "could not resolve existing explorer revision", err)
+	} else if existing != nil {
+		return httputil.JSON(revisionJSON(existing), http.StatusOK).Write(ctx)
+	}
+	diagnostics, _ := json.Marshal(map[string]any{"errors": []diagnostic{}, "warnings": []diagnostic{}})
+	r := &geckodb.ExplorerRevision{ID: uuid.NewString(), ConfigID: ctx.Params("configId"), ProjectID: req.Overlay.ProjectID, ParentRevisionID: parentRevisionID, Digest: digest, Overlay: data, Status: statusDraft, TargetExecutionID: targetExecutionID, Diagnostics: diagnostics}
 	if err := geckodb.InsertExplorerRevision(ctx.Context(), handler.db, r); err != nil {
 		return revisionError(ctx, http.StatusInternalServerError, "could not persist explorer revision", err)
 	}
@@ -235,6 +245,15 @@ func (handler *Handler) handleExplorerRevisionValidate(ctx fiber.Ctx) error {
 	if strings.TrimSpace(req.LoomExecutionID) == "" {
 		return revisionError(ctx, 400, "loomExecutionId is required", nil)
 	}
+	if r.Status == statusActive && r.TargetExecutionID.Valid && r.TargetExecutionID.String == req.LoomExecutionID {
+		// Validation already succeeded before this revision became active. Return
+		// that result without demoting the active row during an ETL retry.
+		var result validationResponse
+		if err := json.Unmarshal(r.Diagnostics, &result); err != nil {
+			return revisionError(ctx, http.StatusInternalServerError, "stored validation result is invalid", err)
+		}
+		return httputil.JSON(result, http.StatusOK).Write(ctx)
+	}
 	exec, err := handler.loom().GetExecution(ctx.Context(), req.LoomExecutionID, ctx.Get("Authorization"))
 	if err != nil {
 		return revisionValidationUnavailable(ctx, r, err)
@@ -288,6 +307,11 @@ func (handler *Handler) handleExplorerRevisionPublish(ctx fiber.Ctx) error {
 	}
 	if req.LoomExecutionID == "" {
 		return revisionError(ctx, 400, "loomExecutionId is required", nil)
+	}
+	if r.Status == statusActive && r.TargetExecutionID.Valid && r.TargetExecutionID.String == req.LoomExecutionID {
+		// The exact revision/execution pair is already visible. Publishing it
+		// again is an idempotent success, not a parent-revision conflict.
+		return httputil.JSON(revisionJSON(r), http.StatusOK).Write(ctx)
 	}
 	if r.Status != statusValidated {
 		return revisionError(ctx, http.StatusConflict, "revision must validate successfully before publish", map[string]any{"status": r.Status})
@@ -771,6 +795,9 @@ func revisionJSON(r *geckodb.ExplorerRevision) map[string]any {
 	return out
 }
 func digestJSON(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+func sameNullString(left, right sql.NullString) bool {
+	return left.Valid == right.Valid && (!left.Valid || left.String == right.String)
+}
 func revisionError(ctx fiber.Ctx, code int, msg string, details any) error {
 	d := map[string]any(nil)
 	if details != nil {

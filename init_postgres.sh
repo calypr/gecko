@@ -47,6 +47,28 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
+CREATE TABLE IF NOT EXISTS config_schema.explorer_config_revision (
+    id TEXT PRIMARY KEY,
+    config_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    parent_revision_id TEXT NULL,
+    digest TEXT NOT NULL,
+    overlay JSONB NOT NULL,
+    status TEXT NOT NULL,
+    target_execution_id TEXT NULL,
+    target_generation TEXT NULL,
+    target_schema_digest TEXT NULL,
+    diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by TEXT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS explorer_config_revision_config_idx ON config_schema.explorer_config_revision(config_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS explorer_config_revision_active_idx ON config_schema.explorer_config_revision(config_id) WHERE status = 'ACTIVE';
+ALTER TABLE config_schema.explorer_config_revision DROP CONSTRAINT IF EXISTS explorer_config_revision_config_id_digest_key;
+CREATE UNIQUE INDEX IF NOT EXISTS explorer_config_revision_identity_idx ON config_schema.explorer_config_revision
+    (config_id,digest,COALESCE(parent_revision_id,''),COALESCE(target_execution_id,''));
+
 CREATE TABLE IF NOT EXISTS config_schema.git_project_state (
     project_id TEXT PRIMARY KEY,
     repo_host TEXT NOT NULL,
