@@ -2162,8 +2162,12 @@ func buildCleanupAuditModel(gitSubpath string, inventory []RepoInventoryFile, re
 				findings = append(findings, cleanupFindingModel{Public: public, Manual: true})
 				countsByKind[string(storageFindingKind)]++
 			case storageFindingBrokenBucketMap:
-				public := buildCleanupFinding(string(storageFindingKind), item.RepoPath, matches, false, "access_url", "Syfon access URL did not resolve through a configured bucket mapping.")
-				repairDeleteIDs, repairUpdates := brokenBucketMappingRepairPlan(matches)
+				repairMatches := make([]projectRecordState, 0, len(matches))
+				for _, match := range matches {
+					repairMatches = append(repairMatches, repairableBrokenAccessRecord(match))
+				}
+				public := buildCleanupFinding(string(storageFindingKind), item.RepoPath, repairMatches, false, "access_url", "Syfon access URL did not resolve through a configured bucket mapping.")
+				repairDeleteIDs, repairUpdates := brokenBucketMappingRepairPlan(repairMatches)
 				findings = append(findings, cleanupFindingModel{
 					Public:              public,
 					DeleteObjectIDs:     repairDeleteIDs,
@@ -3203,8 +3207,12 @@ func accessURLHasBrokenBucketMapping(accessURL string, probesByURL map[string][]
 }
 
 func repairableBrokenAccessRecord(record projectRecordState) projectRecordState {
+	probes := repairableBrokenAccessProbes(record)
+	if len(probes) == 0 {
+		return record
+	}
 	clone := record
-	clone.AccessProbes = repairableBrokenAccessProbes(record)
+	clone.AccessProbes = probes
 	return clone
 }
 
@@ -3226,15 +3234,26 @@ func repairableBrokenAccessProbes(record projectRecordState) []gintegrationsyfon
 		if rawURL == "" {
 			continue
 		}
-		if accessURLHasPresentProbe(rawURL, probesByURL) {
+		probeURLs := []string{rawURL}
+		if mappedURL := strings.TrimSpace(record.CanonicalAccessURLByRaw[rawURL]); mappedURL != "" && mappedURL != rawURL {
+			probeURLs = append(probeURLs, mappedURL)
+		}
+		hasPresentProbe := false
+		for _, probeURL := range probeURLs {
+			if accessURLHasPresentProbe(probeURL, probesByURL) {
+				hasPresentProbe = true
+				break
+			}
+		}
+		if hasPresentProbe {
 			continue
 		}
-		if mappedURL := strings.TrimSpace(record.CanonicalAccessURLByRaw[rawURL]); mappedURL != "" && mappedURL != rawURL && accessURLHasPresentProbe(mappedURL, probesByURL) {
-			continue
-		}
-		for _, probe := range probesByURL[rawURL] {
-			if syfonProbeIsBrokenAccess(probe) {
-				out = append(out, probe)
+		for _, probeURL := range probeURLs {
+			for _, probe := range probesByURL[probeURL] {
+				if syfonProbeIsBrokenAccess(probe) {
+					probe.ObjectURL = rawURL
+					out = append(out, probe)
+				}
 			}
 		}
 	}

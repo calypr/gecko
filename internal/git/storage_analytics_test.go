@@ -4046,6 +4046,8 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	const checksum = "13b9f3b94f83dda05ceac0c95ca7168d7db5c7cd79f28f0b4c448be3373387ef"
 	const missingURL = "s3://bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
 	const presentURL = "s3://bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const canonicalMissingURL = "s3://bforepc/bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
+	const canonicalPresentURL = "s3://bforepc/bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
 	const repoPath = "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
 	const size = int64(529952905)
 
@@ -4055,7 +4057,7 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	now := time.Date(2026, 3, 13, 20, 1, 49, 0, time.UTC)
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{{
-			ObjectID:     "6595b01b-64a2-5b68-a607-d4bbb489bf17",
+			ObjectID:     "c0dfb5f8-650e-5b5e-ba23-a43afb070fbf",
 			Name:         "feature_slice.h5",
 			Checksum:     checksum,
 			Organization: "HTAN_INT",
@@ -4068,33 +4070,39 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 				{AccessID: "s3", Type: "s3", URL: presentURL},
 			},
 		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "HTAN_INT",
+			ProjectID:    "BForePC",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
 		usageByObject:             map[string]gintegrationsyfon.FileUsage{},
 		bucketInventoryIncomplete: true,
 		bucketInventoryWarning:    "terminal replay returned different page content",
 		bucketInventoryObservedAt: "2026-09-03T21:20:22Z",
 		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
-			ObjectURL: presentURL,
-			Bucket:    "bforepc-prod",
-			Key:       "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+			ObjectURL: canonicalPresentURL,
+			Bucket:    "bforepc",
+			Key:       "bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
 			Path:      repoPath,
 			SizeBytes: size,
 		}},
 		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
-			storageProbeRequestKey(missingURL, size, checksum): {
-				ID:               storageProbeRequestKey(missingURL, size, checksum),
-				ObjectURL:        missingURL,
-				Bucket:           "bforepc-prod",
-				Key:              "6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum,
+			storageProbeRequestKey(canonicalMissingURL, size, checksum): {
+				ID:               storageProbeRequestKey(canonicalMissingURL, size, checksum),
+				ObjectURL:        canonicalMissingURL,
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum,
 				Status:           "not_found",
 				Exists:           false,
 				ErrorKind:        "object_not_found",
 				ValidationStatus: "unverifiable",
 			},
-			storageProbeRequestKey(presentURL, size, checksum): {
-				ID:               storageProbeRequestKey(presentURL, size, checksum),
-				ObjectURL:        presentURL,
-				Bucket:           "bforepc-prod",
-				Key:              "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+			storageProbeRequestKey(canonicalPresentURL, size, checksum): {
+				ID:               storageProbeRequestKey(canonicalPresentURL, size, checksum),
+				ObjectURL:        canonicalPresentURL,
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
 				Status:           "present",
 				Exists:           true,
 				ValidationStatus: "matched",
@@ -4110,7 +4118,7 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if !containsProbeTarget(backend.probeItems, missingURL) || containsProbeTarget(backend.probeItems, presentURL) {
+	if !containsProbeTarget(backend.probeItems, canonicalMissingURL) || containsProbeTarget(backend.probeItems, canonicalPresentURL) {
 		t.Fatalf("expected only the unresolved access method to be probed, got %+v", backend.probeItems)
 	}
 	if chain.Summary.BucketInventoryComplete || !strings.Contains(chain.Summary.BucketInventoryWarning, "terminal replay") || chain.Summary.BucketInventoryObserved != "2026-09-03T21:20:22Z" || chain.Summary.BucketInventorySource != "live" {
