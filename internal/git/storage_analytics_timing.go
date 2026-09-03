@@ -28,6 +28,7 @@ type StorageChainAuditOptions struct {
 	FindingKind         string
 	FindingLimit        int
 	ForceAuditRefresh   bool
+	ForceBucketRefresh  bool
 	Timings             *StorageChainAuditTimings
 }
 

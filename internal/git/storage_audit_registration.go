@@ -76,7 +76,7 @@ func (service *StorageAnalyticsService) RegisterGitOnlySyfonRecords(ctx context.
 	if err != nil {
 		return nil, fmt.Errorf("load project storage scopes before registration: %w", err)
 	}
-	bucketObjects, bucketObjectsByURL, err := service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
+	bucketObjects, bucketObjectsByURL, _, err := service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "", false)
 	if err != nil {
 		return nil, fmt.Errorf("load project bucket inventory before registration: %w", err)
 	}

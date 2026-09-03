@@ -23,9 +23,9 @@ const (
 	// an intermittent provider failure does not turn into a user-facing 502.
 	projectBucketInventoryRefreshInterval = 10 * time.Minute
 	projectBucketInventoryStaleTTL        = 24 * time.Hour
-	storageChainAuditCacheKeyPrefix       = "gecko:storage_chain_audit:v2:"
+	storageChainAuditCacheKeyPrefix       = "gecko:storage_chain_audit:v3:"
 	storageExactJoinCacheKeyPrefix        = "gecko:storage_exact_join:v1:"
-	projectBucketInventoryKeyPrefix       = "gecko:project_bucket_inventory:v1:"
+	projectBucketInventoryKeyPrefix       = "gecko:project_bucket_inventory:v2:"
 )
 
 type storageChainAuditResponseCache interface {
@@ -41,29 +41,37 @@ type cachedStorageChainAuditResponse struct {
 }
 
 type inflightStorageChainAuditRefresh struct {
-	done  chan struct{}
-	value cachedStorageChainAuditResponse
-	err   error
+	done               chan struct{}
+	forceBucketRefresh bool
+	value              cachedStorageChainAuditResponse
+	err                error
 }
 
 // coalesceStorageChainAuditRefresh ensures a root audit has one authoritative
 // refresh result per cache key. The UI can issue overlapping forced refreshes;
 // without this guard, a partial bucket LIST from the later request can replace
 // the completed response from the earlier request.
-func (service *StorageAnalyticsService) coalesceStorageChainAuditRefresh(ctx context.Context, key string, refresh func() (cachedStorageChainAuditResponse, error)) (cachedStorageChainAuditResponse, bool, error) {
-	service.chainAuditRefreshMu.Lock()
-	if work := service.chainAuditRefreshWork[key]; work != nil {
+func (service *StorageAnalyticsService) coalesceStorageChainAuditRefresh(ctx context.Context, key string, forceBucketRefresh bool, refresh func() (cachedStorageChainAuditResponse, error)) (cachedStorageChainAuditResponse, bool, error) {
+	var work *inflightStorageChainAuditRefresh
+	for {
+		service.chainAuditRefreshMu.Lock()
+		work = service.chainAuditRefreshWork[key]
+		if work == nil {
+			work = &inflightStorageChainAuditRefresh{done: make(chan struct{}), forceBucketRefresh: forceBucketRefresh}
+			service.chainAuditRefreshWork[key] = work
+			service.chainAuditRefreshMu.Unlock()
+			break
+		}
 		service.chainAuditRefreshMu.Unlock()
 		select {
 		case <-ctx.Done():
 			return cachedStorageChainAuditResponse{}, true, ctx.Err()
 		case <-work.done:
-			return cloneCachedStorageChainAuditResponse(work.value), true, work.err
+			if !forceBucketRefresh || work.forceBucketRefresh {
+				return cloneCachedStorageChainAuditResponse(work.value), true, work.err
+			}
 		}
 	}
-	work := &inflightStorageChainAuditRefresh{done: make(chan struct{})}
-	service.chainAuditRefreshWork[key] = work
-	service.chainAuditRefreshMu.Unlock()
 
 	value, err := refresh()
 	service.chainAuditRefreshMu.Lock()
@@ -96,6 +104,9 @@ type projectBucketInventoryCache interface {
 type cachedProjectBucketInventory struct {
 	CachedAt time.Time                               `json:"cached_at"`
 	Objects  []gintegrationsyfon.ProjectBucketObject `json:"objects"`
+	Complete bool                                    `json:"complete"`
+	Warning  string                                  `json:"warning,omitempty"`
+	Observed string                                  `json:"observed_at,omitempty"`
 }
 
 type memoryStorageChainAuditResponseCache struct {
@@ -485,7 +496,13 @@ func cloneCachedStorageChainAuditResponse(value cachedStorageChainAuditResponse)
 }
 
 func cloneCachedProjectBucketInventory(value cachedProjectBucketInventory) cachedProjectBucketInventory {
-	return cachedProjectBucketInventory{CachedAt: value.CachedAt, Objects: append([]gintegrationsyfon.ProjectBucketObject(nil), value.Objects...)}
+	return cachedProjectBucketInventory{
+		CachedAt: value.CachedAt,
+		Objects:  append([]gintegrationsyfon.ProjectBucketObject(nil), value.Objects...),
+		Complete: value.Complete,
+		Warning:  value.Warning,
+		Observed: value.Observed,
+	}
 }
 
 func cloneStorageChainAuditResponse(response GitStorageChainAuditResponse) GitStorageChainAuditResponse {

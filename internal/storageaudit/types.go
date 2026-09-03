@@ -141,7 +141,11 @@ type ChainSummary struct {
 	BucketPathObjectURL      string         `json:"bucket_path_object_url,omitempty"`
 	BucketSummaryMode        string         `json:"bucket_summary_mode,omitempty"`
 	BucketInventoryAvailable bool           `json:"bucket_inventory_available"`
+	BucketInventoryComplete  bool           `json:"bucket_inventory_complete"`
 	BucketInventoryError     string         `json:"bucket_inventory_error,omitempty"`
+	BucketInventoryWarning   string         `json:"bucket_inventory_warning,omitempty"`
+	BucketInventoryObserved  string         `json:"bucket_inventory_observed_at,omitempty"`
+	BucketInventorySource    string         `json:"bucket_inventory_source,omitempty"`
 	AuditCacheHit            bool           `json:"audit_cache_hit,omitempty"`
 	AuditCachedAt            string         `json:"audit_cached_at,omitempty"`
 	AuditCacheAgeSeconds     int64          `json:"audit_cache_age_seconds,omitempty"`

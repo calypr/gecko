@@ -134,8 +134,8 @@ type storageAnalyticsBackend interface {
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
 	ListProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
 	ListProjectFileUsage(ctx context.Context, authorizationHeader string, organization string, project string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error)
-	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error)
-	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error)
+	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
+	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
 	ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error)
 	BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
@@ -287,6 +287,7 @@ type cachedChainInputState struct {
 	bucketSummary      *gintegrationsyfon.ProjectBucketSummary
 	bucketObjects      []gintegrationsyfon.ProjectBucketObject
 	bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
+	bucketMetadata     projectBucketInventoryMetadata
 }
 
 type cachedProjectAuditRecordState struct {
@@ -570,7 +571,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditWithResponseCache(
 		options.Timings.Record("audit_response_cache_force_refresh", 0)
 	}
 
-	cached, joinedRefresh, err := service.coalesceStorageChainAuditRefresh(ctx, cacheKey, func() (cachedStorageChainAuditResponse, error) {
+	cached, joinedRefresh, err := service.coalesceStorageChainAuditRefresh(ctx, cacheKey, options.ForceBucketRefresh, func() (cachedStorageChainAuditResponse, error) {
 		buildOptions := options
 		buildOptions.FindingKind = ""
 		buildOptions.FindingLimit = -1
@@ -650,7 +651,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	bucketPathPrefix := options.BucketPathPrefix
 	start := time.Now()
 	options.Timings.StageStart("chain_setup_total")
-	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, validationMode, bucketPathPrefix, options.ForceAuditRefresh, options.Timings)
+	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, validationMode, bucketPathPrefix, options.ForceBucketRefresh, options.Timings)
 	options.Timings.Record("chain_setup_total", time.Since(start))
 	if inputs != nil && inputs.recordSet != nil {
 		options.Timings.RecordMemory(
@@ -665,7 +666,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, bucketMode, validationMode, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.bucketObjects, inputs.bucketObjectsByURL, inputs.bucketInventoryErr, inputs.bucketMetadata, bucketMode, validationMode, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if storageView != nil {
 		options.Timings.RecordMemory(
@@ -680,6 +681,7 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 	modelStart := time.Now()
 	options.Timings.StageStart("model_build")
 	includeBucketOrigin := storageView.bucketInventoryAvailable &&
+		!storageView.bucketInventoryStale &&
 		(bucketMode == StorageChainBucketModeItems || validationMode == StorageChainValidationModeList)
 	model := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.recordsByChecksum, storageView.allProjectRecords, storageView.bucketObjectsByURL, inputs.scopes, organization, project, includeBucketOrigin)
 	options.Timings.Record("model_build", time.Since(modelStart))
@@ -691,7 +693,11 @@ func (service *StorageAnalyticsService) buildStorageChainAuditFresh(ctx context.
 		"git_files", len(inputs.inventory),
 	)
 	model.Summary.BucketInventoryAvailable = storageView.bucketInventoryAvailable
+	model.Summary.BucketInventoryComplete = storageView.bucketInventoryComplete
 	model.Summary.BucketInventoryError = storageView.bucketInventoryError
+	model.Summary.BucketInventoryWarning = storageView.bucketInventoryWarning
+	model.Summary.BucketInventoryObserved = storageView.bucketInventoryObserved
+	model.Summary.BucketInventorySource = storageView.bucketInventorySource
 	model.Summary.ValidationMode = validationMode
 	model.Summary.GitRevision = hash.String()
 	model.Summary.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -2910,9 +2916,19 @@ func selectChainProbe(record projectRecordState, bucketObjectURLs []string) chai
 		}
 	}
 	for _, probe := range probes {
+		operation := strings.TrimSpace(probe.Operation)
+		if operation != StorageChainValidationModeMetadata && operation != StorageChainValidationModeList {
+			continue
+		}
 		objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.URL)
 		if probe.Status != "" || probe.ErrorKind != "" || objectURL != "" || probe.URL != "" {
-			return chainProbeSelection{probe: probe}
+			return chainProbeSelection{bucketObjectURL: objectURL, probe: probe}
+		}
+	}
+	for _, probe := range probes {
+		objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.URL)
+		if probe.Status != "" || probe.ErrorKind != "" || objectURL != "" || probe.URL != "" {
+			return chainProbeSelection{bucketObjectURL: objectURL, probe: probe}
 		}
 	}
 	return chainProbeSelection{}

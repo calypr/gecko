@@ -139,6 +139,13 @@ type ProjectBucketObject struct {
 	LastModified string
 }
 
+type ProjectBucketInventory struct {
+	Objects    []ProjectBucketObject
+	Complete   bool
+	Warning    string
+	ObservedAt string
+}
+
 type FileUsage struct {
 	ObjectID         string
 	Name             string
@@ -1045,15 +1052,15 @@ func (manager *Manager) ListProjectBucketSummary(ctx context.Context, authorizat
 	}, nil
 }
 
-func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+func (manager *Manager) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (ProjectBucketInventory, error) {
 	return manager.listProjectBucketObjects(ctx, authorizationHeader, "/data/inspect/project-bucket", organization, project, pathPrefix)
 }
 
-func (manager *Manager) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+func (manager *Manager) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (ProjectBucketInventory, error) {
 	return manager.listProjectBucketObjects(ctx, authorizationHeader, "/data/inspect/project-bucket/inventory", organization, project, pathPrefix)
 }
 
-func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizationHeader string, requestPath string, organization string, project string, pathPrefix string) ([]ProjectBucketObject, error) {
+func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizationHeader string, requestPath string, organization string, project string, pathPrefix string) (ProjectBucketInventory, error) {
 	requestBody := struct {
 		Organization string `json:"organization,omitempty"`
 		Project      string `json:"project,omitempty"`
@@ -1066,6 +1073,11 @@ func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizat
 		PathPrefix:   strings.Trim(strings.TrimSpace(pathPrefix), "/"),
 	}
 	var response struct {
+		Summary *struct {
+			InventoryComplete *bool  `json:"inventory_complete"`
+			InventoryWarning  string `json:"inventory_warning"`
+			ComputedAt        string `json:"computed_at"`
+		} `json:"summary"`
 		Items []struct {
 			ObjectURL    string `json:"object_url"`
 			Provider     string `json:"provider"`
@@ -1079,7 +1091,17 @@ func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizat
 		} `json:"items"`
 	}
 	if err := manager.requestJSON(ctx, authorizationHeader, http.MethodPost, requestPath, nil, requestBody, &response); err != nil {
-		return nil, fmt.Errorf("list syfon project bucket objects: %w", err)
+		return ProjectBucketInventory{}, fmt.Errorf("list syfon project bucket objects: %w", err)
+	}
+	complete := true
+	warning := ""
+	observedAt := ""
+	if response.Summary != nil {
+		if response.Summary.InventoryComplete != nil {
+			complete = *response.Summary.InventoryComplete
+		}
+		warning = strings.TrimSpace(response.Summary.InventoryWarning)
+		observedAt = strings.TrimSpace(response.Summary.ComputedAt)
 	}
 	out := make([]ProjectBucketObject, 0, len(response.Items))
 	for _, item := range response.Items {
@@ -1095,7 +1117,7 @@ func (manager *Manager) listProjectBucketObjects(ctx context.Context, authorizat
 			LastModified: strings.TrimSpace(item.LastModified),
 		})
 	}
-	return out, nil
+	return ProjectBucketInventory{Objects: out, Complete: complete, Warning: warning, ObservedAt: observedAt}, nil
 }
 
 func (manager *Manager) bucketsService(authorizationHeader string) (*syfonservices.BucketsService, error) {
