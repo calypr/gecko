@@ -3903,8 +3903,8 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
-		t.Fatalf("expected the live canonical locator to keep the record connected, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
+		t.Fatalf("expected the broken independent access method to remain repairable, got %s", got)
 	}
 	broken := repairableBrokenAccessRecord(record)
 	if len(broken.AccessProbes) != 1 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" {
@@ -3916,6 +3916,85 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 	}
 	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc-prod/JHU/slide.ome.tiff" {
 		t.Fatalf("expected working access method to remain, got %+v", remaining)
+	}
+}
+
+func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists(t *testing.T) {
+	const checksum = "13b9f3b94f83dda05ceac0c95ca7168d7db5c7cd79f28f0b4c448be3373387ef"
+	const missingURL = "s3://bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
+	const presentURL = "s3://bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const repoPath = "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const size = int64(529952905)
+
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		repoPath: lfsPointer(checksum, size),
+	})
+	now := time.Date(2026, 3, 13, 20, 1, 49, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID:     "6595b01b-64a2-5b68-a607-d4bbb489bf17",
+			Name:         "feature_slice.h5",
+			Checksum:     checksum,
+			Organization: "HTAN_INT",
+			Project:      "BForePC",
+			Size:         size,
+			UpdatedAt:    &now,
+			AccessURLs:   []string{missingURL, presentURL},
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "s3", Type: "s3", URL: missingURL},
+				{AccessID: "s3", Type: "s3", URL: presentURL},
+			},
+		}},
+		usageByObject: map[string]gintegrationsyfon.FileUsage{},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: presentURL,
+			Bucket:    "bforepc-prod",
+			Key:       "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+			Path:      repoPath,
+			SizeBytes: size,
+		}},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey(missingURL, size, checksum): {
+				ID:               storageProbeRequestKey(missingURL, size, checksum),
+				ObjectURL:        missingURL,
+				Bucket:           "bforepc-prod",
+				Key:              "6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum,
+				Status:           "not_found",
+				Exists:           false,
+				ErrorKind:        "object_not_found",
+				ValidationStatus: "unverifiable",
+			},
+			storageProbeRequestKey(presentURL, size, checksum): {
+				ID:               storageProbeRequestKey(presentURL, size, checksum),
+				ObjectURL:        presentURL,
+				Bucket:           "bforepc-prod",
+				Key:              "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+				Status:           "present",
+				Exists:           true,
+				ValidationStatus: "matched",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if !containsProbeTarget(backend.probeItems, missingURL) || !containsProbeTarget(backend.probeItems, presentURL) {
+		t.Fatalf("expected both access methods to be probed, got %+v", backend.probeItems)
+	}
+	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", repoPath)
+	if finding.Actionability != storageActionabilityManualChoice || finding.DefaultAction != storageActionInspectEvidence || !contains(finding.AvailableActions, storageActionRemoveBrokenAccessURLs) {
+		t.Fatalf("expected broken access URL removal action, got %+v", finding)
+	}
+	if len(finding.Records) != 1 || len(finding.Records[0].AccessProbes) != 1 || finding.Records[0].AccessProbes[0].URL != missingURL {
+		t.Fatalf("expected only the missing access URL in repair evidence, got %+v", finding.Records)
+	}
+	remaining := remainingAccessMethodsAfterBrokenRemoval(finding.Records[0])
+	if len(remaining) != 1 || remaining[0].URL != presentURL {
+		t.Fatalf("expected repair to retain only the working access method, got %+v", remaining)
 	}
 }
 

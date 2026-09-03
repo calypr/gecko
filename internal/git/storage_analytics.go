@@ -1305,6 +1305,8 @@ func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
 	switch strings.TrimSpace(probe.Status) {
 	case "missing", "forbidden", "unsupported", "invalid", "error":
 		return true
+	case "not_found":
+		return strings.TrimSpace(probe.Operation) == StorageChainValidationModeMetadata
 	}
 	return false
 }
@@ -2507,6 +2509,9 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 		return storageFindingBrokenBucketMap
 	}
 	assessment := assessStorageRecordEvidence(record, len(resolution.matchedBucketObjectURLs) > 0)
+	if len(repairableBrokenAccessProbes(record)) > 0 && recordHasUsableAccessProbe(record) {
+		return storageFindingBrokenBucketMap
+	}
 	if resolution.hasAcceptedCanonicalProbe {
 		return storageFindingNone
 	}
@@ -2519,7 +2524,7 @@ func classifyStorageFinding(record projectRecordState, bucketObjectsByURL map[st
 	if resolution.hasAcceptedCanonicalProbe || assessment.Present {
 		return storageFindingNone
 	}
-	if len(repairableBrokenAccessProbes(record)) > 0 || assessment.MappingBroken {
+	if assessment.MappingBroken {
 		return storageFindingBrokenBucketMap
 	}
 	if len(record.AccessProbes) == 0 {
@@ -3220,6 +3225,26 @@ func repairableBrokenAccessProbes(record projectRecordState) []gintegrationsyfon
 	return out
 }
 
+func recordHasUsableAccessProbe(record projectRecordState) bool {
+	probesByURL := make(map[string][]gintegrationsyfon.BulkStorageProbeResult, len(record.AccessProbes))
+	for _, probe := range record.AccessProbes {
+		if objectURL := syfonProbeObjectURL(probe); objectURL != "" {
+			probesByURL[objectURL] = append(probesByURL[objectURL], probe)
+		}
+	}
+	for _, accessURL := range rawAccessURLsForRecord(record) {
+		rawURL := strings.TrimSpace(accessURL)
+		if accessURLHasPresentProbe(rawURL, probesByURL) {
+			return true
+		}
+		mappedURL := strings.TrimSpace(record.CanonicalAccessURLByRaw[rawURL])
+		if mappedURL != "" && accessURLHasPresentProbe(mappedURL, probesByURL) {
+			return true
+		}
+	}
+	return false
+}
+
 func accessURLHasPresentProbe(accessURL string, probesByURL map[string][]gintegrationsyfon.BulkStorageProbeResult) bool {
 	for _, probe := range probesByURL[strings.TrimSpace(accessURL)] {
 		if strings.TrimSpace(probe.Status) != "present" {
@@ -3245,7 +3270,7 @@ func syfonProbeIsBrokenAccess(probe gintegrationsyfon.BulkStorageProbeResult) bo
 	case "missing_access_url", "scope_not_found", "credential_missing":
 		return true
 	}
-	return false
+	return strings.TrimSpace(probe.Operation) == StorageChainValidationModeMetadata && strings.TrimSpace(probe.Status) == "not_found"
 }
 
 func syfonProbeHasMismatch(probe gintegrationsyfon.BulkStorageProbeResult, mismatch string) bool {

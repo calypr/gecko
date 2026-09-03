@@ -42,6 +42,12 @@ func storageEvidenceStatus(record projectRecordState, bucketObserved bool) strin
 }
 
 func storageChainActionSupportForEvidence(kind string, evidenceStatus string) (string, []string, string, bool) {
+	if strings.TrimSpace(kind) == "syfon_broken_bucket_mapping" {
+		return storageActionabilityManualChoice,
+			[]string{storageActionRemoveBrokenAccessURLs, storageActionInspectEvidence},
+			storageActionInspectEvidence,
+			true
+	}
 	if strings.TrimSpace(kind) == "git_only_no_syfon" && strings.TrimSpace(evidenceStatus) == string(storageaudit.EvidenceVerified) {
 		return storageActionabilityManualChoice,
 			[]string{storageActionCreateSyfonRecord, storageActionInspectEvidence},
