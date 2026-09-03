@@ -1,9 +1,6 @@
 package config
 
 import (
-	"context"
-
-	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/server/http/shared"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -15,16 +12,12 @@ func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler 
 		handler.Logger.Warning("Skipping DB endpoints — no database configured")
 		return
 	}
-	if err := geckodb.EnsureExplorerRevisionTable(context.Background(), handler.DB); err != nil {
-		handler.Logger.Warning("Explorer revision endpoints may be unavailable: %v", err)
-	}
 
 	configGroup := app.Group("/config")
 	configGroup.Get("/types", handler.handleConfigTypesGET)
 	configGroup.Get("/list", handler.handleConfigListGET)
 
 	handler.registerTypedConfigRoutes(configGroup.Group("/explorer", shared.ConfigTypeMiddleware("explorer")), true, authzHandler)
-	handler.registerExplorerRevisionRoutes(configGroup.Group("/explorer", shared.ConfigTypeMiddleware("explorer")), authzHandler)
 	handler.registerTypedConfigRoutes(configGroup.Group("/nav", shared.ConfigTypeMiddleware("nav")), false, authzHandler)
 	handler.registerTypedConfigRoutes(configGroup.Group("/file_summary", shared.ConfigTypeMiddleware("file_summary")), false, authzHandler)
 	handler.registerTypedConfigRoutes(configGroup.Group("/project", shared.ConfigTypeMiddleware("project")), false, authzHandler)

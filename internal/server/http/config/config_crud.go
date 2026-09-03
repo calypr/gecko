@@ -30,12 +30,6 @@ func (handler *Handler) handleConfigGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleConfigGETByID(ctx fiber.Ctx, configType string, configID string) error {
-	if configType == "explorer" {
-		handled, err := handler.handlePublishedExplorerConfigGET(ctx, configID)
-		if handled || err != nil {
-			return err
-		}
-	}
 	cfg, errResponse := configForType(configType)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
