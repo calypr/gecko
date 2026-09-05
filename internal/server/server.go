@@ -105,6 +105,7 @@ func (server *Server) Init() (*Server, error) {
 
 func (server *Server) MakeRouter() *fiber.App {
 	app := fiber.New(fiber.Config{
+		BodyLimit:      50 * 1024 * 1024,
 		ReadBufferSize: 32 * 1024,
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,

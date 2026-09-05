@@ -31,6 +31,9 @@ type fakeStorageAnalyticsBackend struct {
 	probeResults                         map[string]gintegrationsyfon.BulkStorageProbeResult
 	listProbeResults                     map[string]gintegrationsyfon.BulkStorageProbeResult
 	bucketObjects                        []gintegrationsyfon.ProjectBucketObject
+	bucketInventoryIncomplete            bool
+	bucketInventoryWarning               string
+	bucketInventoryObservedAt            string
 	listProjectBucketObjectsErr          error
 	listBucketsCalls                     int
 	listBucketScopesCalls                int
@@ -48,6 +51,9 @@ type fakeStorageAnalyticsBackend struct {
 	listProjectBucketInventoryCalls      int
 	listProjectBucketInventoryPathPrefix string
 	listProjectBucketInventoryDelay      time.Duration
+	listProjectBucketInventoryStarted    chan struct{}
+	listProjectBucketInventoryRelease    <-chan struct{}
+	listProjectBucketInventoryStartOnce  sync.Once
 	listProjectBucketSummaryCalls        int
 	listProjectBucketSummaryMode         string
 	bulkGetProjectRecordsCalls           int
@@ -178,25 +184,41 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsageByObjectIDs(ctx con
 	return out, nil
 }
 
-func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error) {
+func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error) {
 	fake.listProjectBucketObjectsCalls++
 	fake.listProjectBucketObjectsPathPrefix = pathPrefix
 	if fake.listProjectBucketObjectsErr != nil {
-		return nil, fake.listProjectBucketObjectsErr
+		return gintegrationsyfon.ProjectBucketInventory{}, fake.listProjectBucketObjectsErr
 	}
-	return append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...), nil
+	return gintegrationsyfon.ProjectBucketInventory{
+		Objects:    append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...),
+		Complete:   !fake.bucketInventoryIncomplete,
+		Warning:    fake.bucketInventoryWarning,
+		ObservedAt: fake.bucketInventoryObservedAt,
+	}, nil
 }
 
-func (fake *fakeStorageAnalyticsBackend) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, error) {
+func (fake *fakeStorageAnalyticsBackend) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error) {
 	fake.listProjectBucketInventoryCalls++
 	fake.listProjectBucketInventoryPathPrefix = pathPrefix
+	if fake.listProjectBucketInventoryStarted != nil {
+		fake.listProjectBucketInventoryStartOnce.Do(func() { close(fake.listProjectBucketInventoryStarted) })
+	}
+	if fake.listProjectBucketInventoryRelease != nil {
+		<-fake.listProjectBucketInventoryRelease
+	}
 	if fake.listProjectBucketInventoryDelay > 0 {
 		time.Sleep(fake.listProjectBucketInventoryDelay)
 	}
 	if fake.listProjectBucketObjectsErr != nil {
-		return nil, fake.listProjectBucketObjectsErr
+		return gintegrationsyfon.ProjectBucketInventory{}, fake.listProjectBucketObjectsErr
 	}
-	return append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...), nil
+	return gintegrationsyfon.ProjectBucketInventory{
+		Objects:    append([]gintegrationsyfon.ProjectBucketObject(nil), fake.bucketObjects...),
+		Complete:   !fake.bucketInventoryIncomplete,
+		Warning:    fake.bucketInventoryWarning,
+		ObservedAt: fake.bucketInventoryObservedAt,
+	}, nil
 }
 
 func TestBuildStorageChainAuditCoalescesConcurrentForcedRefreshes(t *testing.T) {
@@ -1438,6 +1460,18 @@ func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeStorageAnalyticsBackend{}
+			if test.wantErrSnippet == "" {
+				current := gintegrationsyfon.ProjectRecord{ObjectID: test.record.ObjectID, Checksum: test.record.Checksum}
+				for _, method := range test.record.AccessMethods {
+					current.AccessMethods = append(current.AccessMethods, gintegrationsyfon.ProjectAccessMethod{
+						AccessID: method.AccessID,
+						Type:     method.Type,
+						URL:      method.URL,
+						Headers:  append([]string(nil), method.Headers...),
+					})
+				}
+				backend.projectRecords = []gintegrationsyfon.ProjectRecord{current}
+			}
 			service := NewStorageAnalyticsService(backend)
 			_, err := service.ApplyStorageCleanup(
 				context.Background(),
@@ -1477,6 +1511,488 @@ func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 				assertStringSet(t, "remaining access methods", got, test.wantRemaining)
 			}
 		})
+	}
+}
+
+func TestApplyStorageCleanupReconcilesBrokenAccessURLsToFreshPhysicalRows(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenURL = "s3://legacy/broken"
+	const goodURL = "s3://bucket/good"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     canonicalID,
+				Checksum:     checksum,
+				Organization: "org",
+				Project:      "proj",
+				AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+					AccessID: "good-canonical",
+					Type:     "s3",
+					URL:      goodURL,
+					Headers:  []string{"x-canonical: true"},
+				}},
+			},
+			{
+				ObjectID:     siblingID,
+				Checksum:     checksum,
+				Organization: "org",
+				Project:      "proj",
+				AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+					{AccessID: "broken-sibling", Type: "s3", URL: brokenURL, Headers: []string{"x-broken: true"}},
+					{AccessID: "good-sibling", Type: "s3", URL: goodURL, Headers: []string{"x-good: true"}},
+				},
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	finding := GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{canonicalID},
+		AccessURLs:       []string{brokenURL, goodURL},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   canonicalID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "broken-canonical", Type: "s3", URL: brokenURL},
+				{AccessID: "good-canonical", Type: "s3", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
+	}
+
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{finding}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected apply to reload current physical records once, got %d calls", backend.listProjectAuditRecordsCalls)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+	methods, ok := backend.updatedAccessMethods[siblingID]
+	if !ok {
+		t.Fatalf("expected broken physical sibling %q to be updated, got %+v", siblingID, backend.updatedAccessMethods)
+	}
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "good-sibling" || len(methods[0].Headers) != 1 || methods[0].Headers[0] != "x-good: true" {
+		t.Fatalf("expected fresh sibling metadata with broken URL removed, got %+v", methods)
+	}
+	if len(result.UpdatedRecordIDs) != 1 || result.UpdatedRecordIDs[0] != siblingID {
+		t.Fatalf("expected only sibling update in result, got %+v", result.UpdatedRecordIDs)
+	}
+}
+
+func TestApplyStorageCleanupUnionsBrokenAccessURLsAcrossSelectedFindings(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenURLA = "s3://legacy/broken-a"
+	const brokenURLB = "s3://legacy/broken-b"
+	const goodURL = "s3://bucket/good"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: canonicalID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{AccessID: "canonical-good", URL: goodURL}}},
+			{ObjectID: siblingID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "sibling-a", URL: brokenURLA},
+				{AccessID: "sibling-b", URL: brokenURLB},
+				{AccessID: "sibling-good", URL: goodURL},
+			}},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	findings := []GitStorageCleanupApplyFinding{
+		brokenAccessRepairFindingForTest(canonicalID, checksum, brokenURLA, goodURL),
+		brokenAccessRepairFindingForTest(canonicalID, checksum, brokenURLB, goodURL),
+	}
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil, findings,
+		false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	methods := backend.updatedAccessMethods[siblingID]
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "sibling-good" {
+		t.Fatalf("expected both broken methods removed from the sibling, got %+v", methods)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+	if len(result.UpdatedRecordIDs) != 1 || result.UpdatedRecordIDs[0] != siblingID {
+		t.Fatalf("expected one physical sibling update, got %+v", result.UpdatedRecordIDs)
+	}
+}
+
+func TestApplyStorageCleanupMatchesCanonicalizedLegacyAccessURLToFreshRawMethod(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenRawURL = "s3://bforepc-prod/OHSU/file.bin"
+	const brokenCanonicalURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+	const goodURL = "s3://bforepc/bforepc-prod/good.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: canonicalID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{AccessID: "canonical-good", URL: goodURL}}},
+			{ObjectID: siblingID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "sibling-broken", URL: brokenRawURL},
+				{AccessID: "sibling-good", URL: goodURL},
+			}},
+		},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	finding := GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{canonicalID},
+		AccessURLs:       []string{brokenRawURL, goodURL},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   canonicalID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenCanonicalURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "stale-broken", URL: brokenCanonicalURL},
+				{AccessID: "stale-good", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenCanonicalURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
+	}
+
+	_, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{finding}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if backend.listProjectScopesCalls != 1 {
+		t.Fatalf("expected canonicalization to load project scopes once, got %d calls", backend.listProjectScopesCalls)
+	}
+	methods := backend.updatedAccessMethods[siblingID]
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "sibling-good" {
+		t.Fatalf("expected raw legacy method removed while fresh metadata remains, got %+v", methods)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+}
+
+func TestApplyStorageCleanupDoesNotMapUnrelatedBucketAccessURL(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const unrelatedURL = "s3://other-bucket/OHSU/file.bin"
+	const physicalURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-physical",
+				URL:      physicalURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{unrelatedURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{unrelatedURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-unrelated",
+					URL:      unrelatedURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    unrelatedURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("valid physical method must not be removed for unrelated bucket evidence: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid physical record must not be deleted for unrelated bucket evidence: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for unrelated bucket evidence, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupDoesNotPrefixPhysicalBucketAccessURL(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const unprefixedURL = "s3://bforepc/OHSU/file.bin"
+	const prefixedURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-prefixed-physical",
+				URL:      prefixedURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{unprefixedURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{unprefixedURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-unprefixed-physical",
+					URL:      unprefixedURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    unprefixedURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("prefixed physical method must not be removed for unprefixed physical evidence: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid prefixed physical record must not be deleted: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for unprefixed physical evidence, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupPhysicalBucketWinsAcrossScopes(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const legacyURL = "s3://legacy/OHSU/file.bin"
+	const incorrectlyMappedURL = "s3://bforepc/legacy/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-other-scope-physical",
+				URL:      incorrectlyMappedURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bforepc",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bforepc/legacy",
+			},
+			{
+				Bucket:       "legacy",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://legacy",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{legacyURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{legacyURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-legacy",
+					URL:      legacyURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    legacyURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("physical target in another scope must not be removed by legacy mapping: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid physical record must not be deleted across scopes: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip across scope collision, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupRejectsAmbiguousLegacyPrefix(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const legacyURL = "s3://legacy/OHSU/file.bin"
+	const physicalURL = "s3://bucket-a/legacy/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-physical",
+				URL:      physicalURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bucket-a",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bucket-a/legacy",
+			},
+			{
+				Bucket:       "bucket-b",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bucket-b/legacy",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{legacyURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{legacyURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-legacy",
+					URL:      legacyURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    legacyURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("ambiguous legacy prefix must not remove a method from bucket-a: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("ambiguous legacy prefix must not delete a physical record: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for ambiguous legacy prefix, got %+v", result.SkippedPaths)
+	}
+}
+
+func brokenAccessRepairFindingForTest(objectID string, checksum string, brokenURL string, goodURL string) GitStorageCleanupApplyFinding {
+	brokenExists := false
+	return GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{objectID},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   objectID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "stale-broken", URL: brokenURL},
+				{AccessID: "stale-good", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
 	}
 }
 
@@ -1889,6 +2405,15 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 			{ObjectURL: "s3://bucket/present.txt", Bucket: "bucket", Key: "present.txt", Path: "present.txt", SizeBytes: 100},
 			{ObjectURL: "s3://bucket/mismatch.txt", Bucket: "bucket", Key: "mismatch.txt", Path: "mismatch.txt", SizeBytes: 200},
 		},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey("s3://bucket/syfon-only.txt", 300, "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"): {
+				ID:               storageProbeRequestKey("s3://bucket/syfon-only.txt", 300, "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+				ObjectURL:        "s3://bucket/syfon-only.txt",
+				Status:           "not_found",
+				ErrorKind:        "object_not_found",
+				ValidationStatus: "unverifiable",
+			},
+		},
 	}
 	service := NewStorageAnalyticsService(backend)
 
@@ -1916,8 +2441,8 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if backend.listProjectBucketSummaryCalls != 0 {
 		t.Fatalf("expected validate mode to skip bucket summary preflight, got %d calls", backend.listProjectBucketSummaryCalls)
 	}
-	if backend.probeCalls != 0 {
-		t.Fatalf("expected validate mode to skip HEAD probes, got %d calls", backend.probeCalls)
+	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != "s3://bucket/syfon-only.txt" {
+		t.Fatalf("expected validate mode to HEAD the unresolved URL, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
 	}
 	if backend.listProbeCalls != 0 {
 		t.Fatalf("expected complete Syfon inventory to skip exact LIST fallback, got calls=%d items=%+v", backend.listProbeCalls, backend.listProbeItems)
@@ -1934,17 +2459,17 @@ func TestBuildStorageChainAuditValidateModeUsesListValidation(t *testing.T) {
 	if chain.Summary.CountsByKind["bucket_syfon_git_complete"] != 2 {
 		t.Fatalf("expected validate mode to count clean Syfon/Git/bucket join, got summary %+v", chain.Summary)
 	}
-	if chain.Summary.CountsByKind["probe_error"] != 1 || chain.Summary.CountsByKind["bucket_syfon_no_git"] != 0 {
-		t.Fatalf("expected complete-inventory miss to remain a probe error, got summary %+v", chain.Summary)
+	if chain.Summary.CountsByKind["probe_error"] != 0 || chain.Summary.CountsByKind["syfon_missing_bucket_object"] != 1 {
+		t.Fatalf("expected HEAD-confirmed inventory miss, got summary %+v", chain.Summary)
 	}
 	if got := chain.Summary.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
 		t.Fatalf("expected basename mismatch not to be a broken bucket mapping, got summary %+v", chain.Summary)
 	}
 	assertNoChainFinding(t, chain.Findings, "bucket_only_object")
 	assertNoChainFinding(t, chain.Findings, "syfon_broken_bucket_mapping")
-	finding := assertHasChainFinding(t, chain.Findings, "probe_error", "s3://bucket/syfon-only.txt")
-	if finding.EvidenceStatus != "unknown" || finding.Actionability != storageActionabilityManualChoice || finding.DefaultAction != storageActionDeleteSyfonRecord {
-		t.Fatalf("expected inventory-miss probe error with a manual remediation choice, got %+v", finding)
+	finding := assertHasChainFinding(t, chain.Findings, "syfon_missing_bucket_object", "s3://bucket/syfon-only.txt")
+	if finding.EvidenceStatus != "unknown" || finding.ProbeStatus != "not_found" || finding.Actionability != storageActionabilityInspectOnly || finding.DefaultAction != storageActionInspectEvidence {
+		t.Fatalf("expected HEAD-classified missing object without automatic deletion authority, got %+v", finding)
 	}
 }
 
@@ -2389,6 +2914,77 @@ func TestBuildStorageChainAuditForceRefreshBypassesResponseCache(t *testing.T) {
 	}
 }
 
+func TestBuildStorageChainAuditForceBucketRefreshBypassesInventoryCache(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	service.chainAuditResponseCache = newMemoryStorageChainAuditResponseCache()
+	service.projectBucketCache = newMemoryProjectBucketInventoryCache()
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build first chain audit: %v", err)
+	}
+	options.ForceAuditRefresh = true
+	options.ForceBucketRefresh = true
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build forced bucket refresh: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 2 {
+		t.Fatalf("expected forced bucket refresh to issue a new inventory scan, got %d calls", backend.listProjectBucketInventoryCalls)
+	}
+}
+
+func TestBuildStorageChainAuditForceBucketRefreshWaitsForOrdinaryRefresh(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes:                     []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		bucketObjects:                     []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+		listProjectBucketInventoryStarted: started,
+		listProjectBucketInventoryRelease: release,
+	}
+	service := NewStorageAnalyticsService(backend)
+	service.chainAuditResponseCache = newMemoryStorageChainAuditResponseCache()
+	service.projectBucketCache = newMemoryProjectBucketInventoryCache()
+
+	ordinaryDone := make(chan error, 1)
+	go func() {
+		_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ForceAuditRefresh: true})
+		ordinaryDone <- err
+	}()
+	<-started
+	forcedDone := make(chan error, 1)
+	go func() {
+		_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ForceAuditRefresh: true, ForceBucketRefresh: true})
+		forcedDone <- err
+	}()
+	close(release)
+	if err := <-ordinaryDone; err != nil {
+		t.Fatalf("ordinary refresh: %v", err)
+	}
+	if err := <-forcedDone; err != nil {
+		t.Fatalf("forced bucket refresh: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 2 {
+		t.Fatalf("expected forced request to run after the ordinary refresh, got %d inventory calls", backend.listProjectBucketInventoryCalls)
+	}
+}
+
 func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
 	backend := &fakeStorageAnalyticsBackend{
 		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
@@ -2403,7 +2999,7 @@ func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
 	cache := newMemoryProjectBucketInventoryCache()
 	service.projectBucketCache = cache
 
-	objects, _, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "")
+	objects, _, _, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "", false)
 	if err != nil || len(objects) != 1 {
 		t.Fatalf("seed cached bucket inventory: objects=%d err=%v", len(objects), err)
 	}
@@ -2421,12 +3017,15 @@ func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
 	service.chainInputMu.Unlock()
 	backend.listProjectBucketObjectsErr = fmt.Errorf("provider returned an incomplete listing")
 
-	objects, lookup, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "")
+	objects, lookup, metadata, err := service.loadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "", false)
 	if err != nil {
 		t.Fatalf("expected stale inventory fallback, got %v", err)
 	}
 	if len(objects) != 1 || len(lookup) != 1 {
 		t.Fatalf("expected cached inventory after failed refresh, got objects=%d lookup=%d", len(objects), len(lookup))
+	}
+	if metadata.Complete || !metadata.Stale || !strings.Contains(metadata.Warning, "provider returned an incomplete listing") {
+		t.Fatalf("expected stale degraded inventory metadata, got %+v", metadata)
 	}
 	if backend.listProjectBucketInventoryCalls != 2 {
 		t.Fatalf("expected one seed scan and one failed refresh, got %d calls", backend.listProjectBucketInventoryCalls)
@@ -2787,6 +3386,9 @@ func TestBuildStorageChainAuditForwardsBucketPathPrefixForExplicitInventory(t *t
 		"README.md": "fixture",
 	})
 	backend := &fakeStorageAnalyticsBackend{
+		bucketInventoryIncomplete: true,
+		bucketInventoryWarning:    "listing incomplete",
+		bucketInventoryObservedAt: "2026-09-03T21:20:22Z",
 		projectScopes: []domain.StorageBucketScope{
 			{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"},
 		},
@@ -2815,6 +3417,21 @@ func TestBuildStorageChainAuditForwardsBucketPathPrefixForExplicitInventory(t *t
 	}
 	if response.Summary.BucketObjectCount != 2 {
 		t.Fatalf("expected recursive LIST rows to drive bucket count, got %+v", response.Summary)
+	}
+	if response.Summary.BucketInventoryComplete || response.Summary.BucketInventoryWarning != "listing incomplete" || response.Summary.BucketInventoryObserved != "2026-09-03T21:20:22Z" {
+		t.Fatalf("expected items mode to preserve incomplete inventory metadata, got %+v", response.Summary)
+	}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeItems,
+		BucketPathPrefix:    "/CONFIG/",
+		ProbeMode:           StorageChainProbeModeInventoryOnly,
+		ForceAuditRefresh:   true,
+		ForceBucketRefresh:  true,
+	}); err != nil {
+		t.Fatalf("force items inventory refresh: %v", err)
+	}
+	if backend.listProjectBucketObjectsCalls != 2 {
+		t.Fatalf("expected force bucket refresh to bypass the items cache, got %d calls", backend.listProjectBucketObjectsCalls)
 	}
 }
 
@@ -3349,7 +3966,7 @@ func TestBuildStorageChainAuditUsesCanonicalInventoryCandidatesBeforeMissingBuck
 	}
 }
 
-func TestBuildStorageChainAuditBForePCListMissIsProbeErrorWithoutMetadataConfirmation(t *testing.T) {
+func TestBuildStorageChainAuditBForePCListMissUsesMetadataConfirmation(t *testing.T) {
 	const repoPath = "OHSU/koei_chin/visium_hd/4-R2/outs/binned_outputs/square_002um/filtered_feature_bc_matrix/barcodes.tsv.gz"
 	const checksum = "a9809ffd53130272f775ad1bbea3166dbb4853bc6fa73bfa7a51535c4bc4f599"
 	const size = int64(46063992)
@@ -3374,9 +3991,9 @@ func TestBuildStorageChainAuditBForePCListMissIsProbeErrorWithoutMetadataConfirm
 			Path:         "s3://bforepc/bforepc-prod",
 		}},
 		bucketObjects: []gintegrationsyfon.ProjectBucketObject{},
-		listProbeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
-			storageListValidationRequestKey(canonicalURL, size, "barcodes.tsv.gz"): {
-				ID:        storageListValidationRequestKey(canonicalURL, size, "barcodes.tsv.gz"),
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey(canonicalURL, size, checksum): {
+				ID:        storageProbeRequestKey(canonicalURL, size, checksum),
 				ObjectURL: canonicalURL,
 				Status:    "not_found",
 				ErrorKind: "object_not_found",
@@ -3400,17 +4017,17 @@ func TestBuildStorageChainAuditBForePCListMissIsProbeErrorWithoutMetadataConfirm
 	if err != nil {
 		t.Fatalf("build BForePC chain audit: %v", err)
 	}
-	if backend.listProbeCalls != 1 || len(backend.listProbeItems) != 1 || backend.listProbeItems[0].ObjectURL != canonicalURL {
-		t.Fatalf("expected one exact LIST for %q, got calls=%d items=%+v", canonicalURL, backend.listProbeCalls, backend.listProbeItems)
+	if backend.listProbeCalls != 0 {
+		t.Fatalf("expected no exact LIST fallback for %q, got calls=%d items=%+v", canonicalURL, backend.listProbeCalls, backend.listProbeItems)
 	}
-	if backend.probeCalls != 0 {
-		t.Fatalf("expected no metadata confirmation for the LIST miss at %q, got calls=%d items=%+v", canonicalURL, backend.probeCalls, backend.probeItems)
+	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != canonicalURL {
+		t.Fatalf("expected metadata confirmation for the LIST miss at %q, got calls=%d items=%+v", canonicalURL, backend.probeCalls, backend.probeItems)
 	}
-	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
-		t.Fatalf("LIST miss must not become a missing-bucket finding, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 1 {
+		t.Fatalf("expected HEAD-confirmed missing-bucket finding, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["probe_error"]; got != 1 {
-		t.Fatalf("expected the exact LIST miss to remain a probe error, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["probe_error"]; got != 0 {
+		t.Fatalf("expected HEAD confirmation to resolve the LIST miss, got summary %+v", chain.Summary)
 	}
 }
 
@@ -3903,8 +4520,8 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 		},
 	}
 
-	if got := classifyStorageFinding(record, nil); got != storageFindingNone {
-		t.Fatalf("expected the live canonical locator to keep the record connected, got %s", got)
+	if got := classifyStorageFinding(record, nil); got != storageFindingBrokenBucketMap {
+		t.Fatalf("expected the broken independent access method to remain repairable, got %s", got)
 	}
 	broken := repairableBrokenAccessRecord(record)
 	if len(broken.AccessProbes) != 1 || broken.AccessProbes[0].ObjectURL != "s3://retired-bucket/JHU/slide.ome.tiff" {
@@ -3916,6 +4533,102 @@ func TestClassifyStorageFindingSurfacesRepairableBrokenAccessMethod(t *testing.T
 	}
 	if len(remaining) != 1 || remaining[0].URL != "s3://bforepc-prod/JHU/slide.ome.tiff" {
 		t.Fatalf("expected working access method to remain, got %+v", remaining)
+	}
+}
+
+func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists(t *testing.T) {
+	const checksum = "13b9f3b94f83dda05ceac0c95ca7168d7db5c7cd79f28f0b4c448be3373387ef"
+	const missingURL = "s3://bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
+	const presentURL = "s3://bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const canonicalMissingURL = "s3://bforepc/bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
+	const canonicalPresentURL = "s3://bforepc/bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const repoPath = "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const size = int64(529952905)
+
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		repoPath: lfsPointer(checksum, size),
+	})
+	now := time.Date(2026, 3, 13, 20, 1, 49, 0, time.UTC)
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID:     "c0dfb5f8-650e-5b5e-ba23-a43afb070fbf",
+			Name:         "feature_slice.h5",
+			Checksum:     checksum,
+			Organization: "HTAN_INT",
+			Project:      "BForePC",
+			Size:         size,
+			UpdatedAt:    &now,
+			AccessURLs:   []string{missingURL, presentURL},
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "s3", Type: "s3", URL: missingURL},
+				{AccessID: "s3", Type: "s3", URL: presentURL},
+			},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "HTAN_INT",
+			ProjectID:    "BForePC",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+		usageByObject:             map[string]gintegrationsyfon.FileUsage{},
+		bucketInventoryIncomplete: true,
+		bucketInventoryWarning:    "terminal replay returned different page content",
+		bucketInventoryObservedAt: "2026-09-03T21:20:22Z",
+		bucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: canonicalPresentURL,
+			Bucket:    "bforepc",
+			Key:       "bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+			Path:      repoPath,
+			SizeBytes: size,
+		}},
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			storageProbeRequestKey(canonicalMissingURL, size, checksum): {
+				ID:               storageProbeRequestKey(canonicalMissingURL, size, checksum),
+				ObjectURL:        canonicalMissingURL,
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum,
+				Status:           "not_found",
+				Exists:           false,
+				ErrorKind:        "object_not_found",
+				ValidationStatus: "unverifiable",
+			},
+			storageProbeRequestKey(canonicalPresentURL, size, checksum): {
+				ID:               storageProbeRequestKey(canonicalPresentURL, size, checksum),
+				ObjectURL:        canonicalPresentURL,
+				Bucket:           "bforepc",
+				Key:              "bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+				Status:           "present",
+				Exists:           true,
+				ValidationStatus: "matched",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "HTAN_INT", "BForePC", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		ValidationMode:      StorageChainValidationModeList,
+	})
+	if err != nil {
+		t.Fatalf("build chain audit: %v", err)
+	}
+	if !containsProbeTarget(backend.probeItems, canonicalMissingURL) || containsProbeTarget(backend.probeItems, canonicalPresentURL) {
+		t.Fatalf("expected only the unresolved access method to be probed, got %+v", backend.probeItems)
+	}
+	if chain.Summary.BucketInventoryComplete || !strings.Contains(chain.Summary.BucketInventoryWarning, "terminal replay") || chain.Summary.BucketInventoryObserved != "2026-09-03T21:20:22Z" || chain.Summary.BucketInventorySource != "live" {
+		t.Fatalf("expected degraded live inventory metadata, got %+v", chain.Summary)
+	}
+	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", repoPath)
+	if finding.Actionability != storageActionabilityManualChoice || finding.DefaultAction != storageActionInspectEvidence || !contains(finding.AvailableActions, storageActionRemoveBrokenAccessURLs) {
+		t.Fatalf("expected broken access URL removal action, got %+v", finding)
+	}
+	if len(finding.Records) != 1 || len(finding.Records[0].AccessProbes) != 1 || finding.Records[0].AccessProbes[0].URL != missingURL {
+		t.Fatalf("expected only the missing access URL in repair evidence, got %+v", finding.Records)
+	}
+	remaining := remainingAccessMethodsAfterBrokenRemoval(finding.Records[0])
+	if len(remaining) != 1 || remaining[0].URL != presentURL {
+		t.Fatalf("expected repair to retain only the working access method, got %+v", remaining)
 	}
 }
 
@@ -3988,7 +4701,7 @@ func TestBuildStorageChainAuditNormalizesChecksumJoinKeys(t *testing.T) {
 	}
 }
 
-func TestBuildStorageChainAuditFailsWhenProjectBucketListDenied(t *testing.T) {
+func TestBuildStorageChainAuditFallsBackToHeadWhenProjectBucketListFails(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -4032,18 +4745,18 @@ func TestBuildStorageChainAuditFailsWhenProjectBucketListDenied(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
-	if err == nil {
-		t.Fatal("expected bucket inventory failure to hard-error chain audit")
-	}
-	if !strings.Contains(err.Error(), "mapped bucket target may be missing or inaccessible") {
-		t.Fatalf("expected bucket inventory error detail, got %v", err)
+	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
+	if err != nil {
+		t.Fatalf("expected HEAD fallback instead of a hard error, got %v", err)
 	}
 	if backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected one bucket validation inventory attempt, got %d", backend.listProjectBucketInventoryCalls)
 	}
-	if backend.probeCalls != 0 {
-		t.Fatalf("expected no probe fallback after bucket inventory failure, got %d", backend.probeCalls)
+	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != "s3://bucket/prefix/a.txt" {
+		t.Fatalf("expected one HEAD fallback after bucket inventory failure, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
+	}
+	if chain.Summary.BucketInventoryAvailable || !strings.Contains(chain.Summary.BucketInventoryError, "mapped bucket target may be missing or inaccessible") {
+		t.Fatalf("expected degraded inventory details in successful audit, got %+v", chain.Summary)
 	}
 }
 

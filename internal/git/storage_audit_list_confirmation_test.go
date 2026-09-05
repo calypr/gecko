@@ -8,7 +8,7 @@ import (
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 )
 
-func TestBuildStorageChainAuditListMissDoesNotTriggerMetadataConfirmation(t *testing.T) {
+func TestBuildStorageChainAuditListMissUsesMetadataConfirmation(t *testing.T) {
 	const (
 		repoPath     = "data/file.bin"
 		checksum     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -17,7 +17,7 @@ func TestBuildStorageChainAuditListMissDoesNotTriggerMetadataConfirmation(t *tes
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		repoPath: lfsPointer(checksum, 100),
 	})
-	listKey := storageListValidationRequestKey(canonicalURL, 100, "file.bin")
+	probeKey := storageProbeRequestKey(canonicalURL, 100, checksum)
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{{
 			ObjectID:     "object-id",
@@ -34,9 +34,9 @@ func TestBuildStorageChainAuditListMissDoesNotTriggerMetadataConfirmation(t *tes
 			ProjectID:    "project",
 			Path:         "s3://bucket/root",
 		}},
-		listProbeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
-			listKey: {
-				ID:        listKey,
+		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+			probeKey: {
+				ID:        probeKey,
 				ObjectURL: canonicalURL,
 				Status:    "not_found",
 				ErrorKind: "object_not_found",
@@ -59,13 +59,13 @@ func TestBuildStorageChainAuditListMissDoesNotTriggerMetadataConfirmation(t *tes
 	if err != nil {
 		t.Fatalf("build storage chain audit: %v", err)
 	}
-	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 0 {
-		t.Fatalf("LIST misses must not become missing-object findings, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 1 {
+		t.Fatalf("expected HEAD-confirmed missing-object finding, got summary %+v", chain.Summary)
 	}
-	if got := chain.Summary.CountsByKind["probe_error"]; got != 1 {
-		t.Fatalf("expected a LIST miss to remain a probe error, got summary %+v", chain.Summary)
+	if got := chain.Summary.CountsByKind["probe_error"]; got != 0 {
+		t.Fatalf("expected HEAD confirmation to resolve the LIST miss, got summary %+v", chain.Summary)
 	}
-	if backend.listProbeCalls != 1 || backend.probeCalls != 0 {
-		t.Fatalf("expected one exact LIST and no metadata confirmation, got list=%d metadata=%d", backend.listProbeCalls, backend.probeCalls)
+	if backend.listProbeCalls != 0 || backend.probeCalls != 1 {
+		t.Fatalf("expected one metadata confirmation and no exact LIST, got list=%d metadata=%d", backend.listProbeCalls, backend.probeCalls)
 	}
 }

@@ -283,7 +283,8 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 	findingKind := strings.TrimSpace(requestBody.FindingKind)
 	timings.DebugPrefix = fmt.Sprintf("project_id=%s ref=%s git_subpath=%q validation_mode=%s probe_mode=%s bucket_inventory_mode=%s bucket_path_prefix=%q finding_kind=%q finding_limit=%d", projectCtx.projectID, projectCtx.refName, gitSubpath, validationMode, probeMode, bucketMode, bucketPathPrefix, findingKind, findingLimit)
 	handler.logger.Info("storage_chain_audit_request_start %s", timings.DebugPrefix)
-	forceAuditRefresh := requestBody.Refresh || requestBody.ForceAuditRefresh || requestBody.ForceBucketInventoryRefresh
+	forceBucketRefresh := requestBody.ForceBucketInventoryRefresh
+	forceAuditRefresh := requestBody.Refresh || requestBody.ForceAuditRefresh || forceBucketRefresh
 	response, err := handler.storageAnalytics.BuildStorageChainAuditWithOptions(
 		ctx.Context(),
 		projectCtx.authorizationHeader,
@@ -302,6 +303,7 @@ func (handler *Handler) handleGitProjectStorageChainAuditPOST(ctx fiber.Ctx) err
 			FindingKind:         findingKind,
 			FindingLimit:        findingLimit,
 			ForceAuditRefresh:   forceAuditRefresh,
+			ForceBucketRefresh:  forceBucketRefresh,
 			Timings:             timings,
 		},
 	)

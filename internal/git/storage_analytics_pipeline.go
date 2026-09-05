@@ -35,6 +35,19 @@ type storageAuditStorageView struct {
 	allProjectRecords        map[string][]projectRecordState
 	bucketInventoryAvailable bool
 	bucketInventoryError     string
+	bucketInventoryComplete  bool
+	bucketInventoryWarning   string
+	bucketInventoryObserved  string
+	bucketInventorySource    string
+	bucketInventoryStale     bool
+}
+
+type projectBucketInventoryMetadata struct {
+	Complete bool
+	Warning  string
+	Observed string
+	Source   string
+	Stale    bool
 }
 
 type storageChainIndex struct {
@@ -70,9 +83,10 @@ type storageChainInputs struct {
 	bucketObjects      []gintegrationsyfon.ProjectBucketObject
 	bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 	bucketInventoryErr error
+	bucketMetadata     projectBucketInventoryMetadata
 }
 
-func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, validationMode string, bucketPathPrefix string, forceRefresh bool, timings *StorageChainAuditTimings) (*storageChainInputs, error) {
+func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, validationMode string, bucketPathPrefix string, forceBucketRefresh bool, timings *StorageChainAuditTimings) (*storageChainInputs, error) {
 	type inventoryResult struct {
 		inventory []RepoInventoryFile
 		err       error
@@ -90,6 +104,7 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		bucketObjects      []gintegrationsyfon.ProjectBucketObject
 		bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 		err                error
+		metadata           projectBucketInventoryMetadata
 	}
 
 	inventoryCh := make(chan inventoryResult, 1)
@@ -133,6 +148,7 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 			bucketCh <- bucketResult{
 				bucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
 				bucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{},
+				metadata:           projectBucketInventoryMetadata{Complete: false, Source: "not_requested"},
 			}
 			return
 		}
@@ -141,22 +157,19 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		var bucketObjects []gintegrationsyfon.ProjectBucketObject
 		var bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
 		var err error
+		metadata := projectBucketInventoryMetadata{Complete: true, Source: "live"}
 		if bucketMode == StorageChainBucketModeValidate {
-			if forceRefresh && service.projectBucketCache == nil {
-				bucketObjects, bucketObjectsByURL, err = service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
-			} else {
-				// Full bucket LIST calls are expensive on some providers. Reuse the
-				// validated project inventory during the cooldown instead of issuing a
-				// second Syfon scan for every audit or Git ref.
-				bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "")
-			}
+			// Full bucket LIST calls are expensive on some providers. Reuse the
+			// project inventory during the cooldown unless the caller explicitly
+			// requests a new bucket traversal.
+			bucketObjects, bucketObjectsByURL, metadata, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "", forceBucketRefresh)
 		} else {
-			bucketObjects, bucketObjectsByURL, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+			bucketObjects, bucketObjectsByURL, metadata, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix, forceBucketRefresh)
 		}
 		timings.Record("syfon_bucket_inventory", time.Since(start))
 		timings.RecordMemory("syfon_bucket_inventory", "bucket_objects", len(bucketObjects), "bucket_lookup", len(bucketObjectsByURL))
 		logStorageChainInputResult("syfon_bucket_items", len(bucketObjects), err)
-		bucketCh <- bucketResult{bucketObjects: bucketObjects, bucketObjectsByURL: bucketObjectsByURL, err: err}
+		bucketCh <- bucketResult{bucketObjects: bucketObjects, bucketObjectsByURL: bucketObjectsByURL, err: err, metadata: metadata}
 	}()
 
 	inventory := <-inventoryCh
@@ -180,6 +193,7 @@ func (service *StorageAnalyticsService) loadStorageChainInputs(ctx context.Conte
 		bucketObjects:      bucketObjects.bucketObjects,
 		bucketObjectsByURL: bucketObjects.bucketObjectsByURL,
 		bucketInventoryErr: bucketObjects.err,
+		bucketMetadata:     bucketObjects.metadata,
 	}, nil
 }
 
@@ -464,22 +478,29 @@ func projectAuditRecordValidatorFromSummary(summary gintegrationsyfon.ProjectMet
 	}
 }
 
-func (service *StorageAnalyticsService) loadProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
-	bucketObjects, err := service.storage.ListProjectBucketObjects(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+func (service *StorageAnalyticsService) loadProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, projectBucketInventoryMetadata, error) {
+	inventory, err := service.storage.ListProjectBucketObjects(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list syfon project bucket objects: %w", err)
+		return nil, nil, projectBucketInventoryMetadata{}, fmt.Errorf("list syfon project bucket objects: %w", err)
 	}
-	objects, lookup := buildBucketObjectLookup(bucketObjects)
-	return objects, lookup, nil
+	objects, lookup := buildBucketObjectLookup(inventory.Objects)
+	metadata := projectBucketInventoryMetadata{Complete: inventory.Complete, Warning: strings.TrimSpace(inventory.Warning), Observed: strings.TrimSpace(inventory.ObservedAt), Source: "live"}
+	return objects, lookup, metadata, nil
 }
 
-func (service *StorageAnalyticsService) loadProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
-	bucketObjects, err := service.storage.ListProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+func (service *StorageAnalyticsService) loadProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, projectBucketInventoryMetadata, error) {
+	inventory, err := service.storage.ListProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list syfon project bucket inventory: %w", err)
+		return nil, nil, projectBucketInventoryMetadata{}, fmt.Errorf("list syfon project bucket inventory: %w", err)
 	}
-	objects, lookup := buildBucketObjectLookup(bucketObjects)
-	return objects, lookup, nil
+	objects, lookup := buildBucketObjectLookup(inventory.Objects)
+	metadata := projectBucketInventoryMetadata{
+		Complete: inventory.Complete,
+		Warning:  strings.TrimSpace(inventory.Warning),
+		Observed: strings.TrimSpace(inventory.ObservedAt),
+		Source:   "live",
+	}
+	return objects, lookup, metadata, nil
 }
 
 func (service *StorageAnalyticsService) loadCachedProjectChainScopeMappings(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error) {
@@ -500,27 +521,30 @@ func (service *StorageAnalyticsService) loadCachedProjectChainScopeMappings(ctx 
 	return scopes, nil
 }
 
-func (service *StorageAnalyticsService) loadCachedProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
+func (service *StorageAnalyticsService) loadCachedProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string, forceRefresh bool) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, projectBucketInventoryMetadata, error) {
 	cacheKey := service.projectChainInputCacheKey(organization, project) + "::bucket-items::" + normalizeRepoSubpath(bucketPathPrefix)
 	service.chainInputMu.RLock()
 	cached, ok := service.chainInputCache[cacheKey]
 	service.chainInputMu.RUnlock()
-	if ok && time.Now().Before(cached.expiresAt) && cached.bucketObjects != nil && cached.bucketObjectsByURL != nil {
+	if !forceRefresh && ok && time.Now().Before(cached.expiresAt) && cached.bucketObjects != nil && cached.bucketObjectsByURL != nil {
 		objects, lookup := cloneBucketInventory(cached.bucketObjects, cached.bucketObjectsByURL)
-		return objects, lookup, nil
+		metadata := cached.bucketMetadata
+		metadata.Source = "memory"
+		return objects, lookup, metadata, nil
 	}
-	bucketObjects, bucketObjectsByURL, err := service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+	bucketObjects, bucketObjectsByURL, metadata, err := service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, projectBucketInventoryMetadata{}, err
 	}
 	service.updateChainInputCache(cacheKey, func(state *cachedChainInputState) {
 		state.bucketObjects, state.bucketObjectsByURL = cloneBucketInventory(bucketObjects, bucketObjectsByURL)
+		state.bucketMetadata = metadata
 	})
 	objects, lookup := cloneBucketInventory(bucketObjects, bucketObjectsByURL)
-	return objects, lookup, nil
+	return objects, lookup, metadata, nil
 }
 
-func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, error) {
+func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string, forceRefresh bool) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, projectBucketInventoryMetadata, error) {
 	cacheKey := service.projectChainInputCacheKey(organization, project) + "::bucket-validation-inventory::" + normalizeRepoSubpath(bucketPathPrefix)
 	var stale cachedProjectBucketInventory
 	var hasStale bool
@@ -529,10 +553,10 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInvento
 		cached, ok, err := cache.Get(ctx, redisKey)
 		if err != nil {
 			log.Printf("syfon_project_bucket_inventory_cache_error org=%s project=%s path_prefix=%q source=%s operation=get error=%q", organization, project, bucketPathPrefix, cache.Source(), err.Error())
-		} else if ok && time.Since(cached.CachedAt) < projectBucketInventoryRefreshInterval {
+		} else if ok && !forceRefresh && time.Since(cached.CachedAt) < projectBucketInventoryRefreshInterval {
 			objects, lookup := buildBucketObjectLookup(cached.Objects)
 			log.Printf("syfon_project_bucket_inventory_cache_hit org=%s project=%s path_prefix=%q source=%s object_count=%d age_seconds=%d", organization, project, bucketPathPrefix, cache.Source(), len(objects), int64(time.Since(cached.CachedAt).Seconds()))
-			return objects, lookup, nil
+			return objects, lookup, projectBucketInventoryMetadata{Complete: cached.Complete, Warning: cached.Warning, Observed: cached.Observed, Source: cache.Source()}, nil
 		} else if ok {
 			stale = cached
 			hasStale = true
@@ -541,22 +565,29 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInvento
 	service.chainInputMu.RLock()
 	cached, ok := service.chainInputCache[cacheKey]
 	service.chainInputMu.RUnlock()
-	if ok && time.Now().Before(cached.expiresAt) && cached.bucketObjects != nil && cached.bucketObjectsByURL != nil {
+	if !forceRefresh && ok && time.Now().Before(cached.expiresAt) && cached.bucketObjects != nil && cached.bucketObjectsByURL != nil {
 		objects, lookup := cloneBucketInventory(cached.bucketObjects, cached.bucketObjectsByURL)
-		return objects, lookup, nil
+		metadata := cached.bucketMetadata
+		metadata.Source = "memory"
+		return objects, lookup, metadata, nil
 	}
-	bucketObjects, bucketObjectsByURL, err := service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+	bucketObjects, bucketObjectsByURL, metadata, err := service.loadProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
 		if hasStale {
 			objects, lookup := buildBucketObjectLookup(stale.Objects)
 			log.Printf("syfon_project_bucket_inventory_cache_stale_fallback org=%s project=%s path_prefix=%q source=%s object_count=%d age_seconds=%d refresh_error=%q", organization, project, bucketPathPrefix, service.projectBucketCache.Source(), len(objects), int64(time.Since(stale.CachedAt).Seconds()), err.Error())
-			return objects, lookup, nil
+			warning := strings.TrimSpace(stale.Warning)
+			if warning != "" {
+				warning += "; "
+			}
+			warning += err.Error()
+			return objects, lookup, projectBucketInventoryMetadata{Complete: false, Warning: warning, Observed: stale.Observed, Source: service.projectBucketCache.Source(), Stale: true}, nil
 		}
-		return nil, nil, err
+		return nil, nil, projectBucketInventoryMetadata{Complete: false, Warning: err.Error(), Source: "live"}, err
 	}
 	if cache := service.projectBucketCache; cache != nil && len(bucketObjects) > 0 {
 		redisKey := projectBucketInventoryCacheKey(organization, project, bucketPathPrefix)
-		value := cachedProjectBucketInventory{CachedAt: time.Now(), Objects: append([]gintegrationsyfon.ProjectBucketObject(nil), bucketObjects...)}
+		value := cachedProjectBucketInventory{CachedAt: time.Now(), Objects: append([]gintegrationsyfon.ProjectBucketObject(nil), bucketObjects...), Complete: metadata.Complete, Warning: metadata.Warning, Observed: metadata.Observed}
 		if err := cache.Set(ctx, redisKey, value, projectBucketInventoryStaleTTL); err != nil {
 			log.Printf("syfon_project_bucket_inventory_cache_error org=%s project=%s path_prefix=%q source=%s operation=set error=%q", organization, project, bucketPathPrefix, cache.Source(), err.Error())
 		} else {
@@ -565,9 +596,10 @@ func (service *StorageAnalyticsService) loadCachedProjectBucketValidationInvento
 	}
 	service.updateChainInputCache(cacheKey, func(state *cachedChainInputState) {
 		state.bucketObjects, state.bucketObjectsByURL = cloneBucketInventory(bucketObjects, bucketObjectsByURL)
+		state.bucketMetadata = metadata
 	})
 	objects, lookup := cloneBucketInventory(bucketObjects, bucketObjectsByURL)
-	return objects, lookup, nil
+	return objects, lookup, metadata, nil
 }
 
 func (service *StorageAnalyticsService) projectChainInputCacheKey(organization string, project string) string {
@@ -908,7 +940,7 @@ func inventoryMissingProbe(record projectRecordState, objectURL string, expected
 	}
 }
 
-func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, inventory []RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
+func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *storageAuditRecordSet, inventory []RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMetadata projectBucketInventoryMetadata, bucketMode string, validationMode string, timings *StorageChainAuditTimings) (*storageAuditStorageView, error) {
 	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &storageAuditStorageView{
 		scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
@@ -917,6 +949,11 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 		bucketObjects:            []gintegrationsyfon.ProjectBucketObject{},
 		bucketObjectsByURL:       map[string]gintegrationsyfon.ProjectBucketObject{},
 		bucketInventoryAvailable: true,
+		bucketInventoryComplete:  bucketMetadata.Complete,
+		bucketInventoryWarning:   bucketMetadata.Warning,
+		bucketInventoryObserved:  bucketMetadata.Observed,
+		bucketInventorySource:    bucketMetadata.Source,
+		bucketInventoryStale:     bucketMetadata.Stale,
 	}
 	if bucketMode == StorageChainBucketModeValidate {
 		if bucketInventoryErr != nil {
@@ -928,7 +965,16 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 		}
 		if validationMode == StorageChainValidationModeList {
 			if bucketInventoryErr != nil {
-				return nil, bucketInventoryErr
+				probeStart := time.Now()
+				probedRecordSet, probeErr := service.attachProjectStorageProbes(ctx, authorizationHeader, recordSet)
+				timings.Record("inventory_error_head_fallback", time.Since(probeStart))
+				if probeErr != nil {
+					return nil, probeErr
+				}
+				view.recordsByChecksum = probedRecordSet.recordsByChecksum
+				view.allProjectRecords = probedRecordSet.allProjectRecords
+				view.bucketObjects, view.bucketObjectsByURL = synthesizeBucketInventoryFromProbes(probedRecordSet.allProjectRecords)
+				return view, nil
 			}
 			view.bucketObjects = bucketObjects
 			view.bucketObjectsByURL = bucketObjectsByURL
@@ -940,20 +986,19 @@ func (service *StorageAnalyticsService) buildStorageChainView(ctx context.Contex
 			timings.Record("inventory_list_validation", time.Since(validateStart))
 
 			candidateStart := time.Now()
-			var candidates *storageAuditRecordSet
-			if len(view.bucketObjectsByURL) == 0 {
-				candidates = selectInventoryMissRecordSet(probedRecordSet)
+			candidates := selectInventoryMissRecordSet(probedRecordSet)
+			if bucketMetadata.Stale {
+				candidates = recordSet
 			}
 			timings.Record("exact_list_candidate_selection", time.Since(candidateStart))
 			if candidates != nil {
 				probeStart := time.Now()
-				exactRecordSet, probeErr := service.attachProjectStorageListValidations(ctx, authorizationHeader, candidates)
-				timings.Record("targeted_exact_list_validation", time.Since(probeStart))
+				exactRecordSet, probeErr := service.attachProjectStorageProbes(ctx, authorizationHeader, candidates)
+				timings.Record("targeted_head_validation", time.Since(probeStart))
 				if probeErr != nil {
 					return nil, probeErr
 				}
 				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
-				view.bucketObjects, view.bucketObjectsByURL = mergeBucketInventoryWithPresentProbes(view.bucketObjects, view.bucketObjectsByURL, exactRecordSet)
 			}
 			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.allProjectRecords), "bucket_objects", len(view.bucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
 			view.recordsByChecksum = probedRecordSet.recordsByChecksum
@@ -1036,7 +1081,7 @@ func (service *StorageAnalyticsService) loadStorageAuditStorageView(ctx context.
 		bucketInventoryAvailable: includeBucketInventory,
 	}
 	if includeBucketInventory {
-		bucketObjects, bucketObjectsByURL, err := service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, "")
+		bucketObjects, bucketObjectsByURL, metadata, err := service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, "")
 		if err != nil {
 			if !includeProbes || !shouldDegradeBucketInventory(err) {
 				return nil, err
@@ -1047,6 +1092,10 @@ func (service *StorageAnalyticsService) loadStorageAuditStorageView(ctx context.
 		}
 		view.bucketObjects = bucketObjects
 		view.bucketObjectsByURL = bucketObjectsByURL
+		view.bucketInventoryComplete = metadata.Complete
+		view.bucketInventoryWarning = metadata.Warning
+		view.bucketInventoryObserved = metadata.Observed
+		view.bucketInventorySource = metadata.Source
 	}
 	return view, nil
 }
@@ -1095,11 +1144,31 @@ func selectInventoryMissRecordSet(recordSet *storageAuditRecordSet) *storageAudi
 	selected := make(map[string][]projectRecordState)
 	for checksum, group := range recordSet.allProjectRecords {
 		for _, record := range group {
-			assessment := assessStorageRecordEvidence(record, false)
-			if assessment.Present || !assessment.HasInventoryMiss {
+			accessURLs := make(map[string]struct{})
+			for _, accessURL := range accessURLsForStorage(record) {
+				if objectURL := canonicalStorageURL("", "", accessURL); objectURL != "" {
+					accessURLs[objectURL] = struct{}{}
+				}
+			}
+			missingURLs := make([]string, 0)
+			for _, probe := range record.AccessProbes {
+				if strings.TrimSpace(probe.Operation) != StorageChainValidationModeInventory || strings.TrimSpace(probe.ErrorKind) != "inventory_miss" {
+					continue
+				}
+				if objectURL := syfonProbeObjectURL(probe); objectURL != "" {
+					if _, ok := accessURLs[objectURL]; !ok {
+						continue
+					}
+					missingURLs = append(missingURLs, objectURL)
+				}
+			}
+			missingURLs = uniqueStrings(missingURLs)
+			if len(missingURLs) == 0 {
 				continue
 			}
-			selected[checksum] = append(selected[checksum], record)
+			clone := record
+			clone.CanonicalAccessURLs = missingURLs
+			selected[checksum] = append(selected[checksum], clone)
 		}
 	}
 	if len(selected) == 0 {

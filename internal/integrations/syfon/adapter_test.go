@@ -103,16 +103,22 @@ func TestListProjectBucketInventoryUsesInventoryEndpoint(t *testing.T) {
 		if req.Organization != "org" || req.Project != "proj" || req.Mode != "items" || req.PathPrefix != "CONFIG" {
 			t.Fatalf("unexpected request body: %+v", req)
 		}
-		body, err := json.Marshal(map[string]any{"items": []map[string]any{{
-			"object_url":    "s3://bucket/root/CONFIG/a.bin",
-			"provider":      "s3",
-			"bucket":        "bucket",
-			"key":           "root/CONFIG/a.bin",
-			"path":          "CONFIG/a.bin",
-			"size_bytes":    123,
-			"etag":          "etag-1",
-			"last_modified": "2026-07-07T18:00:00Z",
-		}}})
+		body, err := json.Marshal(map[string]any{
+			"summary": map[string]any{
+				"inventory_complete": false,
+				"inventory_warning":  "terminal replay returned different page content",
+				"computed_at":        "2026-07-07T18:00:01Z",
+			},
+			"items": []map[string]any{{
+				"object_url":    "s3://bucket/root/CONFIG/a.bin",
+				"provider":      "s3",
+				"bucket":        "bucket",
+				"key":           "root/CONFIG/a.bin",
+				"path":          "CONFIG/a.bin",
+				"size_bytes":    123,
+				"etag":          "etag-1",
+				"last_modified": "2026-07-07T18:00:00Z",
+			}}})
 		if err != nil {
 			t.Fatalf("marshal response: %v", err)
 		}
@@ -120,12 +126,33 @@ func TestListProjectBucketInventoryUsesInventoryEndpoint(t *testing.T) {
 	})}
 	manager := NewManager("http://syfon", client)
 
-	items, err := manager.ListProjectBucketInventory(context.Background(), "Bearer token", "org", "proj", "CONFIG")
+	inventory, err := manager.ListProjectBucketInventory(context.Background(), "Bearer token", "org", "proj", "CONFIG")
 	if err != nil {
 		t.Fatalf("ListProjectBucketInventory returned error: %v", err)
 	}
-	if len(items) != 1 || items[0].ObjectURL != "s3://bucket/root/CONFIG/a.bin" || items[0].SizeBytes != 123 {
-		t.Fatalf("unexpected inventory items: %+v", items)
+	if len(inventory.Objects) != 1 || inventory.Objects[0].ObjectURL != "s3://bucket/root/CONFIG/a.bin" || inventory.Objects[0].SizeBytes != 123 {
+		t.Fatalf("unexpected inventory items: %+v", inventory.Objects)
+	}
+	if inventory.Complete || !strings.Contains(inventory.Warning, "terminal replay") || inventory.ObservedAt != "2026-07-07T18:00:01Z" {
+		t.Fatalf("unexpected inventory metadata: %+v", inventory)
+	}
+}
+
+func TestListProjectBucketObjectsPreservesIncompleteSummary(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/project-bucket" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		body := []byte(`{"summary":{"inventory_complete":false,"inventory_warning":"listing incomplete","computed_at":"2026-07-07T18:00:01Z"},"items":[{"object_url":"s3://bucket/a.bin","bucket":"bucket","key":"a.bin"}]}`)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	inventory, err := NewManager("http://syfon", client).ListProjectBucketObjects(context.Background(), "Bearer token", "org", "proj", "")
+	if err != nil {
+		t.Fatalf("ListProjectBucketObjects returned error: %v", err)
+	}
+	if inventory.Complete || inventory.Warning != "listing incomplete" || inventory.ObservedAt != "2026-07-07T18:00:01Z" || len(inventory.Objects) != 1 {
+		t.Fatalf("unexpected partial project bucket response: %+v", inventory)
 	}
 }
 
