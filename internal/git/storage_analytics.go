@@ -933,7 +933,7 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 	if len(selectedFindings) == 0 {
 		return nil, fmt.Errorf("cleanup apply requires findings from a prior audit; refusing to rebuild audit during apply")
 	}
-	canonicalFindings, err := service.canonicalizeStorageCleanupFindings(ctx, authorizationHeader, organization, project, selectedFindings)
+	canonicalFindings, scopes, err := service.canonicalizeStorageCleanupFindings(ctx, authorizationHeader, organization, project, selectedFindings)
 	if err != nil {
 		return nil, err
 	}
@@ -942,6 +942,26 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 		UpdateAccessMethods: make(map[string][]gintegrationsyfon.ProjectAccessMethod),
 	}
 	selected := indexCleanupSelection(selectedRepoPaths)
+	canonicalFindings, skippedAccessURLPaths, err := service.reconcileBrokenAccessURLFindings(
+		ctx,
+		authorizationHeader,
+		organization,
+		project,
+		scopes,
+		canonicalFindings,
+		storageCleanupApplySelection{
+			selected:                selected,
+			actionSelection:         actionSelection,
+			deleteRepoOrphans:       deleteRepoOrphans,
+			deleteStaleDuplicates:   deleteStaleDuplicates,
+			deleteBucketOnlyObjects: deleteBucketOnlyObjects,
+			repairBrokenMappings:    repairBrokenBucketMappings,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	plan.SkippedPaths = append(plan.SkippedPaths, skippedAccessURLPaths...)
 	for _, finding := range canonicalFindings {
 		if len(selected) > 0 && !storageApplyFindingSelected(selected, finding) {
 			continue
@@ -960,13 +980,13 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 	return service.executeStorageCleanupApplyPlan(ctx, authorizationHeader, organization, project, plan, dryRun)
 }
 
-func (service *StorageAnalyticsService) canonicalizeStorageCleanupFindings(ctx context.Context, authorizationHeader string, organization string, project string, findings []GitStorageCleanupApplyFinding) ([]GitStorageCleanupApplyFinding, error) {
+func (service *StorageAnalyticsService) canonicalizeStorageCleanupFindings(ctx context.Context, authorizationHeader string, organization string, project string, findings []GitStorageCleanupApplyFinding) ([]GitStorageCleanupApplyFinding, []domain.StorageBucketScope, error) {
 	if !storageCleanupFindingsContainStorageURL(findings) {
-		return append([]GitStorageCleanupApplyFinding(nil), findings...), nil
+		return append([]GitStorageCleanupApplyFinding(nil), findings...), nil, nil
 	}
 	scopes, err := service.loadProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
 	if err != nil {
-		return nil, fmt.Errorf("load project storage scopes for cleanup apply: %w", err)
+		return nil, nil, fmt.Errorf("load project storage scopes for cleanup apply: %w", err)
 	}
 	out := make([]GitStorageCleanupApplyFinding, 0, len(findings))
 	for _, finding := range findings {
@@ -982,7 +1002,7 @@ func (service *StorageAnalyticsService) canonicalizeStorageCleanupFindings(ctx c
 		}
 		out = append(out, clone)
 	}
-	return out, nil
+	return out, scopes, nil
 }
 
 func storageCleanupFindingsContainStorageURL(findings []GitStorageCleanupApplyFinding) bool {

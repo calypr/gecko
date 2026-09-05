@@ -1460,6 +1460,18 @@ func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &fakeStorageAnalyticsBackend{}
+			if test.wantErrSnippet == "" {
+				current := gintegrationsyfon.ProjectRecord{ObjectID: test.record.ObjectID, Checksum: test.record.Checksum}
+				for _, method := range test.record.AccessMethods {
+					current.AccessMethods = append(current.AccessMethods, gintegrationsyfon.ProjectAccessMethod{
+						AccessID: method.AccessID,
+						Type:     method.Type,
+						URL:      method.URL,
+						Headers:  append([]string(nil), method.Headers...),
+					})
+				}
+				backend.projectRecords = []gintegrationsyfon.ProjectRecord{current}
+			}
 			service := NewStorageAnalyticsService(backend)
 			_, err := service.ApplyStorageCleanup(
 				context.Background(),
@@ -1499,6 +1511,488 @@ func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 				assertStringSet(t, "remaining access methods", got, test.wantRemaining)
 			}
 		})
+	}
+}
+
+func TestApplyStorageCleanupReconcilesBrokenAccessURLsToFreshPhysicalRows(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenURL = "s3://legacy/broken"
+	const goodURL = "s3://bucket/good"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{
+				ObjectID:     canonicalID,
+				Checksum:     checksum,
+				Organization: "org",
+				Project:      "proj",
+				AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+					AccessID: "good-canonical",
+					Type:     "s3",
+					URL:      goodURL,
+					Headers:  []string{"x-canonical: true"},
+				}},
+			},
+			{
+				ObjectID:     siblingID,
+				Checksum:     checksum,
+				Organization: "org",
+				Project:      "proj",
+				AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+					{AccessID: "broken-sibling", Type: "s3", URL: brokenURL, Headers: []string{"x-broken: true"}},
+					{AccessID: "good-sibling", Type: "s3", URL: goodURL, Headers: []string{"x-good: true"}},
+				},
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	finding := GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{canonicalID},
+		AccessURLs:       []string{brokenURL, goodURL},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   canonicalID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "broken-canonical", Type: "s3", URL: brokenURL},
+				{AccessID: "good-canonical", Type: "s3", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
+	}
+
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{finding}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if backend.listProjectAuditRecordsCalls != 1 {
+		t.Fatalf("expected apply to reload current physical records once, got %d calls", backend.listProjectAuditRecordsCalls)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+	methods, ok := backend.updatedAccessMethods[siblingID]
+	if !ok {
+		t.Fatalf("expected broken physical sibling %q to be updated, got %+v", siblingID, backend.updatedAccessMethods)
+	}
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "good-sibling" || len(methods[0].Headers) != 1 || methods[0].Headers[0] != "x-good: true" {
+		t.Fatalf("expected fresh sibling metadata with broken URL removed, got %+v", methods)
+	}
+	if len(result.UpdatedRecordIDs) != 1 || result.UpdatedRecordIDs[0] != siblingID {
+		t.Fatalf("expected only sibling update in result, got %+v", result.UpdatedRecordIDs)
+	}
+}
+
+func TestApplyStorageCleanupUnionsBrokenAccessURLsAcrossSelectedFindings(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenURLA = "s3://legacy/broken-a"
+	const brokenURLB = "s3://legacy/broken-b"
+	const goodURL = "s3://bucket/good"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: canonicalID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{AccessID: "canonical-good", URL: goodURL}}},
+			{ObjectID: siblingID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "sibling-a", URL: brokenURLA},
+				{AccessID: "sibling-b", URL: brokenURLB},
+				{AccessID: "sibling-good", URL: goodURL},
+			}},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	findings := []GitStorageCleanupApplyFinding{
+		brokenAccessRepairFindingForTest(canonicalID, checksum, brokenURLA, goodURL),
+		brokenAccessRepairFindingForTest(canonicalID, checksum, brokenURLB, goodURL),
+	}
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil, findings,
+		false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	methods := backend.updatedAccessMethods[siblingID]
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "sibling-good" {
+		t.Fatalf("expected both broken methods removed from the sibling, got %+v", methods)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+	if len(result.UpdatedRecordIDs) != 1 || result.UpdatedRecordIDs[0] != siblingID {
+		t.Fatalf("expected one physical sibling update, got %+v", result.UpdatedRecordIDs)
+	}
+}
+
+func TestApplyStorageCleanupMatchesCanonicalizedLegacyAccessURLToFreshRawMethod(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const canonicalID = "104aeb2b-cc45-5952-9ef7-123b1dcea9e6"
+	const siblingID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const brokenRawURL = "s3://bforepc-prod/OHSU/file.bin"
+	const brokenCanonicalURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+	const goodURL = "s3://bforepc/bforepc-prod/good.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: canonicalID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{AccessID: "canonical-good", URL: goodURL}}},
+			{ObjectID: siblingID, Checksum: checksum, AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "sibling-broken", URL: brokenRawURL},
+				{AccessID: "sibling-good", URL: goodURL},
+			}},
+		},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	finding := GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{canonicalID},
+		AccessURLs:       []string{brokenRawURL, goodURL},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   canonicalID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenCanonicalURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "stale-broken", URL: brokenCanonicalURL},
+				{AccessID: "stale-good", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenCanonicalURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
+	}
+
+	_, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{finding}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if backend.listProjectScopesCalls != 1 {
+		t.Fatalf("expected canonicalization to load project scopes once, got %d calls", backend.listProjectScopesCalls)
+	}
+	methods := backend.updatedAccessMethods[siblingID]
+	if len(methods) != 1 || methods[0].URL != goodURL || methods[0].AccessID != "sibling-good" {
+		t.Fatalf("expected raw legacy method removed while fresh metadata remains, got %+v", methods)
+	}
+	if _, ok := backend.updatedAccessMethods[canonicalID]; ok {
+		t.Fatalf("stale canonical row %q must not be updated: %+v", canonicalID, backend.updatedAccessMethods)
+	}
+}
+
+func TestApplyStorageCleanupDoesNotMapUnrelatedBucketAccessURL(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const unrelatedURL = "s3://other-bucket/OHSU/file.bin"
+	const physicalURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-physical",
+				URL:      physicalURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{unrelatedURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{unrelatedURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-unrelated",
+					URL:      unrelatedURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    unrelatedURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("valid physical method must not be removed for unrelated bucket evidence: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid physical record must not be deleted for unrelated bucket evidence: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for unrelated bucket evidence, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupDoesNotPrefixPhysicalBucketAccessURL(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const unprefixedURL = "s3://bforepc/OHSU/file.bin"
+	const prefixedURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-prefixed-physical",
+				URL:      prefixedURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{{
+			Bucket:       "bforepc",
+			Organization: "org",
+			ProjectID:    "proj",
+			Path:         "s3://bforepc/bforepc-prod",
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{unprefixedURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{unprefixedURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-unprefixed-physical",
+					URL:      unprefixedURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    unprefixedURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("prefixed physical method must not be removed for unprefixed physical evidence: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid prefixed physical record must not be deleted: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for unprefixed physical evidence, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupPhysicalBucketWinsAcrossScopes(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const legacyURL = "s3://legacy/OHSU/file.bin"
+	const incorrectlyMappedURL = "s3://bforepc/legacy/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-other-scope-physical",
+				URL:      incorrectlyMappedURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bforepc",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bforepc/legacy",
+			},
+			{
+				Bucket:       "legacy",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://legacy",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{legacyURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{legacyURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-legacy",
+					URL:      legacyURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    legacyURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("physical target in another scope must not be removed by legacy mapping: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("valid physical record must not be deleted across scopes: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip across scope collision, got %+v", result.SkippedPaths)
+	}
+}
+
+func TestApplyStorageCleanupRejectsAmbiguousLegacyPrefix(t *testing.T) {
+	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
+	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
+	const legacyURL = "s3://legacy/OHSU/file.bin"
+	const physicalURL = "s3://bucket-a/legacy/OHSU/file.bin"
+
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: objectID,
+			Checksum: checksum,
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+				AccessID: "valid-physical",
+				URL:      physicalURL,
+			}},
+		}},
+		projectScopes: []domain.StorageBucketScope{
+			{
+				Bucket:       "bucket-a",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bucket-a/legacy",
+			},
+			{
+				Bucket:       "bucket-b",
+				Organization: "org",
+				ProjectID:    "proj",
+				Path:         "s3://bucket-b/legacy",
+			},
+		},
+	}
+	service := NewStorageAnalyticsService(backend)
+	brokenExists := false
+	result, err := service.ApplyStorageCleanup(
+		context.Background(), "Bearer token", "org", "proj", nil, nil,
+		[]GitStorageCleanupApplyFinding{{
+			Kind:             "broken_access_url_error",
+			NormalizedPath:   "data/file.bin",
+			ObjectIDs:        []string{objectID},
+			AccessURLs:       []string{legacyURL},
+			AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+			DefaultAction:    storageActionRemoveBrokenAccessURLs,
+			Records: []GitStorageCleanupRecordAudit{{
+				ObjectID:   objectID,
+				Checksum:   checksum,
+				AccessURLs: []string{legacyURL},
+				AccessMethods: []GitStorageCleanupAccessMethod{{
+					AccessID: "stale-legacy",
+					URL:      legacyURL,
+				}},
+				AccessProbes: []GitStorageCleanupAccessProbe{{
+					URL:    legacyURL,
+					Status: "error",
+					Exists: &brokenExists,
+				}},
+			}},
+		}}, false, false, false, false, false,
+	)
+	if err != nil {
+		t.Fatalf("apply cleanup: %v", err)
+	}
+	if _, ok := backend.updatedAccessMethods[objectID]; ok {
+		t.Fatalf("ambiguous legacy prefix must not remove a method from bucket-a: %+v", backend.updatedAccessMethods)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("ambiguous legacy prefix must not delete a physical record: %v", backend.deletedIDs)
+	}
+	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+		t.Fatalf("expected idempotent skip for ambiguous legacy prefix, got %+v", result.SkippedPaths)
+	}
+}
+
+func brokenAccessRepairFindingForTest(objectID string, checksum string, brokenURL string, goodURL string) GitStorageCleanupApplyFinding {
+	brokenExists := false
+	return GitStorageCleanupApplyFinding{
+		Kind:             "broken_access_url_error",
+		NormalizedPath:   "data/file.bin",
+		ObjectIDs:        []string{objectID},
+		AvailableActions: []string{storageActionRemoveBrokenAccessURLs},
+		DefaultAction:    storageActionRemoveBrokenAccessURLs,
+		Records: []GitStorageCleanupRecordAudit{{
+			ObjectID:   objectID,
+			Checksum:   checksum,
+			AccessURLs: []string{brokenURL, goodURL},
+			AccessMethods: []GitStorageCleanupAccessMethod{
+				{AccessID: "stale-broken", URL: brokenURL},
+				{AccessID: "stale-good", URL: goodURL},
+			},
+			AccessProbes: []GitStorageCleanupAccessProbe{
+				{URL: brokenURL, Status: "error", ErrorKind: "credential_missing", Exists: &brokenExists},
+				{URL: goodURL, Status: "present"},
+			},
+		}},
 	}
 }
 
