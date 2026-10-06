@@ -8,7 +8,6 @@ import (
 	"github.com/calypr/gecko/internal/server/http/git"
 	"github.com/calypr/gecko/internal/server/http/health"
 	"github.com/calypr/gecko/internal/server/http/shared"
-	"github.com/calypr/gecko/internal/server/http/vector"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
@@ -26,7 +25,6 @@ func Register(app *fiber.App, deps Dependencies) {
 	health.RegisterRoutes(app, handler)
 	config.RegisterRoutes(app, handler, authzHandler)
 	git.RegisterRoutes(app, handler, authzHandler)
-	vector.RegisterRoutes(app, handler)
 
 	app.Use(func(ctx fiber.Ctx) error {
 		ctx.Path(strings.TrimSuffix(ctx.Path(), "/"))

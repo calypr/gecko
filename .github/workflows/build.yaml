@@ -5,7 +5,11 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    uses: ./.github/workflows/tests.yaml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
@@ -25,8 +29,7 @@ jobs:
         REPO=quay.io/ohsu-comp-bio/gecko
         echo "Setting image tag to $REPO:$BRANCH"
 
-        # Login to Quay.io and build image
-        docker login quay.io
+        # Build and publish only after the test workflow succeeds.
         docker build -t $REPO:$BRANCH .
 
         # Add 'latest' tag to 'main' image
