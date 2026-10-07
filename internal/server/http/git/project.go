@@ -16,6 +16,7 @@ import (
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	"github.com/calypr/gecko/internal/project"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
@@ -152,24 +153,30 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(appconfig.TypeProjects))
+	projects, err := project.List(ctx.Context(), handler.db)
 	if err != nil {
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to list project configs: %s", err), http.StatusInternalServerError, nil, nil)
+		response := httputil.NewError("database_error", fmt.Sprintf("failed to list projects: %s", err), http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
 	allowedResources, _ := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	projectIDs := make([]string, 0, len(projects))
+	for _, item := range projects {
+		projectIDs = append(projectIDs, item.ID)
+	}
 	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
+	allowed := make(map[string]bool, len(projectIDs))
+	for _, id := range projectIDs {
+		allowed[id] = true
+	}
 	responses := make([]git.GitProjectStatusResponse, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		parts := strings.SplitN(projectID, "/", 2)
-		if len(parts) != 2 {
+	for _, item := range projects {
+		if !allowed[item.ID] || item.Config == nil {
 			continue
 		}
-		var cfg appconfig.ProjectConfig
-		if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
-			continue
-		}
+		projectID := item.ID
+		cfg := *item.Config
+
 		identity, err := git.ParseRepositoryIdentity(cfg.SrcRepo)
 		if err != nil {
 			continue
@@ -179,12 +186,12 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 			copyState := state
 			statePtr = &copyState
 		}
-		orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, parts[0])
-		status := handler.gitService.StatusFromState(projectID, parts[0], parts[1], cfg, identity, statePtr, orgState)
+		orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, item.Organization)
+		status := handler.gitService.StatusFromState(projectID, item.Organization, item.Name, cfg, identity, statePtr, orgState)
 		if len(allowedResources) > 0 {
-			status.Accessible = servermw.GitProjectReadable(allowedResources, parts[0], parts[1])
+			status.Accessible = servermw.GitProjectReadable(allowedResources, item.Organization, item.Name)
 			status.RequestAccess = !status.Accessible
-			status.RequestAccessResourcePath = git.ProgramProjectResourcePath(parts[0], parts[1])
+			status.RequestAccessResourcePath = git.ProgramProjectResourcePath(item.Organization, item.Name)
 		}
 		responses = append(responses, status)
 	}

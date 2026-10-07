@@ -11,7 +11,6 @@ import (
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/jmoiron/sqlx"
-	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/arborist/arborist"
 )
 
@@ -19,7 +18,6 @@ type Dependencies struct {
 	DB                *sqlx.DB
 	Logger            arborist.Logger
 	JWTApp            arborist.JWTDecoder
-	QdrantClient      *qdrant.Client
 	GripqlClient      *gripql.Client
 	GripGraphName     string
 	GitService        *git.GitService
@@ -31,7 +29,6 @@ type Handler struct {
 	DB                *sqlx.DB
 	Logger            arborist.Logger
 	JWTApp            arborist.JWTDecoder
-	QdrantClient      *qdrant.Client
 	GripqlClient      *gripql.Client
 	GripGraphName     string
 	GitService        *git.GitService
@@ -59,7 +56,6 @@ func NewHandler(deps Dependencies) *Handler {
 		DB:                deps.DB,
 		Logger:            deps.Logger,
 		JWTApp:            deps.JWTApp,
-		QdrantClient:      deps.QdrantClient,
 		GripqlClient:      deps.GripqlClient,
 		GripGraphName:     deps.GripGraphName,
 		GitService:        deps.GitService,

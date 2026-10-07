@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/bmeg/grip/gripql"
 	"github.com/bmeg/grip/util/rpc"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
-	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/go-authutils/authutils"
 
 	"github.com/calypr/gecko/internal/git"
@@ -25,7 +23,7 @@ import (
 
 // @title Gecko API
 // @version 1.0.0
-// @description API for managing configurations and a generalizable vector database API
+// @description API for managing configurations and Git-backed projects
 // @host localhost:8080
 // @BasePath /
 // @securityDefinitions.apikey ApiKeyAuth
@@ -37,9 +35,6 @@ func main() {
 	var port = flag.Uint("port", 8080, "port on which to expose the API")
 	var jwkEndpoint = flag.String("jwks", "", "endpoint for JWKS")
 	var dbURL = flag.String("db", "", "URL to connect to database")
-	var qdrantHostFlag = flag.String("qdrant-host", "", "Qdrant host (overrides QDRANT_HOST env var)")
-	var qdrantPortFlag = flag.Int("qdrant-port", 0, "Qdrant port (overrides QDRANT_PORT env var)")
-	var qdrantAPIKeyFlag = flag.String("qdrant-api-key", "", "Qdrant API Key (overrides QDRANT_API_KEY env var)")
 	var gripGraphName = flag.String("grip-graph-zname", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
 	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
@@ -51,16 +46,6 @@ func main() {
 	gripGraph := firstNonEmpty(*gripGraphName, os.Getenv("GRIP_GRAPH"))
 	gripPortVar := firstNonEmpty(*gripPort, os.Getenv("GRIP_PORT"))
 	gripHostVar := firstNonEmpty(*gripHost, os.Getenv("GRIP_HOST"))
-	qdrantHost := firstNonEmpty(*qdrantHostFlag, os.Getenv("QDRANT_HOST"))
-	qdrantPort := *qdrantPortFlag
-	if qdrantPort == 0 {
-		if portStr := os.Getenv("QDRANT_PORT"); portStr != "" {
-			if parsedPort, err := strconv.Atoi(portStr); err == nil {
-				qdrantPort = parsedPort
-			}
-		}
-	}
-	qdrantAPIKey := firstNonEmpty(*qdrantAPIKeyFlag, os.Getenv("QDRANT_API_KEY"))
 	finalJWK := firstNonEmpty(*jwkEndpoint, os.Getenv("JWKS_ENDPOINT"))
 	if finalJWK == "" {
 		logger.Println("WARNING: no $JWKS_ENDPOINT or --jwks specified; endpoints requiring JWT validation will error")
@@ -68,9 +53,9 @@ func main() {
 
 	serverBuilder := server.NewServer().WithLogger(logger).WithJWTApp(authutils.NewJWTApplication(finalJWK))
 	if db, err := sqlx.Open("postgres", *dbURL); err != nil {
-		logger.Printf("WARNING: Failed to open database connection with URL %s: %v. Database endpoints will not be available.", *dbURL, err)
+		logger.Println("WARNING: Failed to open database connection. Database endpoints will not be available.")
 	} else if err = db.Ping(); err != nil {
-		logger.Printf("WARNING: DB ping failed for URL %s: %v. Database endpoints will not be available.", *dbURL, err)
+		logger.Println("WARNING: DB ping failed. Database endpoints will not be available.")
 		_ = db.Close()
 	} else {
 		logger.Println("Successfully connected to PostgreSQL database.")
@@ -88,18 +73,6 @@ func main() {
 		serverBuilder = serverBuilder.WithGitService(gitService)
 		serverBuilder = serverBuilder.WithThumbnailStore(thumbnail.NewFilesystemStore(gitDataDir))
 		serverBuilder = serverBuilder.WithPresentationStore(presentation.NewFilesystemStore(gitDataDir))
-	}
-
-	if qdrantHost != "" && qdrantPort != 0 {
-		logger.Printf("Attempting to connect to Qdrant at %s:%d", qdrantHost, qdrantPort)
-		if qdrantClient, err := qdrant.NewClient(&qdrant.Config{Host: qdrantHost, Port: qdrantPort, APIKey: qdrantAPIKey}); err != nil {
-			logger.Printf("WARNING: Failed to initialize Qdrant client at %s:%d: %v. Qdrant endpoints will not be available.", qdrantHost, qdrantPort, err)
-		} else {
-			logger.Println("Successfully connected to Qdrant.")
-			serverBuilder = serverBuilder.WithQdrantClient(qdrantClient)
-		}
-	} else {
-		logger.Println("INFO: Qdrant configuration (--qdrant-host or QDRANT_HOST) not fully specified. Qdrant endpoints will not be available.")
 	}
 
 	if gripHostVar != "" && gripPortVar != "" {

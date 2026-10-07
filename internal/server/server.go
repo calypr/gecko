@@ -15,7 +15,6 @@ import (
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
-	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/arborist/arborist"
 )
 
@@ -24,7 +23,6 @@ type Server struct {
 	jwtApp            arborist.JWTDecoder
 	Logger            *geckologging.Handler
 	stmts             *arborist.CachedStmts
-	qdrantClient      *qdrant.Client
 	gripqlClient      *gripql.Client
 	gripGraphName     string
 	gitService        *git.GitService
@@ -47,11 +45,6 @@ func (server *Server) WithJWTApp(jwtApp arborist.JWTDecoder) *Server {
 func (server *Server) WithDB(db *sqlx.DB) *Server {
 	server.db = db
 	server.stmts = arborist.NewCachedStmts(db)
-	return server
-}
-
-func (server *Server) WithQdrantClient(client *qdrant.Client) *Server {
-	server.qdrantClient = client
 	return server
 }
 
@@ -85,9 +78,6 @@ func (server *Server) Init() (*Server, error) {
 	}
 	if server.db == nil {
 		server.Logger.Warning("Database endpoints will be disabled.")
-	}
-	if server.qdrantClient == nil {
-		server.Logger.Warning("Qdrant endpoints will be disabled.")
 	}
 	if server.gripqlClient == nil || server.gripGraphName == "" {
 		server.Logger.Warning("Grip endpoints will be disabled.")
@@ -127,7 +117,6 @@ func (server *Server) MakeRouter() *fiber.App {
 		DB:                server.db,
 		Logger:            server.Logger,
 		JWTApp:            server.jwtApp,
-		QdrantClient:      server.qdrantClient,
 		GripqlClient:      server.gripqlClient,
 		GripGraphName:     server.gripGraphName,
 		GitService:        server.gitService,

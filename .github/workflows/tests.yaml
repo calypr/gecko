@@ -1,6 +1,6 @@
 name: Go Tests
 
-on: [ pull_request ]
+on: [ pull_request, workflow_call ]
 
 jobs:
   test:
@@ -12,7 +12,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.2'
+        go-version: '1.26.3'
 
     - name: Start PostgreSQL
       run: |
@@ -74,41 +74,12 @@ jobs:
         PGPASSWORD: your_strong_password
 
 
-    - name: Start Qdrant
-      run: |
-        docker rm -f gecko-qdrant-test > /dev/null 2>&1 || true
-
-        docker run -d \
-          --name gecko-qdrant-test \
-          -p 6333:6333 \
-          -p 6334:6334 \
-          -e QDRANT__SERVICE__API_KEY=your_qdrant_api_key \
-          qdrant/qdrant:latest > /dev/null
-
-        # Wait for Qdrant to be ready
-        echo "Waiting for Qdrant to be ready..."
-        for i in {1..30}; do
-          if curl --silent --fail http://localhost:6333/readyz > /dev/null; then
-            echo "Qdrant is ready!"
-            break
-          fi
-          if [ $i -eq 30 ]; then
-            echo "Timeout waiting for Qdrant"
-            exit 1
-          fi
-          sleep 1
-        done
-
-
     - name: Run Tests
       run: |
         make
         ./bin/gecko \
           -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
           -port 8080 \
-          -qdrant-api-key "your_qdrant_api_key" \
-          -qdrant-host localhost \
-          -qdrant-port 6334 \
           -git-data-dir /tmp/gecko-git &
 
         # Wait for application to be ready

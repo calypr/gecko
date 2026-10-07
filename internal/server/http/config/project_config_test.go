@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -42,8 +43,8 @@ func TestProjectConfigListGET_PluralProjects(t *testing.T) {
 	srv, mock, cleanup := newProjectConfigTestServer(t)
 	defer cleanup()
 
-	rows := sqlmock.NewRows([]string{"name"}).AddRow("HTAN_INT/BForePC")
-	mock.ExpectQuery(`SELECT name FROM config_schema\.projects`).WillReturnRows(rows)
+	rows := sqlmock.NewRows([]string{"name", "content"}).AddRow("HTAN_INT/BForePC", []byte(`{"title":"BForePC"}`))
+	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects ORDER BY name`).WillReturnRows(rows)
 
 	app := fiber.New()
 	projects := app.Group("/config/projects", shared.ConfigTypeMiddleware(string(config.TypeProjects)))
@@ -54,6 +55,62 @@ func TestProjectConfigListGET_PluralProjects(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestPublicListEnumeratesProjectsWithoutOptionalConfig(t *testing.T) {
+	srv, mock, cleanup := newProjectConfigTestServer(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{"name"}).
+		AddRow("HTAN_INT/BForePC").
+		AddRow("HTAN_INT/NoExplorer")
+	mock.ExpectQuery(`SELECT name FROM config_schema\.projects ORDER BY name`).WillReturnRows(rows)
+
+	app := fiber.New()
+	app.Get("/config/list", srv.handleConfigListGET)
+	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/list", nil))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	var ids []string
+	if err := json.NewDecoder(resp.Body).Decode(&ids); err != nil {
+		t.Fatalf("decode project list: %v", err)
+	}
+	want := []string{"HTAN_INT/BForePC", "HTAN_INT/NoExplorer"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("project list = %v, want %v", ids, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestExplorerListStillReadsExplorerConfigs(t *testing.T) {
+	srv, mock, cleanup := newProjectConfigTestServer(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{"name"}).AddRow("HTAN_INT-BForePC")
+	mock.ExpectQuery(`SELECT name FROM config_schema\.explorer`).WillReturnRows(rows)
+
+	app := fiber.New()
+	group := app.Group("/config/explorer", shared.ConfigTypeMiddleware(string(config.TypeExplorer)))
+	group.Get("/list", srv.handleConfigListGET)
+	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/explorer/list", nil))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+	var ids []string
+	if err := json.NewDecoder(resp.Body).Decode(&ids); err != nil {
+		t.Fatalf("decode explorer list: %v", err)
+	}
+	if want := []string{"HTAN_INT-BForePC"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("explorer list = %v, want %v", ids, want)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

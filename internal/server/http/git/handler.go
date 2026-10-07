@@ -7,7 +7,6 @@ import (
 	"github.com/calypr/gecko/internal/server/http/shared"
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/jmoiron/sqlx"
-	"github.com/qdrant/go-client/qdrant"
 	"github.com/uc-cdis/arborist/arborist"
 )
 
@@ -16,7 +15,6 @@ type Handler struct {
 	db                *sqlx.DB
 	logger            arborist.Logger
 	jwtApp            arborist.JWTDecoder
-	qdrantClient      *qdrant.Client
 	gripqlClient      *gripql.Client
 	gripGraphName     string
 	gitService        *git.GitService
@@ -38,7 +36,6 @@ func NewHandler(sharedHandler *shared.Handler) *Handler {
 		db:                sharedHandler.DB,
 		logger:            sharedHandler.Logger,
 		jwtApp:            sharedHandler.JWTApp,
-		qdrantClient:      sharedHandler.QdrantClient,
 		gripqlClient:      sharedHandler.GripqlClient,
 		gripGraphName:     sharedHandler.GripGraphName,
 		gitService:        sharedHandler.GitService,
