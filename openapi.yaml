@@ -134,17 +134,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /config/list:
     get:
-      summary: List all configurations
+      summary: List project IDs by default
       operationId: listConfigs
       responses:
         '200':
-          description: List of configurations
+          description: List of project IDs
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Config'
+                  type: string
         '404':
           description: No configurations found
           content:

@@ -13,6 +13,7 @@ import (
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	"github.com/calypr/gecko/internal/project"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/gofiber/fiber/v3"
@@ -61,23 +62,19 @@ func (handler *Handler) handleProjectConfigGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleProjectSummaryGET(ctx fiber.Ctx) error {
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(config.TypeProjects))
+	projects, err := project.List(ctx.Context(), handler.db)
 	if err != nil {
 		errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("Database error: %s", err), http.StatusInternalServerError, map[string]any{"config_type": string(config.TypeProjects)}, nil)
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-
-	summaries := make([]ProjectSummaryResponse, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		var cfg config.ProjectConfig
-		if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(config.TypeProjects), &cfg); err != nil {
-			continue
+	summaries := make([]ProjectSummaryResponse, 0, len(projects))
+	for _, item := range projects {
+		cfg := config.ProjectConfig{}
+		if item.Config != nil {
+			cfg = *item.Config
 		}
-		summary, ok := handler.buildProjectSummaryResponse(projectID, cfg)
-		if !ok {
-			continue
-		}
+		summary, _ := handler.buildProjectSummaryResponse(item.ID, cfg)
 		summaries = append(summaries, summary)
 	}
 

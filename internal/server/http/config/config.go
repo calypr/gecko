@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/calypr/gecko/apierror"
@@ -10,6 +11,7 @@ import (
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/git"
 	"github.com/calypr/gecko/internal/httputil"
+	"github.com/calypr/gecko/internal/project"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 )
@@ -43,8 +45,8 @@ func (handler *Handler) resolveConfigParams(ctx fiber.Ctx) (string, string) {
 }
 
 // handleConfigListGET godoc
-// @Summary List configuration IDs
-// @Description Retrieve a list of configuration IDs for a specific type. When mounted under a typed route, the route type is used; otherwise the `type` query parameter is used.
+// @Summary List project IDs by default
+// @Description The public list returns project IDs from the projects table. A type query parameter can select another configuration type; typed routes use their route type.
 // @Tags Config
 // @Accept json
 // @Produce json
@@ -56,13 +58,70 @@ func (handler *Handler) resolveConfigParams(ctx fiber.Ctx) (string, string) {
 func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 	configType, _ := ctx.Locals("configType").(string)
 	if configType == "" {
-		configType = ctx.Query("type", string(config.TypeExplorer))
+		configType = ctx.Query("type", string(config.TypeProjects))
 	}
 
 	if !isKnownType(configType) {
 		errResponse := httputil.NewError(apierror.TypeInvalidConfigType, fmt.Sprintf("Unknown config type: %s", configType), http.StatusBadRequest, map[string]any{"config_type": configType}, nil)
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
+	}
+
+	if configType == string(config.TypeProjects) && ctx.Path() == "/config/list" {
+		projects, err := project.ListIdentities(ctx.Context(), handler.db)
+		if err != nil {
+			errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("Database error: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType}, nil)
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+		ids := make([]string, 0, len(projects))
+		for _, item := range projects {
+			ids = append(ids, item.ID)
+		}
+		return httputil.JSON(ids, http.StatusOK).Write(ctx)
+	}
+
+	if configType == string(config.TypeProjects) {
+		projects, err := project.List(ctx.Context(), handler.db)
+		if err != nil {
+			errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("Database error: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType}, nil)
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+		allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+		if errResponse != nil {
+			errResponse.WriteLog(handler.logger)
+			return errResponse.Write(ctx)
+		}
+		allowedIDs := make([]string, 0, len(projects))
+		for _, item := range projects {
+			allowedIDs = append(allowedIDs, item.ID)
+		}
+		allowedIDs = filterProjectIDsByAllowedResources(allowedIDs, allowedResources)
+		allowed := make(map[string]bool, len(allowedIDs))
+		for _, id := range allowedIDs {
+			allowed[id] = true
+		}
+		projects = slices.DeleteFunc(projects, func(item project.Project) bool { return !allowed[item.ID] })
+		responses := make([]ProjectListResponse, 0, len(projects))
+		for _, item := range projects {
+			cfg := config.ProjectConfig{}
+			if item.Config != nil {
+				cfg = *item.Config
+			}
+			summary, _ := handler.buildProjectSummaryResponse(item.ID, cfg)
+			responses = append(responses, ProjectListResponse{
+				ResourcePath: git.ProgramProjectResourcePath(item.Organization, item.Name),
+				ConfigData:   cfg,
+				Organization: item.Organization,
+				Project:      item.Name,
+				Title:        summary.Title,
+				ContactEmail: summary.ContactEmail,
+				Description:  summary.Description,
+				ThumbnailURL: summary.ThumbnailURL,
+			})
+		}
+		return httputil.JSON(responses, http.StatusOK).Write(ctx)
 	}
 
 	configList, err := geckodb.ConfigListByType(handler.db, configType)
@@ -74,40 +133,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 	if configList == nil {
 		configList = []string{}
 	}
-	if configType == string(config.TypeProjects) {
-		allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
-		if errResponse != nil {
-			errResponse.WriteLog(handler.logger)
-			return errResponse.Write(ctx)
-		}
-		configList = filterProjectIDsByAllowedResources(configList, allowedResources)
 
-		projects := make([]ProjectListResponse, 0, len(configList))
-		for _, projectID := range configList {
-			var cfg config.ProjectConfig
-			if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(config.TypeProjects), &cfg); err != nil {
-				continue
-			}
-
-			summary, ok := handler.buildProjectSummaryResponse(projectID, cfg)
-			if !ok {
-				continue
-			}
-
-			projects = append(projects, ProjectListResponse{
-				ResourcePath: git.ProgramProjectResourcePath(summary.Organization, summary.Project),
-				ConfigData:   cfg,
-				Organization: summary.Organization,
-				Project:      summary.Project,
-				Title:        summary.Title,
-				ContactEmail: summary.ContactEmail,
-				Description:  summary.Description,
-				ThumbnailURL: summary.ThumbnailURL,
-			})
-		}
-
-		return httputil.JSON(projects, http.StatusOK).Write(ctx)
-	}
 	return httputil.JSON(configList, http.StatusOK).Write(ctx)
 }
 
