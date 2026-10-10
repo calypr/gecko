@@ -138,7 +138,11 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, _ := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	allowedResources, errResponse := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	if errResponse != nil {
+		errResponse.WriteLog(handler.logger)
+		return errResponse.Write(ctx)
+	}
 	projectIDs := make([]string, 0, len(projects))
 	for _, item := range projects {
 		projectIDs = append(projectIDs, item.ID)
