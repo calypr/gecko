@@ -88,7 +88,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 			errResponse.WriteLog(handler.logger)
 			return errResponse.Write(ctx)
 		}
-		allowedResources, errResponse := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+		allowedResources, errResponse := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
 		if errResponse != nil {
 			errResponse.WriteLog(handler.logger)
 			return errResponse.Write(ctx)
@@ -97,7 +97,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 		for _, item := range projects {
 			allowedIDs = append(allowedIDs, item.ID)
 		}
-		allowedIDs = filterProjectIDsByAllowedResources(allowedIDs, allowedResources)
+		allowedIDs = git.FilterProjectIDsByAllowedResources(allowedIDs, allowedResources)
 		allowed := make(map[string]bool, len(allowedIDs))
 		for _, id := range allowedIDs {
 			allowed[id] = true

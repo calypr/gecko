@@ -147,7 +147,7 @@ func (service *ReconcileService) ReconcileOrganization(ctx context.Context, orga
 }
 
 func (service *ReconcileService) BuildOrganizationsStatus(ctx context.Context, authorizationHeader string, projectIDs []string, allowedResources []string) (GitOrganizationsStatusResponse, error) {
-	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
+	projectIDs = FilterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	organizations := projectConfigOrganizations(projectIDs)
 	buckets, bucketsErr := service.storage.ListBuckets(ctx, authorizationHeader)
 	projectStates, err := geckodb.ListGitProjectStates(service.db)
@@ -411,28 +411,6 @@ func applyInstalledState(state *geckodb.GitProjectState, installationID *int64, 
 	}
 	state.InstallationTarget = sql.NullString{String: owner, Valid: owner != ""}
 	state.InstallationTargetType = sql.NullString{String: "Organization", Valid: true}
-}
-
-func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
-	if len(allowedResources) == 0 {
-		return []string{}
-	}
-	filtered := make([]string, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		parts := strings.SplitN(projectID, "/", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		projectParts := strings.SplitN(parts[1], "/", 2)
-		if len(projectParts) != 1 || projectParts[0] == "" {
-			continue
-		}
-		if servermw.ResourceListAllowsProject(allowedResources, parts[0], projectParts[0]) {
-			filtered = append(filtered, projectID)
-		}
-	}
-	sort.Strings(filtered)
-	return filtered
 }
 
 func projectConfigOrganizations(projectIDs []string) []string {

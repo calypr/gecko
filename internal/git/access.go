@@ -1,13 +1,17 @@
-package config
+package git
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/calypr/gecko/internal/httputil"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
 
-func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
+// AllowedReadResources returns the Fence resource paths the caller may read.
+// A missing token yields no resources and no error, so callers fall through to
+// per-project filtering instead of failing the whole request.
+func AllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
 	if token == "" {
 		return nil, nil
 	}
@@ -18,7 +22,10 @@ func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
 	return resources, nil
 }
 
-func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
+// FilterProjectIDsByAllowedResources keeps only the "org/project" IDs the caller
+// may read. IDs that are not exactly "org/project" are dropped. The result is
+// sorted so callers get a stable order regardless of input order.
+func FilterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
 	if len(allowedResources) == 0 {
 		return []string{}
 	}
@@ -32,9 +39,10 @@ func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []
 		if len(projectParts) != 1 || projectParts[0] == "" {
 			continue
 		}
-		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) || servermw.ResourceListAllowsProject(allowedResources, parts[0], projectParts[0]) {
+		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) {
 			filtered = append(filtered, projectID)
 		}
 	}
+	sort.Strings(filtered)
 	return filtered
 }

@@ -22,28 +22,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func filterProjectIDsByAllowedResources(projectIDs []string, allowedResources []string) []string {
-	if len(allowedResources) == 0 {
-		return []string{}
-	}
-	filtered := make([]string, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		parts := strings.SplitN(projectID, "/", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		projectParts := strings.SplitN(parts[1], "/", 2)
-		if len(projectParts) != 1 || projectParts[0] == "" {
-			continue
-		}
-		if servermw.GitProjectReadable(allowedResources, parts[0], projectParts[0]) {
-			filtered = append(filtered, projectID)
-		}
-	}
-	sort.Strings(filtered)
-	return filtered
-}
-
 func organizationAllowedByResources(organization string, allowedResources []string) bool {
 	return servermw.ResourceListAllowsOrganization(allowedResources, organization)
 }
@@ -160,12 +138,12 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, _ := gitAllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	allowedResources, _ := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
 	projectIDs := make([]string, 0, len(projects))
 	for _, item := range projects {
 		projectIDs = append(projectIDs, item.ID)
 	}
-	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
+	projectIDs = git.FilterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	allowed := make(map[string]bool, len(projectIDs))
 	for _, id := range projectIDs {
 		allowed[id] = true
@@ -304,17 +282,6 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
 }
 
-func gitAllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
-	if token == "" {
-		return nil, nil
-	}
-	resources, err := servermw.GitAllowedResources(servermw.NewFenceUserAccessHandler(nil), token, "read")
-	if err != nil {
-		return nil, err
-	}
-	return resources, nil
-}
-
 type gitStatusAccess struct {
 	readableResources []string
 	snapshot          servermw.ResourceAccessSnapshot
@@ -443,7 +410,7 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 		return errResponse.Write(ctx)
 	}
 	allowedResources := statusAccess.readableResources
-	projectIDs = filterProjectIDsByAllowedResources(projectIDs, allowedResources)
+	projectIDs = git.FilterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	reconcileCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if err := handler.projectSync.ReconcileOrganizations(reconcileCtx, authorizationHeader, projectIDs); err != nil {
