@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"github.com/calypr/gecko/internal/server/http/shared"
 	"net/http"
 	"net/url"
 	"sort"
@@ -181,7 +182,7 @@ func (handler *Handler) handleProjectConfigDELETE(ctx fiber.Ctx) error {
 		return errResponse.Write(ctx)
 	}
 	if errResponse := handler.deleteProject(ctx, authorizationHeader, configType, configID, organization, project); errResponse != nil {
-		return writeAppError(ctx, handler.logger, errResponse)
+		return shared.WriteAppError(ctx, errResponse)
 	}
 	return handler.handleConfigDELETEByID(ctx, configType, configID)
 }
@@ -322,7 +323,7 @@ func (handler *Handler) handleProjectOrganizationDELETE(ctx fiber.Ctx) error {
 			continue
 		}
 		if appErr := handler.deleteProject(ctx, authorizationHeader, string(config.TypeProjects), projectID, organization, projectName); appErr != nil {
-			return writeAppError(ctx, handler.logger, appErr)
+			return shared.WriteAppError(ctx, appErr)
 		}
 		if _, err := geckodb.ConfigDELETEGeneric(handler.db, projectID, string(config.TypeProjects)); err != nil {
 			errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to delete project config %s during organization delete: %s", projectID, err), http.StatusInternalServerError, map[string]any{"organization": organization, "project_id": projectID}, nil)

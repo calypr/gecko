@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"github.com/calypr/gecko/internal/server/http/shared"
 	"net/http"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ func (handler *Handler) handleCalyprProjectSetupPUT(ctx fiber.Ctx) error {
 	defer cancel()
 	response, err := handler.projectSetup.InitializeProject(setupCtx, authorizationHeader, organization, project, request)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	return httputil.JSON(response, http.StatusOK).Write(ctx)
 }
@@ -67,7 +68,7 @@ func (handler *Handler) handleCalyprProjectStoragePUT(ctx fiber.Ctx) error {
 	defer cancel()
 	response, err := handler.projectSetup.PopulateStorage(setupCtx, authorizationHeader, organization, project, request)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	return httputil.JSON(response, http.StatusOK).Write(ctx)
 }

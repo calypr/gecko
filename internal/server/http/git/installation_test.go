@@ -343,16 +343,16 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
 	}
-		if receivedBody["action"] != "installation_repositories" {
-			t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
-		}
-		if receivedBody["organization"] != "TEST" {
-			t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
-		}
-		if receivedBody["owner"] != "EllrottLab" {
-			t.Fatalf("expected owner in fence request body, got %#v", receivedBody)
-		}
-		var payload gitservice.GitOrganizationConnectResponse
+	if receivedBody["action"] != "installation_repositories" {
+		t.Fatalf("expected installation_repositories action, got %#v", receivedBody)
+	}
+	if receivedBody["organization"] != "TEST" {
+		t.Fatalf("expected organization in fence request body, got %#v", receivedBody)
+	}
+	if receivedBody["owner"] != "EllrottLab" {
+		t.Fatalf("expected owner in fence request body, got %#v", receivedBody)
+	}
+	var payload gitservice.GitOrganizationConnectResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}

@@ -1,3 +1,6 @@
 *.DS_Store
-bin/gecko
-gecko
+.DS_Store
+/gecko
+/bin/
+.gocache/
+/tmp/

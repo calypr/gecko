@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/calypr/gecko/internal/server/http/shared"
 	"net/http"
 	"os"
 	"sort"
@@ -273,7 +274,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 	}
 	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	applyOrganizationStatusCapabilities(&responsePayload, statusAccess.snapshot)
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
@@ -295,7 +296,7 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 	allowedResources := statusAccess.readableResources
 	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	for i := range responsePayload.Organizations {
 		applyOrganizationStatusCapabilities(&responsePayload.Organizations[i], statusAccess.snapshot)
@@ -407,7 +408,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 	reconcileCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := handler.projectSync.ReconcileOrganization(reconcileCtx, organization, authorizationHeader, projectIDs); err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	statusAccess, errResponse = gitStatusAccessSnapshot(authorizationHeader)
 	if errResponse != nil {
@@ -417,7 +418,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 	allowedResources = statusAccess.readableResources
 	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	applyOrganizationStatusCapabilities(&responsePayload, statusAccess.snapshot)
 	return httputil.JSON(responsePayload, http.StatusOK).Write(ctx)
@@ -446,11 +447,11 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 	reconcileCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if err := handler.projectSync.ReconcileOrganizations(reconcileCtx, authorizationHeader, projectIDs); err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
-		return writeAppError(ctx, handler.logger, err)
+		return shared.WriteAppError(ctx, err)
 	}
 	for i := range responsePayload.Organizations {
 		applyOrganizationStatusCapabilities(&responsePayload.Organizations[i], statusAccess.snapshot)
