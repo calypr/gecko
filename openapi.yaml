@@ -1,40 +1,117 @@
 openapi: 3.0.3
 info:
   title: Gecko API
-  description: API for managing configurations and Git-backed projects
+  description: >-
+    HTTP contract for Gecko. This file is the single source of truth for the API
+    surface; handlers under internal/server/http implement exactly these routes.
+    Authentication uses the Authorization header (Bearer JWT issued by Fence).
   version: 1.0.0
 servers:
-  - url: /api
+  - url: /
     description: Main API server
+security:
+  - BearerAuth: []
+tags:
+  - name: System
+    description: Service health.
+  - name: Config
+    description: Generic key-value configuration documents, grouped by config type.
+  - name: Project
+    description: Calypr project registry and project-level data.
+  - name: GitProject
+    description: Git-backed project operations backed by the internal/git domain service.
 paths:
   /health:
     get:
+      tags: [System]
       summary: Health check endpoint
+      description: Reports whether the service and its database connection are healthy.
       operationId: healthCheck
+      security: []
       responses:
         '200':
           description: Server is healthy
           content:
             application/json:
               schema:
-                type: string
-                example: Healthy
+                type: object
+                additionalProperties: true
         '503':
           description: Database unavailable
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-  /config/{configId}:
+  /config/types:
     get:
-      summary: Retrieve a specific configuration
-      operationId: getConfig
+      tags: [Config]
+      summary: List supported configuration types
+      description: Returns the set of config types the service knows how to decode.
+      operationId: listConfigTypes
+      security: []
+      responses:
+        '200':
+          description: Supported config types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+  /config/list:
+    get:
+      tags: [Config]
+      summary: List resource ids for a configuration type
+      description: >-
+        Lists resource ids for a config type. The type is normally fixed by the
+        route group (see /config/{configType}/{configId}); when no group is set it
+        falls back to the optional `type` query parameter and defaults to `projects`.
+        The `projects` type returns full project entries; other types return plain ids.
+      operationId: listConfigs
       parameters:
-        - name: configId
-          in: path
-          required: true
+        - name: type
+          in: query
+          required: false
           schema:
             type: string
+            enum: [explorer, nav, file_summary, project, projects]
+      responses:
+        '200':
+          description: >-
+            For type `projects`, an array of project entries (see ProjectListResponse).
+            For other types, an array of opaque resource id strings.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  oneOf:
+                    - type: string
+                    - $ref: '#/components/schemas/ProjectListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /config/{configType}/{configId}:
+    parameters:
+      - name: configType
+        in: path
+        required: true
+        description: Configuration type; selects the decoder used for the payload.
+        schema:
+          type: string
+          enum: [explorer, nav, file_summary, project, projects]
+      - name: configId
+        in: path
+        required: true
+        description: Resource identifier, typically `organization/project` for projects.
+        schema:
+          type: string
+    get:
+      tags: [Config]
+      summary: Get a configuration
+      description: Decodes the stored configuration for configId into the typed payload for configType.
+      operationId: getConfig
       responses:
         '200':
           description: Configuration found
@@ -43,22 +120,1237 @@ paths:
               schema:
                 $ref: '#/components/schemas/Config'
         '404':
-          description: Configuration not found
+          $ref: '#/components/responses/NotFound'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Config]
+      summary: Create or update a configuration
+      description: >-
+        Replaces the configuration stored under configId in configType. The body is
+        validated against the typed schema for that config type before being stored.
+      operationId: putConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '200':
+          description: Configuration accepted and stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Config]
+      summary: Delete a configuration
+      description: Deletes the configuration stored under configId in configType.
+      operationId: deleteConfig
+      responses:
+        '200':
+          description: Configuration deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects:
+    get:
+      tags: [Project]
+      summary: List projects visible to the caller
+      description: >-
+        Lists projects from the Calypr project registry, filtered to the projects the
+        caller's token is allowed to read (Fence/Arborist resource list).
+      operationId: listProjects
+      responses:
+        '200':
+          description: Projects visible to the caller
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/list:
+    get:
+      tags: [Project]
+      summary: List projects (alias of /projects)
+      operationId: listProjectsAlias
+      responses:
+        '200':
+          description: Projects visible to the caller
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectListResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/summary:
+    get:
+      tags: [Project]
+      summary: List project summaries
+      operationId: listProjectSummaries
+      responses:
+        '200':
+          description: Project summaries (title, contact email, description, thumbnail)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectSummaryResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{orgTitle}:
+    delete:
+      tags: [Project]
+      summary: Delete all projects for an organization
+      operationId: deleteOrganizationProjects
+      parameters:
+        - name: orgTitle
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Organization projects deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /projects/{orgTitle}/{projectTitle}:
+    parameters:
+      - name: orgTitle
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: projectTitle
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Project]
+      summary: Get a project configuration
+      description: Reads the project config for orgTitle/projectTitle (config id is `orgTitle/projectTitle`).
+      operationId: getProjectConfig
+      responses:
+        '200':
+          description: Project configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [Project]
+      summary: Update a project configuration
+      description: Replaces the project configuration; the payload is validated before being stored.
+      operationId: putProjectConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '200':
+          description: Project configuration accepted and stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Project]
+      summary: Delete a project configuration
+      operationId: deleteProjectConfig
+      responses:
+        '200':
+          description: Project configuration deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects:
+    get:
+      tags: [GitProject]
+      summary: List git-backed projects
+      description: >-
+        Lists git-backed projects with sync status, filtered to the projects the
+        caller's token is allowed to read. Supports paging via limit/offset and a
+        free-text filter via query.
+      operationId: listGitProjects
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: includeDeleted
+          in: query
+          required: false
+          description: Set to "true" to include soft-deleted projects.
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+      responses:
+        '200':
+          description: Projects visible to the caller, with git sync status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListProjectsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/batch:
+    post:
+      tags: [GitProject]
+      summary: Get multiple projects in one request
+      operationId: batchGetProjects
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchProjectRequest'
+      responses:
+        '200':
+          description: Projects found (missing ids are omitted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchGetProjectsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/batch-delete:
+    post:
+      tags: [GitProject]
+      summary: Delete multiple projects in one request
+      operationId: batchDeleteProjects
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchProjectRequest'
+      responses:
+        '200':
+          description: Deleted and failed project ids
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchDeleteProjectsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/status:
+    get:
+      tags: [GitProject]
+      summary: Get status for all organizations
+      description: >-
+        Builds a per-organization status view (projects, capabilities, sync state) for
+        every organization the caller's token allows to read.
+      operationId: getGitOrganizationsStatus
+      responses:
+        '200':
+          description: Organizations status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOrganizationsStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/reconcile:
+    post:
+      tags: [GitProject]
+      summary: Reconcile all organizations
+      description: >-
+        Re-runs the organization setup/reconciliation workflow for all organizations
+        the caller's token allows, completing pending GitHub connections where possible.
+      operationId: reconcileGitOrganizations
+      responses:
+        '202':
+          description: Reconciliation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/{orgTitle}/init-connect:
+    post:
+      tags: [GitProject]
+      summary: Start connecting an organization to GitHub
+      description: >-
+        Creates the Arborist resources for a new Calypr organization and returns the
+        GitHub installation/install link flow state.
+      operationId: initConnectGitOrganization
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+      responses:
+        '200':
+          description: Organization connection initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOrganizationConnectResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/{orgTitle}/connect:
+    post:
+      tags: [GitProject]
+      summary: Complete an organization's GitHub connection
+      description: >-
+        Completes the GitHub App installation flow for an organization whose projects
+        are still in the awaiting-connect workflow stage.
+      operationId: connectGitOrganization
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+      responses:
+        '200':
+          description: Organization connected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOrganizationConnectResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/{orgTitle}/status:
+    get:
+      tags: [GitProject]
+      summary: Get a single organization's status
+      operationId: getGitOrganizationStatus
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+      responses:
+        '200':
+          description: Organization status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitOrganizationStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/organizations/{orgTitle}/reconcile:
+    post:
+      tags: [GitProject]
+      summary: Reconcile a single organization
+      operationId: reconcileGitOrganization
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+      responses:
+        '200':
+          description: Organization reconciled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}:
+    parameters:
+      - $ref: '#/components/parameters/OrgTitle'
+      - $ref: '#/components/parameters/ProjectTitle'
+    get:
+      tags: [GitProject]
+      summary: Get a single git-backed project
+      description: >-
+        Reads the project config, resolves the git repository identity, warms the local
+        mirror when needed, and returns the project's git status payload.
+      operationId: getGitProject
+      responses:
+        '200':
+          description: Project git status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitProjectStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: GitHub connection for this project has not been completed yet
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Server error
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/refs:
+    get:
+      tags: [GitProject]
+      summary: List refs (branches/tags) of a git-backed project
+      operationId: getGitProjectRefs
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Git refs for the project repository
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    put:
-      summary: Update or create a configuration
-      operationId: updateConfig
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/tree:
+    get:
+      tags: [GitProject]
+      summary: List the repository tree of a git-backed project
+      description: >-
+        Lists entries at the repository root (or under the optional sub-path captured by
+        the wildcard form `/tree/*`).
+      operationId: getGitProjectTree
       parameters:
-        - name: configId
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          description: Git ref (branch or tag) to read; defaults to the repository default branch.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Repository tree
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/tree/*:
+    get:
+      tags: [GitProject]
+      summary: List a subtree of the project repository
+      description: Lists entries under the wildcard sub-path inside the project repository.
+      operationId: getGitProjectTreeSubpath
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Repository subtree
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/manifest:
+    get:
+      tags: [GitProject]
+      summary: Read the project manifest
+      description: >-
+        Reads the project manifest document (root form). See also the wildcard form
+        `/git/projects/{orgTitle}/{projectTitle}/manifest/*`.
+      operationId: getGitProjectManifest
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project manifest
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/manifest/*:
+    get:
+      tags: [GitProject]
+      summary: Read a nested manifest document
+      operationId: getGitProjectManifestWildcard
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Nested manifest document
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/file/*:
+    get:
+      tags: [GitProject]
+      summary: Read a file from the project repository
+      description: >-
+        Reads a file from the project's git mirror at the wildcard path. May return
+        binary content for non-text files.
+      operationId: getGitProjectFile
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File content (JSON document or binary octet-stream)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/download/*:
+    get:
+      tags: [GitProject]
+      summary: Download a file from the project repository
+      description: Streams a single file out of the project's git repository.
+      operationId: downloadGitProjectFile
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File content as a binary stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/storage/summary:
+    get:
+      tags: [GitProject]
+      summary: Get the storage summary for a project
+      description: Returns aggregated storage usage / storage audit counters for the project.
+      operationId: getGitProjectStorageSummary
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Storage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/storage/children:
+    get:
+      tags: [GitProject]
+      summary: List child storage entries for a project
+      operationId: getGitProjectStorageChildren
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: query
+          required: false
+          description: Optional storage path prefix; defaults to the project root.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Child storage entries (files and sub-folders)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/storage/folder:
+    get:
+      tags: [GitProject]
+      summary: Get a storage folder for a project
+      operationId: getGitProjectStorageFolder
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Folder contents and per-child storage summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/thumbnail:
+    get:
+      tags: [GitProject]
+      summary: Get a project thumbnail
+      operationId: getGitProjectThumbnail
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Thumbnail image bytes
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [GitProject]
+      summary: Create or replace a project thumbnail
+      description: Uploads (replaces) the thumbnail for a project; previous object is deleted.
+      operationId: putGitProjectThumbnail
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      requestBody:
+        required: true
+        content:
+          image/*:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Thumbnail stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [GitProject]
+      summary: Delete a project thumbnail
+      operationId: deleteGitProjectThumbnail
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Thumbnail deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/presentationConfig:
+    parameters:
+      - $ref: '#/components/parameters/OrgTitle'
+      - $ref: '#/components/parameters/ProjectTitle'
+    get:
+      tags: [GitProject]
+      summary: Get a project's presentation configuration
+      description: >-
+        Reads the presentation (display/layout) configuration for the project. Falls
+        back to defaults if no presentation config is stored.
+      operationId: getGitProjectPresentationConfig
+      responses:
+        '200':
+          description: Presentation configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [GitProject]
+      summary: Update a project's presentation configuration
+      description: Replaces the presentation configuration; the payload is validated before being stored.
+      operationId: putGitProjectPresentationConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Presentation configuration accepted and stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [GitProject]
+      summary: Create or update a project's presentation configuration
+      description: Accepted as a compatibility alias of the PUT form of this operation.
+      operationId: postGitProjectPresentationConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Presentation configuration accepted and stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/setup:
+    put:
+      tags: [GitProject]
+      summary: Initialize a Calypr project
+      description: >-
+        Runs the Calypr project setup workflow (creates the git-backed project record
+        and its initial resources). Auth-only: allowed before organization resources
+        exist, so a brand-new organization can be bootstrapped.
+      operationId: putCalyprProjectSetup
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Project initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/storage:
+    put:
+      tags: [GitProject]
+      summary: Populate storage for a Calypr project
+      description: >-
+        Initializes the project's storage area (copy/sample datasets). Requires the
+        caller to hold the `projects` create/update resource permission.
+      operationId: putCalyprProjectStorage
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Storage populated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/edit-connect:
+    post:
+      tags: [GitProject]
+      summary: Edit or repair a project's GitHub connection
+      description: >-
+        Re-runs the connect flow for an existing project (re-resolves the repository
+        identity and updates the stored connection state).
+      operationId: postGitProjectEditConnect
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Connection updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/update:
+    post:
+      tags: [GitProject]
+      summary: Pull the latest git state for a project
+      description: >-
+        Refreshes the local git mirror from the remote (fetch) and updates the stored
+        project state. Intended to be called after pushing to the project repository.
+      operationId: postGitProjectUpdate
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Project updated from git
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/repair/project-diff/audit:
+    post:
+      tags: [GitProject]
+      summary: Audit a project's git diff state
+      operationId: postGitProjectDiffAudit
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Diff audit report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/repair/storage-chain/audit:
+    post:
+      tags: [GitProject]
+      summary: Audit a project's storage chain
+      description: >-
+        Audits git state against the storage chain (files known to git vs files present
+        in storage). Read-only.
+      operationId: postGitProjectStorageChainAudit
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Storage chain audit report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/repair/storage-chain/register-git-only:
+    post:
+      tags: [GitProject]
+      summary: Register storage files that only exist in git
+      description: >-
+        Registers storage entries for files that are present in the git repository but
+        missing from the storage index.
+      operationId: postGitProjectStorageChainRegisterGitOnly
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Registration result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/repair/storage-cleanup/audit:
+    post:
+      tags: [GitProject]
+      summary: Audit orphaned storage files for a project
+      operationId: postGitProjectStorageCleanupAudit
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Storage cleanup audit report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/repair/storage-cleanup/apply:
+    post:
+      tags: [GitProject]
+      summary: Apply the storage cleanup for a project
+      description: Deletes orphaned storage files identified by the cleanup audit.
+      operationId: postGitProjectStorageCleanupApply
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      responses:
+        '200':
+          description: Cleanup result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/uploads/session:
+    post:
+      tags: [GitProject]
+      summary: Create an upload session for a project
+      description: >-
+        Creates an upload session so the client can stage files for a git-backed
+        project. Each successful call creates a new session.
+      operationId: postGitProjectUploadSession
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Upload session created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/uploads/session/{sessionID}:
+    get:
+      tags: [GitProject]
+      summary: Get an upload session for a project
+      description: >-
+        Returns the state of a previously created upload session. The session id is
+        opaque; the client is expected to pass it back unchanged.
+      operationId: getGitProjectUploadSession
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: sessionID
+          in: path
+          required: true
+          description: Opaque upload session id returned by POST uploads/session.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Upload session state
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/uploads/session/{sessionID}/files:
+    post:
+      tags: [GitProject]
+      summary: Add a file to an upload session
+      description: >-
+        Adds a file to an existing upload session. The file content may be sent as a
+        JSON payload or as a multipart/binary body.
+      operationId: postGitProjectUploadSessionFiles
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: sessionID
           in: path
           required: true
           schema:
@@ -68,112 +1360,290 @@ paths:
         content:
           application/json:
             schema:
-              type: array
-              items:
-                $ref: '#/components/schemas/ConfigItem'
+              type: object
+              additionalProperties: true
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: true
       responses:
         '200':
-          description: Configuration updated
+          description: File accepted into the upload session
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  code:
-                    type: integer
-                    example: 200
-                  message:
-                    type: string
-                    example: "ACCEPTED: config_id"
+                additionalProperties: true
         '400':
-          description: Invalid request body
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    delete:
-      summary: Delete a configuration
-      operationId: deleteConfig
+          $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/uploads/session/{sessionID}/finalize:
+    post:
+      tags: [GitProject]
+      summary: Finalize an upload session
+      description: >-
+        Finalizes an upload session: commits staged files into the project's git
+        repository and advances the project workflow.
+      operationId: postGitProjectUploadSessionFinalize
       parameters:
-        - name: configId
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: sessionID
           in: path
           required: true
           schema:
             type: string
       responses:
         '200':
-          description: Configuration deleted
+          description: Upload session finalized
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  code:
-                    type: integer
-                    example: 200
-                  message:
-                    type: string
-                    example: "DELETED: config_id"
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
-          description: Configuration not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/NotFound'
         '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /config/list:
-    get:
-      summary: List project IDs by default
-      operationId: listConfigs
-      responses:
-        '200':
-          description: List of project IDs
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: string
-        '404':
-          description: No configurations found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          $ref: '#/components/responses/InternalError'
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        JWT token for authentication, issued by Fence. Send it in the Authorization
+        header as `Authorization: Bearer <token>`.
+  parameters:
+    OrgTitle:
+      name: orgTitle
+      in: path
+      required: true
+      description: Organization title (Calypr organization).
+      schema:
+        type: string
+    ProjectTitle:
+      name: projectTitle
+      in: path
+      required: true
+      description: Project title (Calypr project).
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authorization
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Caller is not allowed to access this resource
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
     ErrorResponse:
       type: object
+      description: Standard error envelope returned by every handler on failure.
+      required: [error]
       properties:
         error:
           type: object
           properties:
+            type:
+              type: string
+              description: Machine-readable error type (e.g. invalid_request, not_found).
             message:
               type: string
-            code:
-              type: integer
-      required:
-        - error
+              description: Human-readable message.
+            details:
+              type: object
+              additionalProperties: true
+              description: Structured context for the error (e.g. project_id, config_type).
+    StatusResponse:
+      type: object
+      description: Acknowledgement for write operations that have no richer payload.
+      properties:
+        code:
+          type: integer
+          description: Logical status code (mirrors the HTTP status).
+        message:
+          type: string
+          description: Machine-readable status message (e.g. ACCEPTED, DELETED).
     Config:
       type: object
+      description: >-
+        Configuration payload. The concrete shape depends on configType and is
+        validated server-side (see the typed structs in the config package);
+        additional properties are preserved.
       additionalProperties: true
-    ConfigItem:
+    ListProjectsRequest:
       type: object
+      description: Query parameters for listGitProjects, when sent as a body.
+      properties:
+        limit:
+          type: integer
+          default: 50
+        offset:
+          type: integer
+          default: 0
+        query:
+          type: string
+        includeDeleted:
+          type: boolean
+          default: false
+    ProjectItem:
+      type: object
+      description: One git-backed project entry in a listing.
+      properties:
+        projectId:
+          type: string
+          description: Project id, formatted as `organization/project`.
+        displayName:
+          type: string
+    GitProjectStatus:
+      type: object
+      description: >-
+        Git status for a single project, as returned by the internal/git domain
+        service. Fields describe sync state, repository identity, and the caller's
+        access to the project.
+      additionalProperties: true
+    ListProjectsResponse:
+      type: object
+      description: Paged list of git-backed projects.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectItem'
+        nextCursor:
+          type: string
+          description: Cursor to pass as `offset` for the next page; empty when done.
+    BatchProjectRequest:
+      type: object
+      required: [projectIds]
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+          description: Project ids to fetch or delete (`organization/project`).
+    BatchGetProjectsResponse:
+      type: object
+      description: >-
+        Result of a batch get. Projects that were not found are omitted from `items`;
+        failed lookups are reported in `errors` (or omitted entirely) and never fail
+        the whole call.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectItem'
+        errors:
+          type: array
+          items:
+            type: string
+          description: Project ids whose lookup failed.
+    BatchDeleteProjectsResponse:
+      type: object
+      description: Result of a batch delete; ids that failed are reported per id and never abort the call.
+      properties:
+        deleted:
+          type: array
+          items:
+            type: string
+        failed:
+          type: array
+          items:
+            type: string
+    ProjectSummaryResponse:
+      type: object
+      description: Display-oriented summary of a project.
+      properties:
+        organization:
+          type: string
+        project:
+          type: string
+        title:
+          type: string
+        contact_email:
+          type: string
+        description:
+          type: string
+        thumbnail_url:
+          type: string
+    ProjectListResponse:
+      type: object
+      description: A project entry with its configuration, as returned by /projects listings.
+      properties:
+        resourcePath:
+          type: string
+          description: Arborist resource path, formatted as `/programs/<org>/projects/<project>`.
+        configData:
+          $ref: '#/components/schemas/Config'
+        organization:
+          type: string
+        project:
+          type: string
+        title:
+          type: string
+        contact_email:
+          type: string
+        description:
+          type: string
+        thumbnail_url:
+          type: string
+    GitProjectStatusResponse:
+      type: object
+      description: >-
+        Full git status for one project (config, git state, workflow stage, access
+        flags). The concrete shape is owned by the internal/git domain service.
+      additionalProperties: true
+    GitOrganizationStatusResponse:
+      type: object
+      description: >-
+        Status of a single organization and its projects, including whether the
+        organization is still awaiting its GitHub connection.
+      additionalProperties: true
+    GitOrganizationsStatusResponse:
+      type: object
+      description: Status view over all visible organizations.
+      additionalProperties: true
+    GitOrganizationConnectResponse:
+      type: object
+      description: >-
+        Result of an organization init-connect / connect flow. Carries the GitHub
+        installation state needed by the client to continue the flow.
       additionalProperties: true
