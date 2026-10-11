@@ -10,10 +10,9 @@ func (c Config) IsZero() bool {
 
 func (n NavPageLayoutProps) IsZero() bool {
 	return len(n.HeaderProps.LeftNav) == 0 &&
-		len(n.FooterProps.RightSection.Columns) == 0 &&
 		len(n.FooterProps.BottomLinks) == 0 &&
 		len(n.FooterProps.ColumnLinks) == 0 &&
-		n.FooterProps.RightSection == nil
+		(n.FooterProps.RightSection == nil || len(n.FooterProps.RightSection.Columns) == 0)
 }
 
 func (fs FilesummaryConfig) IsZero() bool {
