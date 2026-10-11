@@ -51,9 +51,10 @@ func TestApplyStorageCleanupAcceptsFreshExactMissingEvidence(t *testing.T) {
 	backend := &fakeStorageAnalyticsBackend{
 		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
 			"cleanup-revalidate-0": {
-				ID:        "cleanup-revalidate-0",
-				Status:    "not_found",
-				ErrorKind: "object_not_found",
+				ID:                 "cleanup-revalidate-0",
+				Status:             "not_found",
+				ErrorKind:          "object_not_found",
+				VerificationMethod: "ranged_get",
 			},
 		},
 	}
@@ -78,6 +79,21 @@ func TestApplyStorageCleanupAcceptsFreshExactMissingEvidence(t *testing.T) {
 	}
 	if len(result.DeletedRecordIDs) != 1 || result.DeletedRecordIDs[0] != "object-id" {
 		t.Fatalf("expected exact-missing record deletion, got %+v", result)
+	}
+}
+
+func TestApplyStorageCleanupRejectsUnconfirmedHeadMiss(t *testing.T) {
+	finding := applyFinding("syfon_git_no_bucket", "data/file.bin", []string{"object-id"}, []string{"s3://bucket/data/file.bin"})
+	backend := &fakeStorageAnalyticsBackend{probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+		"cleanup-revalidate-0": {ID: "cleanup-revalidate-0", Status: "not_found", ErrorKind: "object_not_found"},
+	}}
+	service := NewStorageAnalyticsService(backend)
+	_, err := service.ApplyStorageCleanup(context.Background(), "Bearer token", "org", "project", nil, nil, []GitStorageCleanupApplyFinding{finding}, false, false, false, false, false)
+	if err == nil || !strings.Contains(err.Error(), "verification_method=\"\"") {
+		t.Fatalf("expected unconfirmed HEAD miss to block deletion, got %v", err)
+	}
+	if len(backend.deletedIDs) != 0 {
+		t.Fatalf("unconfirmed HEAD miss deleted records: %v", backend.deletedIDs)
 	}
 }
 
@@ -150,10 +166,11 @@ func TestApplyStorageCleanupContinuesWhenBucketOrphanVanishesAfterAudit(t *testi
 	backend := &fakeStorageAnalyticsBackend{
 		probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
 			"cleanup-revalidate-0": {
-				ID:        "cleanup-revalidate-0",
-				ObjectURL: missingURL,
-				Status:    "not_found",
-				ErrorKind: "object_not_found",
+				ID:                 "cleanup-revalidate-0",
+				ObjectURL:          missingURL,
+				Status:             "not_found",
+				ErrorKind:          "object_not_found",
+				VerificationMethod: "ranged_get",
 			},
 			"cleanup-revalidate-1": {
 				ID:        "cleanup-revalidate-1",

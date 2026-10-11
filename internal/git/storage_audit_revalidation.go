@@ -71,7 +71,7 @@ func (service *StorageAnalyticsService) verifyStorageCleanupApplyPlan(ctx contex
 			ObjectURL: verification.ObjectURL,
 		})
 	}
-	results, err := service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, items)
+	results, err := service.storage.BulkConfirmStorageObjects(ctx, authorizationHeader, items)
 	if err != nil {
 		return fmt.Errorf("revalidate cleanup storage evidence: %w", err)
 	}
@@ -95,7 +95,7 @@ func cleanupObjectVanishedAfterAudit(verification storageCleanupVerification, re
 	if verification.Expectation != cleanupExpectationPresent {
 		return false
 	}
-	if strings.TrimSpace(result.Status) != "not_found" || strings.TrimSpace(result.ErrorKind) != "object_not_found" {
+	if strings.TrimSpace(result.Status) != "not_found" || strings.TrimSpace(result.ErrorKind) != "object_not_found" || strings.TrimSpace(result.VerificationMethod) != "ranged_get" {
 		return false
 	}
 	switch strings.TrimSpace(verification.FindingKind) {
@@ -131,17 +131,18 @@ func validateStorageCleanupResult(verification storageCleanupVerification, resul
 			return nil
 		}
 	case cleanupExpectationMissing:
-		if status == "not_found" && strings.TrimSpace(result.ErrorKind) == "object_not_found" {
+		if status == "not_found" && strings.TrimSpace(result.ErrorKind) == "object_not_found" && strings.TrimSpace(result.VerificationMethod) == "ranged_get" {
 			return nil
 		}
 	}
 	return fmt.Errorf(
-		"revalidate cleanup finding %q for %q: expected %s, got status=%q error_kind=%q error=%q",
+		"revalidate cleanup finding %q for %q: expected %s, got status=%q error_kind=%q verification_method=%q error=%q",
 		verification.FindingKind,
 		verification.ObjectURL,
 		verification.Expectation,
 		status,
 		strings.TrimSpace(result.ErrorKind),
+		strings.TrimSpace(result.VerificationMethod),
 		strings.TrimSpace(result.Error),
 	)
 }

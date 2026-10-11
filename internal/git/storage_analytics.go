@@ -13,6 +13,7 @@ import (
 
 	"github.com/calypr/gecko/internal/git/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
+	"github.com/calypr/gecko/internal/storageaudit"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -138,6 +139,7 @@ type storageAnalyticsBackend interface {
 	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
 	ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error)
 	BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
+	BulkConfirmStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error
 	DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]gintegrationsyfon.ProjectBucketDeleteResult, error)
@@ -250,6 +252,7 @@ type storageCleanupApplyPlan struct {
 	ManualPaths            []string
 	SkippedPaths           []string
 	Verifications          []storageCleanupVerification
+	AccessMethodChanges    []storageaudit.AccessMethodChange
 }
 
 type cleanupAuditModel struct {
@@ -977,6 +980,10 @@ func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context,
 	if len(selectedRepoPaths) > 0 && len(plan.DeleteObjectIDs) == 0 && len(plan.DeleteStorageObjectIDs) == 0 && len(plan.DeleteBucketObjects) == 0 && len(plan.UpdateAccessMethods) == 0 && len(plan.ManualPaths) == 0 && len(plan.SkippedPaths) == 0 {
 		return nil, fmt.Errorf("selected cleanup paths did not match provided cleanup findings")
 	}
+	plan.AccessMethodChanges, err = coalesceAccessMethodChanges(plan.AccessMethodChanges)
+	if err != nil {
+		return nil, err
+	}
 	return service.executeStorageCleanupApplyPlan(ctx, authorizationHeader, organization, project, plan, dryRun)
 }
 
@@ -1208,6 +1215,7 @@ func addAccessMethodRepairToPlan(plan *storageCleanupApplyPlan, finding GitStora
 			return fmt.Errorf("cleanup finding %q at %q record %q is missing broken access URL evidence", finding.Kind, finding.NormalizedPath, objectID)
 		}
 		remaining := remainingAccessMethodsAfterBrokenRemoval(record)
+		plan.AccessMethodChanges = append(plan.AccessMethodChanges, accessMethodChangeForRecord(record, remaining))
 		if len(remaining) == 0 {
 			plan.DeleteObjectIDs = append(plan.DeleteObjectIDs, objectID)
 			plan.RepoDeletePaths = append(plan.RepoDeletePaths, finding.NormalizedPath)
@@ -1338,6 +1346,9 @@ func accessProbeIsBroken(probe GitStorageCleanupAccessProbe) bool {
 }
 
 func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx context.Context, authorizationHeader string, organization string, project string, plan storageCleanupApplyPlan, dryRun bool) (*GitStorageCleanupApplyResponse, error) {
+	if err := service.verifyAccessMethodChanges(ctx, authorizationHeader, plan.AccessMethodChanges); err != nil {
+		return nil, err
+	}
 	toDelete := uniqueStrings(plan.DeleteObjectIDs)
 	toDeleteWithStorage := uniqueStrings(plan.DeleteStorageObjectIDs)
 	toDeleteMetadataOnly := differenceStrings(toDelete, toDeleteWithStorage)
@@ -1365,6 +1376,7 @@ func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx conte
 			ManualPaths:             manualPaths,
 			SkippedPaths:            skippedPaths,
 			DryRun:                  true,
+			AccessMethodChanges:     plan.AccessMethodChanges,
 		}, nil
 	}
 	if err := service.verifyStorageCleanupApplyPlan(ctx, authorizationHeader, &plan); err != nil {
@@ -1428,6 +1440,7 @@ func (service *StorageAnalyticsService) executeStorageCleanupApplyPlan(ctx conte
 		ManualPaths:             manualPaths,
 		SkippedPaths:            skippedPaths,
 		DryRun:                  false,
+		AccessMethodChanges:     plan.AccessMethodChanges,
 	}, nil
 }
 

@@ -302,4 +302,23 @@ type CleanupApplyResponse struct {
 	ManualPaths             []string             `json:"manual_paths"`
 	SkippedPaths            []string             `json:"skipped_paths"`
 	DryRun                  bool                 `json:"dry_run"`
+	AccessMethodChanges     []AccessMethodChange `json:"access_method_changes,omitempty"`
+}
+
+type AccessMethodProbe struct {
+	URL                string `json:"url"`
+	Status             string `json:"status"`
+	ErrorKind          string `json:"error_kind,omitempty"`
+	VerificationMethod string `json:"verification_method,omitempty"`
+	ValidationStatus   string `json:"validation_status,omitempty"`
+}
+
+type AccessMethodChange struct {
+	ObjectID    string                `json:"object_id"`
+	Before      []CleanupAccessMethod `json:"before"`
+	After       []CleanupAccessMethod `json:"after"`
+	Removed     []string              `json:"removed"`
+	Retained    []string              `json:"retained"`
+	Added       []string              `json:"added"`
+	FreshProbes []AccessMethodProbe   `json:"fresh_probes"`
 }

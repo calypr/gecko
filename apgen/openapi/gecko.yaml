@@ -1196,8 +1196,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '500':
-          '500':
-            $ref: '#/components/responses/InternalError'
+          $ref: '#/components/responses/InternalError'
   /git/projects/{orgTitle}/{projectTitle}/repair/storage-cleanup/apply:
     post:
       tags: [git]
@@ -1333,7 +1332,7 @@ paths:
     post:
       tags: [git]
       summary: Finalize an upload session
-      description: Finalizes an upload session: commits staged files into the project's git repository and advances the project workflow.
+      description: "Finalizes an upload session: commits staged files into the project's git repository and advances the project workflow."
       operationId: postGitProjectUploadSessionFinalize
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
@@ -1367,7 +1366,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT token issued by Fence, sent as `Authorization: Bearer <token>`.
+      description: "JWT token issued by Fence, sent as `Authorization: Bearer <token>`."
   parameters:
     OrgTitle:
       name: orgTitle

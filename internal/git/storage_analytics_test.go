@@ -29,6 +29,7 @@ type fakeStorageAnalyticsBackend struct {
 	usageByObject                        map[string]gintegrationsyfon.FileUsage
 	bulkChecksums                        []string
 	probeResults                         map[string]gintegrationsyfon.BulkStorageProbeResult
+	probeResultsByURL                    map[string]gintegrationsyfon.BulkStorageProbeResult
 	listProbeResults                     map[string]gintegrationsyfon.BulkStorageProbeResult
 	bucketObjects                        []gintegrationsyfon.ProjectBucketObject
 	bucketInventoryIncomplete            bool
@@ -291,6 +292,12 @@ func (fake *fakeStorageAnalyticsBackend) BulkProbeStorageObjects(ctx context.Con
 	fake.probeItems = append(fake.probeItems, items...)
 	out := make([]gintegrationsyfon.BulkStorageProbeResult, 0, len(items))
 	for _, item := range items {
+		if result, ok := fake.probeResultsByURL[item.ObjectURL]; ok {
+			result.ID = item.ID
+			result.ObjectURL = item.ObjectURL
+			out = append(out, result)
+			continue
+		}
 		if result, ok := fake.probeResults[item.ID]; ok {
 			out = append(out, result)
 			continue
@@ -307,6 +314,21 @@ func (fake *fakeStorageAnalyticsBackend) BulkProbeStorageObjects(ctx context.Con
 		})
 	}
 	return out, nil
+}
+
+func (fake *fakeStorageAnalyticsBackend) BulkConfirmStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
+	return fake.BulkProbeStorageObjects(ctx, authorizationHeader, items)
+}
+
+func markBrokenAccessURLs(fake *fakeStorageAnalyticsBackend, urls ...string) {
+	if fake.probeResultsByURL == nil {
+		fake.probeResultsByURL = make(map[string]gintegrationsyfon.BulkStorageProbeResult)
+	}
+	for _, url := range urls {
+		fake.probeResultsByURL[url] = gintegrationsyfon.BulkStorageProbeResult{
+			Status: "not_found", ErrorKind: "object_not_found", VerificationMethod: "ranged_get",
+		}
+	}
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error) {
@@ -944,6 +966,7 @@ func TestApplyStorageCleanupRepairsBrokenBucketMappings(t *testing.T) {
 			},
 		},
 	}
+	markBrokenAccessURLs(backend, "s3://legacy/a", "s3://legacy/b")
 	service := NewStorageAnalyticsService(backend)
 
 	applyResult, err := service.ApplyStorageCleanup(
@@ -1338,9 +1361,10 @@ func TestApplyStorageCleanupRepairMatrix(t *testing.T) {
 			}
 			if cleanupVerificationExpectation(test.finding.Kind, action) == cleanupExpectationMissing {
 				backend.probeResults["cleanup-revalidate-0"] = gintegrationsyfon.BulkStorageProbeResult{
-					ID:        "cleanup-revalidate-0",
-					Status:    "not_found",
-					ErrorKind: "object_not_found",
+					ID:                 "cleanup-revalidate-0",
+					Status:             "not_found",
+					ErrorKind:          "object_not_found",
+					VerificationMethod: "ranged_get",
 				}
 			}
 			service := NewStorageAnalyticsService(backend)
@@ -1471,6 +1495,11 @@ func TestApplyStorageCleanupPrunesBrokenAccessMethods(t *testing.T) {
 					})
 				}
 				backend.projectRecords = []gintegrationsyfon.ProjectRecord{current}
+				for _, probe := range test.record.AccessProbes {
+					if probe.Status != "present" {
+						markBrokenAccessURLs(backend, probe.URL)
+					}
+				}
 			}
 			service := NewStorageAnalyticsService(backend)
 			_, err := service.ApplyStorageCleanup(
@@ -1547,6 +1576,7 @@ func TestApplyStorageCleanupReconcilesBrokenAccessURLsToFreshPhysicalRows(t *tes
 			},
 		},
 	}
+	markBrokenAccessURLs(backend, brokenURL)
 	service := NewStorageAnalyticsService(backend)
 	brokenExists := false
 	finding := GitStorageCleanupApplyFinding{
@@ -1614,6 +1644,7 @@ func TestApplyStorageCleanupUnionsBrokenAccessURLsAcrossSelectedFindings(t *test
 			}},
 		},
 	}
+	markBrokenAccessURLs(backend, brokenURLA, brokenURLB)
 	service := NewStorageAnalyticsService(backend)
 	findings := []GitStorageCleanupApplyFinding{
 		brokenAccessRepairFindingForTest(canonicalID, checksum, brokenURLA, goodURL),
@@ -1635,6 +1666,9 @@ func TestApplyStorageCleanupUnionsBrokenAccessURLsAcrossSelectedFindings(t *test
 	}
 	if len(result.UpdatedRecordIDs) != 1 || result.UpdatedRecordIDs[0] != siblingID {
 		t.Fatalf("expected one physical sibling update, got %+v", result.UpdatedRecordIDs)
+	}
+	if len(result.AccessMethodChanges) != 1 || len(result.AccessMethodChanges[0].Removed) != 2 {
+		t.Fatalf("expected one consolidated preview for the physical sibling, got %+v", result.AccessMethodChanges)
 	}
 }
 
@@ -1661,6 +1695,7 @@ func TestApplyStorageCleanupMatchesCanonicalizedLegacyAccessURLToFreshRawMethod(
 			Path:         "s3://bforepc/bforepc-prod",
 		}},
 	}
+	markBrokenAccessURLs(backend, brokenRawURL)
 	service := NewStorageAnalyticsService(backend)
 	brokenExists := false
 	finding := GitStorageCleanupApplyFinding{

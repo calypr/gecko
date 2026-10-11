@@ -476,6 +476,27 @@ func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	}
 }
 
+func TestBulkConfirmStorageObjectsRequestsRangedGetConfirmation(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request struct {
+			ConfirmMissing bool `json:"confirm_missing"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.ConfirmMissing {
+			t.Fatal("repair confirmation did not request ranged GET proof")
+		}
+		body := `{"items":[{"id":"one","object_url":"s3://bucket/key","exists":false,"status":"not_found","error_kind":"object_not_found","verification_method":"ranged_get","validation_status":"unverifiable"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	manager := NewManager("http://syfon.example", client)
+	results, err := manager.BulkConfirmStorageObjects(context.Background(), "Bearer token", []BulkStorageProbeItem{{ID: "one", ObjectURL: "s3://bucket/key"}})
+	if err != nil || len(results) != 1 || results[0].VerificationMethod != "ranged_get" {
+		t.Fatalf("confirmed probe = %+v, %v", results, err)
+	}
+}
+
 func TestBulkListStorageObjectsSendsExpectedName(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk-list" {

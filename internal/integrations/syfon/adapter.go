@@ -104,6 +104,7 @@ type BulkStorageProbeResult struct {
 	Status               string
 	Error                string
 	ErrorKind            string
+	VerificationMethod   string
 	SizeBytes            *int64
 	MetaSHA256           string
 	ETag                 string
@@ -804,10 +805,14 @@ func (manager *Manager) BulkUpdateAccessMethods(ctx context.Context, authorizati
 }
 
 func (manager *Manager) BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
-	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false)
+	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false, false)
 }
 
-func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeResult, error) {
+func (manager *Manager) BulkConfirmStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false, true)
+}
+
+func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool, confirmMissing bool) ([]BulkStorageProbeResult, error) {
 	if len(items) == 0 {
 		return []BulkStorageProbeResult{}, nil
 	}
@@ -844,7 +849,7 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 			defer wg.Done()
 			defer func() { <-sem }()
 			batchStarted := time.Now()
-			results, err := manager.probeStorageObjectBatch(ctx, authorizationHeader, requestPath, batch, includeExpectedName)
+			results, err := manager.probeStorageObjectBatch(ctx, authorizationHeader, requestPath, batch, includeExpectedName, confirmMissing)
 			batchMs := time.Since(batchStarted).Milliseconds()
 			mu.Lock()
 			defer mu.Unlock()
@@ -911,16 +916,17 @@ func bulkStorageProbeDedupKey(item BulkStorageProbeItem, includeExpectedName boo
 	return strings.Join(parts, "\x00")
 }
 
-func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeResult, error) {
+func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool, confirmMissing bool) ([]BulkStorageProbeResult, error) {
 	requestBody := struct {
-		Items []struct {
+		ConfirmMissing bool `json:"confirm_missing,omitempty"`
+		Items          []struct {
 			ID                string `json:"id,omitempty"`
 			ObjectURL         string `json:"object_url,omitempty"`
 			ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
 			ExpectedSHA256    string `json:"expected_sha256,omitempty"`
 			ExpectedName      string `json:"expected_name,omitempty"`
 		} `json:"items"`
-	}{Items: make([]struct {
+	}{ConfirmMissing: confirmMissing, Items: make([]struct {
 		ID                string `json:"id,omitempty"`
 		ObjectURL         string `json:"object_url,omitempty"`
 		ExpectedSizeBytes *int64 `json:"expected_size_bytes,omitempty"`
@@ -957,6 +963,7 @@ func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizati
 			Status               string   `json:"status"`
 			Error                string   `json:"error"`
 			ErrorKind            string   `json:"error_kind"`
+			VerificationMethod   string   `json:"verification_method"`
 			SizeBytes            *int64   `json:"size_bytes"`
 			MetaSHA256           string   `json:"meta_sha256"`
 			ETag                 string   `json:"etag"`
@@ -984,6 +991,7 @@ func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizati
 			Status:               strings.TrimSpace(item.Status),
 			Error:                strings.TrimSpace(item.Error),
 			ErrorKind:            strings.TrimSpace(item.ErrorKind),
+			VerificationMethod:   strings.TrimSpace(item.VerificationMethod),
 			SizeBytes:            item.SizeBytes,
 			MetaSHA256:           strings.TrimSpace(item.MetaSHA256),
 			ETag:                 strings.TrimSpace(item.ETag),
@@ -999,7 +1007,7 @@ func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizati
 }
 
 func (manager *Manager) BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
-	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk-list", items, true)
+	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk-list", items, true, false)
 }
 
 func (manager *Manager) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*ProjectBucketSummary, error) {
