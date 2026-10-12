@@ -254,7 +254,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
+	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(ctx.Context(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
@@ -276,7 +276,7 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 		return errResponse.Write(ctx)
 	}
 	allowedResources := statusAccess.readableResources
-	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
+	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(ctx.Context(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
@@ -376,7 +376,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	reconcileCtx, cancel := context.WithTimeout(ctx.Context(), 30*time.Second)
 	defer cancel()
 	if err := handler.projectSync.ReconcileOrganization(reconcileCtx, organization, authorizationHeader, projectIDs); err != nil {
 		return shared.WriteAppError(ctx, err)
@@ -387,7 +387,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		return errResponse.Write(ctx)
 	}
 	allowedResources = statusAccess.readableResources
-	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(context.Background(), authorizationHeader, organization, projectIDs, allowedResources)
+	responsePayload, err := handler.projectSync.BuildSingleOrganizationStatus(ctx.Context(), authorizationHeader, organization, projectIDs, allowedResources)
 	if err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
@@ -415,12 +415,12 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 	}
 	allowedResources := statusAccess.readableResources
 	projectIDs = git.FilterProjectIDsByAllowedResources(projectIDs, allowedResources)
-	reconcileCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	reconcileCtx, cancel := context.WithTimeout(ctx.Context(), 45*time.Second)
 	defer cancel()
 	if err := handler.projectSync.ReconcileOrganizations(reconcileCtx, authorizationHeader, projectIDs); err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
-	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(context.Background(), authorizationHeader, projectIDs, allowedResources)
+	responsePayload, err := handler.projectSync.BuildOrganizationsStatus(ctx.Context(), authorizationHeader, projectIDs, allowedResources)
 	if err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
