@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -82,7 +83,7 @@ func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, met
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeInvalidProjectID, fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Path())), http.StatusNotFound, map[string]any{"project_id": projectID}, nil))
 		}
 
-		anyList, err := authzHandler.GetAllowedResources(authorizationHeader, method, service)
+		anyList, err := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, service)
 		if err != nil {
 			if serverErr, ok := err.(*ggmw.ServerError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -127,7 +128,7 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
 		resourcePath := ProgramProjectResourcePath(organization, project)
-		allowed, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, method, "*", resourcePath)
+		allowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, method, "*", resourcePath)
 		if err != nil {
 			if serverErr, ok := err.(*AccessError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -135,7 +136,7 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
 		if !allowed {
-			anyList, listErr := authzHandler.GetAllowedResources(authorizationHeader, method, "*")
+			anyList, listErr := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, "*")
 			if listErr != nil {
 				if serverErr, ok := listErr.(*AccessError); ok {
 					return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -199,7 +200,7 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler ResourceAccessHandler) fi
 		if organization == "" || project == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
-		resources, conversionErr := GitAllowedResources(jwtHandler, token, permission)
+		resources, conversionErr := GitAllowedResources(ctx.Context(), jwtHandler, token, permission)
 		if conversionErr != nil {
 			return writeError(ctx, logger, conversionErr)
 		}
@@ -229,7 +230,7 @@ func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessH
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
 		resourcePath := ProgramProjectResourcePath(organization, project)
-		allowed, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, method, "*", resourcePath)
+		allowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, method, "*", resourcePath)
 		if err != nil {
 			if serverErr, ok := err.(*AccessError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -237,7 +238,7 @@ func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessH
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
 		if !allowed {
-			anyList, listErr := authzHandler.GetAllowedResources(authorizationHeader, method, "*")
+			anyList, listErr := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, "*")
 			if listErr != nil {
 				if serverErr, ok := listErr.(*AccessError); ok {
 					return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -279,7 +280,7 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
 		projectResource := ProgramProjectResourcePath(organization, project)
-		projectReadable, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "read", "*", projectResource)
+		projectReadable, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "read", "*", projectResource)
 		if err != nil {
 			if serverErr, ok := err.(*AccessError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -290,7 +291,7 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 			return ctx.Next()
 		}
 		orgProjectsResource := fmt.Sprintf("/programs/%s/projects", organization)
-		orgCreateAllowed, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
+		orgCreateAllowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
 		if err != nil {
 			if serverErr, ok := err.(*AccessError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -301,7 +302,7 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 			return ctx.Next()
 		}
 		orgResource := fmt.Sprintf("/programs/%s", organization)
-		orgManageAllowed, err := authzHandler.CheckResourceServiceAccess(authorizationHeader, "manage-owners", "arborist", orgResource)
+		orgManageAllowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "manage-owners", "arborist", orgResource)
 		if err != nil {
 			if serverErr, ok := err.(*AccessError); ok {
 				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
@@ -334,7 +335,7 @@ func GitOrganizationAuth(logger arborist.Logger, jwtHandler ResourceAccessHandle
 		if organization == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization is required", http.StatusBadRequest, nil, nil))
 		}
-		allowed, err := jwtHandler.GetAllowedResources(token, "read", "*")
+		allowed, err := jwtHandler.GetAllowedResources(ctx.Context(), token, "read", "*")
 		if err != nil {
 			return writeError(ctx, logger, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil))
 		}
@@ -349,8 +350,8 @@ func GitOrganizationAuth(logger arborist.Logger, jwtHandler ResourceAccessHandle
 	}
 }
 
-func GitAllowedResources(jwtHandler ResourceAccessHandler, token string, permission string) ([]string, *httputil.ErrorResponse) {
-	allowed, err := jwtHandler.GetAllowedResources(token, permission, "*")
+func GitAllowedResources(ctx context.Context, jwtHandler ResourceAccessHandler, token string, permission string) ([]string, *httputil.ErrorResponse) {
+	allowed, err := jwtHandler.GetAllowedResources(ctx, token, permission, "*")
 	if err != nil {
 		if serverErr, ok := err.(*AccessError); ok {
 			return nil, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)

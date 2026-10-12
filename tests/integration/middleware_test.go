@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -22,7 +23,7 @@ type MockJWTHandler struct {
 	Err              error
 }
 
-func (m *MockJWTHandler) GetAllowedResources(token string, method, service string) ([]any, error) {
+func (m *MockJWTHandler) GetAllowedResources(ctx context.Context, token string, method, service string) ([]any, error) {
 	if m.Err != nil {
 		return nil, m.Err
 	}
@@ -33,7 +34,7 @@ func (m *MockJWTHandler) GetAllowedResources(token string, method, service strin
 	return out, nil
 }
 
-func (m *MockJWTHandler) CheckResourceServiceAccess(token, resource, service, method string) (bool, error) {
+func (m *MockJWTHandler) CheckResourceServiceAccess(ctx context.Context, token, resource, service, method string) (bool, error) {
 	if m.Err != nil {
 		return false, m.Err
 	}
@@ -104,10 +105,10 @@ func TestGeneralAuthMware_GetAllowedResourcesServerError(t *testing.T) {
 
 type MockJWTHandlerBadAny struct{}
 
-func (m *MockJWTHandlerBadAny) GetAllowedResources(token string, method, service string) ([]any, error) {
+func (m *MockJWTHandlerBadAny) GetAllowedResources(ctx context.Context, token string, method, service string) ([]any, error) {
 	return []any{123}, nil
 }
-func (m *MockJWTHandlerBadAny) CheckResourceServiceAccess(token, resource, service, method string) (bool, error) {
+func (m *MockJWTHandlerBadAny) CheckResourceServiceAccess(ctx context.Context, token, resource, service, method string) (bool, error) {
 	return true, nil
 }
 

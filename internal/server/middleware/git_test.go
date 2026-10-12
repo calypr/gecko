@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -25,11 +26,11 @@ type fakeJWTAllowedResourceHandler struct {
 	resources []any
 }
 
-func (handler fakeJWTAllowedResourceHandler) GetAllowedResources(_ string, _ string, _ string) ([]any, error) {
+func (handler fakeJWTAllowedResourceHandler) GetAllowedResources(_ context.Context, _ string, _ string, _ string) ([]any, error) {
 	return handler.resources, nil
 }
 
-func (handler fakeJWTAllowedResourceHandler) CheckResourceServiceAccess(_ string, _ string, _ string, resourcePath string) (bool, error) {
+func (handler fakeJWTAllowedResourceHandler) CheckResourceServiceAccess(_ context.Context, _ string, _ string, _ string, resourcePath string) (bool, error) {
 	for _, resource := range handler.resources {
 		if value, ok := resource.(string); ok && value == resourcePath {
 			return true, nil
@@ -316,7 +317,7 @@ func TestFenceUserAccessHandlerGetResourceAccessUsesProjectAccessFallback(t *tes
 
 	token := "Bearer " + buildUnverifiedJWT(t, map[string]any{"iss": "https://example.test"})
 	handler := NewFenceUserAccessHandler(client)
-	snapshot, err := handler.GetResourceAccess(token)
+	snapshot, err := handler.GetResourceAccess(context.Background(), token)
 	if err != nil {
 		t.Fatalf("unexpected access lookup error: %v", err)
 	}

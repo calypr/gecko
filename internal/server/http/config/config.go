@@ -88,7 +88,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 			errResponse.WriteLog(handler.logger)
 			return errResponse.Write(ctx)
 		}
-		allowedResources, errResponse := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+		allowedResources, errResponse := git.AllowedReadResources(ctx.Context(), strings.TrimSpace(ctx.Get("Authorization")))
 		if errResponse != nil {
 			errResponse.WriteLog(handler.logger)
 			return errResponse.Write(ctx)

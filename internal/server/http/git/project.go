@@ -138,7 +138,7 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	allowedResources, errResponse := git.AllowedReadResources(strings.TrimSpace(ctx.Get("Authorization")))
+	allowedResources, errResponse := git.AllowedReadResources(ctx.Context(), strings.TrimSpace(ctx.Get("Authorization")))
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -243,7 +243,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		return response.Write(ctx)
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
-	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(ctx.Context(), authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -270,7 +270,7 @@ func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
 		return response.Write(ctx)
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
-	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(ctx.Context(), authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -291,12 +291,12 @@ type gitStatusAccess struct {
 	snapshot          servermw.ResourceAccessSnapshot
 }
 
-func gitStatusAccessSnapshot(token string) (*gitStatusAccess, *httputil.ErrorResponse) {
+func gitStatusAccessSnapshot(ctx context.Context, token string) (*gitStatusAccess, *httputil.ErrorResponse) {
 	if token == "" {
 		return &gitStatusAccess{}, nil
 	}
 	authzHandler := servermw.NewFenceUserAccessHandler(nil)
-	snapshot, err := authzHandler.GetResourceAccess(token)
+	snapshot, err := authzHandler.GetResourceAccess(ctx, token)
 	if err != nil {
 		if serverErr, ok := err.(*servermw.AccessError); ok {
 			return nil, httputil.NewError(gitStatusServiceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
@@ -359,7 +359,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(ctx.Context(), authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -381,7 +381,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 	if err := handler.projectSync.ReconcileOrganization(reconcileCtx, organization, authorizationHeader, projectIDs); err != nil {
 		return shared.WriteAppError(ctx, err)
 	}
-	statusAccess, errResponse = gitStatusAccessSnapshot(authorizationHeader)
+	statusAccess, errResponse = gitStatusAccessSnapshot(ctx.Context(), authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -408,7 +408,7 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	statusAccess, errResponse := gitStatusAccessSnapshot(authorizationHeader)
+	statusAccess, errResponse := gitStatusAccessSnapshot(ctx.Context(), authorizationHeader)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)

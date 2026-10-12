@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -42,8 +43,8 @@ func NewFenceUserAccessHandler(client *http.Client) *FenceUserAccessHandler {
 	return &FenceUserAccessHandler{client: client}
 }
 
-func (h *FenceUserAccessHandler) CheckResourceServiceAccess(token, method, service, resourcePath string) (bool, error) {
-	allowed, err := h.GetAllowedResources(token, method, service)
+func (h *FenceUserAccessHandler) CheckResourceServiceAccess(ctx context.Context, token, method, service, resourcePath string) (bool, error) {
+	allowed, err := h.GetAllowedResources(ctx, token, method, service)
 	if err != nil {
 		return false, err
 	}
@@ -59,8 +60,8 @@ func (h *FenceUserAccessHandler) CheckResourceServiceAccess(token, method, servi
 	return false, nil
 }
 
-func (h *FenceUserAccessHandler) GetAllowedResources(token, method, service string) ([]any, error) {
-	snapshot, err := h.GetResourceAccess(token)
+func (h *FenceUserAccessHandler) GetAllowedResources(ctx context.Context, token, method, service string) ([]any, error) {
+	snapshot, err := h.GetResourceAccess(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (h *FenceUserAccessHandler) GetAllowedResources(token, method, service stri
 	return out, nil
 }
 
-func (h *FenceUserAccessHandler) GetResourceAccess(token string) (ResourceAccessSnapshot, error) {
+func (h *FenceUserAccessHandler) GetResourceAccess(ctx context.Context, token string) (ResourceAccessSnapshot, error) {
 	endpoint, err := fenceUserEndpoint(token)
 	if err != nil {
 		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
@@ -83,7 +84,7 @@ func (h *FenceUserAccessHandler) GetResourceAccess(token string) (ResourceAccess
 		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, &AccessError{StatusCode: http.StatusBadGateway, Message: fmt.Sprintf("failed to build authorization snapshot request: %s", err)}
 	}
@@ -175,7 +176,11 @@ func fenceUserEndpoint(authorizationHeader string) (string, error) {
 	if iss == "" {
 		return "", fmt.Errorf("authorization token does not include iss")
 	}
-	return strings.TrimRight(iss, "/") + "/user", nil
+	u, err := url.Parse(iss)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return "", fmt.Errorf("authorization token has an invalid iss")
+	}
+	return u.Scheme + "://" + u.Host + "/user", nil
 }
 
 func convertAnyToStringSlice(anySlice []any) ([]string, *httputil.ErrorResponse) {

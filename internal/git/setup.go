@@ -278,7 +278,7 @@ func (service *SetupService) ensureProjectOwnershipResources(ctx context.Context
 	orgProjectsResource := fmt.Sprintf("/programs/%s/projects", organization)
 	orgResource := fmt.Sprintf("/programs/%s", organization)
 
-	projectReadable, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "read", "*", projectResource)
+	projectReadable, err := service.accessChecks.CheckResourceServiceAccess(ctx, authorizationHeader, "read", "*", projectResource)
 	if err != nil {
 		return nil, err
 	}
@@ -286,11 +286,11 @@ func (service *SetupService) ensureProjectOwnershipResources(ctx context.Context
 		return created, nil
 	}
 
-	orgCanCreateProject, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
+	orgCanCreateProject, err := service.accessChecks.CheckResourceServiceAccess(ctx, authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
 	if err != nil {
 		return nil, err
 	}
-	orgManageOwners, err := service.accessChecks.CheckResourceServiceAccess(authorizationHeader, "manage-owners", "arborist", orgResource)
+	orgManageOwners, err := service.accessChecks.CheckResourceServiceAccess(ctx, authorizationHeader, "manage-owners", "arborist", orgResource)
 	if err != nil {
 		return nil, err
 	}

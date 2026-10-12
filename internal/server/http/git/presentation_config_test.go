@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -24,11 +25,11 @@ type fakePresentationAccessHandler struct {
 	resources []any
 }
 
-func (handler fakePresentationAccessHandler) GetAllowedResources(_ string, _ string, _ string) ([]any, error) {
+func (handler fakePresentationAccessHandler) GetAllowedResources(_ context.Context, _ string, _ string, _ string) ([]any, error) {
 	return handler.resources, nil
 }
 
-func (handler fakePresentationAccessHandler) CheckResourceServiceAccess(_ string, _ string, _ string, resourcePath string) (bool, error) {
+func (handler fakePresentationAccessHandler) CheckResourceServiceAccess(_ context.Context, _ string, _ string, _ string, resourcePath string) (bool, error) {
 	for _, resource := range handler.resources {
 		if value, ok := resource.(string); ok && value == resourcePath {
 			return true, nil

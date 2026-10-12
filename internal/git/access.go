@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -11,11 +12,11 @@ import (
 // AllowedReadResources returns the Fence resource paths the caller may read.
 // A missing token yields no resources and no error, so callers fall through to
 // per-project filtering instead of failing the whole request.
-func AllowedReadResources(token string) ([]string, *httputil.ErrorResponse) {
+func AllowedReadResources(ctx context.Context, token string) ([]string, *httputil.ErrorResponse) {
 	if token == "" {
 		return nil, nil
 	}
-	resources, err := servermw.GitAllowedResources(servermw.NewFenceUserAccessHandler(nil), token, "read")
+	resources, err := servermw.GitAllowedResources(ctx, servermw.NewFenceUserAccessHandler(nil), token, "read")
 	if err != nil {
 		return nil, err
 	}
