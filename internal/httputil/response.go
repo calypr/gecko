@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"regexp"
 
 	"github.com/calypr/gecko/apierror"
 	geckologging "github.com/calypr/gecko/internal/logging"
@@ -134,9 +133,11 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 		}
 
 		msg := fmt.Sprintf("could not parse %s from JSON; make sure input has correct types", structType)
+		// Deliberately excludes the request body: callers already have it, and
+		// echoing it back would surface credentials and personal data in
+		// client-visible error details (and in anything that logs these responses).
 		errDetails := map[string]any{
 			"target_type": structType.String(),
-			"body":        string(loggableJSON(body)),
 		}
 
 		switch e := err.(type) {
@@ -168,9 +169,3 @@ func MergeErrorDetails(base map[string]any, extra map[string]any) map[string]any
 	}
 	return base
 }
-
-func loggableJSON(body []byte) []byte {
-	return regWhitespace.ReplaceAll(body, []byte(""))
-}
-
-var regWhitespace = regexp.MustCompile(`\s`)

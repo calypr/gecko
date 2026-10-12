@@ -9,6 +9,7 @@ import (
 func RegisterRoutes(app *fiber.App, sharedHandler *shared.Handler, authzHandler servermw.ResourceAccessHandler) {
 	handler := NewHandler(sharedHandler)
 	if handler.GitService == nil {
+		handler.logger.Warning("git routes not registered: git service is nil")
 		return
 	}
 	gitGroup := app.Group("/git")

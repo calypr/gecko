@@ -34,7 +34,7 @@ func (handler *Handler) handleGitProjectRefsGET(ctx fiber.Ctx) error {
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
 	if authorizationHeader != "" {
-		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		refreshCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 		defer cancel()
 		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
@@ -74,7 +74,7 @@ func (handler *Handler) handleGitProjectTreeGET(ctx fiber.Ctx) error {
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
 	if authorizationHeader != "" {
-		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		refreshCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 		defer cancel()
 		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {
@@ -151,7 +151,7 @@ func (handler *Handler) handleGitProjectManifestGET(ctx fiber.Ctx) error {
 	}
 	authorizationHeader := strings.TrimSpace(ctx.Get("Authorization"))
 	if authorizationHeader != "" {
-		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		refreshCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 		defer cancel()
 		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, false)
 		if err != nil {

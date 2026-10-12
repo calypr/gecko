@@ -153,7 +153,7 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 	}
 	targetSubdir := git.NormalizeGitUploadSubdirectory(requestBody.TargetSubdir)
 	sessionID := uuid.NewString()
-	prepareCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	prepareCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 	defer cancel()
 	state, err := handler.ensureMirrorReadyForUpload(prepareCtx, authorizationHeader, projectID, identity, state)
 	if err != nil {

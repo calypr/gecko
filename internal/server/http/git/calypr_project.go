@@ -35,7 +35,7 @@ func (handler *Handler) handleCalyprProjectSetupPUT(ctx fiber.Ctx) error {
 		return errResponse.Write(ctx)
 	}
 
-	setupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	setupCtx, cancel := context.WithTimeout(ctx.Context(), 20*time.Second)
 	defer cancel()
 	response, err := handler.projectSetup.InitializeProject(setupCtx, authorizationHeader, organization, project, request)
 	if err != nil {
@@ -64,7 +64,7 @@ func (handler *Handler) handleCalyprProjectStoragePUT(ctx fiber.Ctx) error {
 		return errResponse.Write(ctx)
 	}
 
-	setupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	setupCtx, cancel := context.WithTimeout(ctx.Context(), 20*time.Second)
 	defer cancel()
 	response, err := handler.projectSetup.PopulateStorage(setupCtx, authorizationHeader, organization, project, request)
 	if err != nil {
