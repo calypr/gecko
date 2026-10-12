@@ -516,7 +516,7 @@ func (handler *Handler) resolveGitAnalyticsContextWithMirrorPolicy(ctx fiber.Ctx
 	if authorizationHeader != "" {
 		start := time.Now()
 		timings.StageStart("mirror_warmup")
-		refreshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		refreshCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 		defer cancel()
 		state, err = handler.ensureMirrorReadyForRead(refreshCtx, authorizationHeader, projectID, identity, state, requireCurrentMirror)
 		timings.Record("mirror_warmup", time.Since(start))

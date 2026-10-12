@@ -340,7 +340,7 @@ func (handler *Handler) handleGitProjectUploadSessionFinalizePOST(ctx fiber.Ctx)
 			return response.Write(ctx)
 		}
 	}
-	finalizeCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	finalizeCtx, cancel := context.WithTimeout(ctx.Context(), 60*time.Second)
 	defer cancel()
 	org, project, _ := strings.Cut(projectID, "/")
 	commitSHA, prURL, err := handler.gitService.CreateGitHubUploadPullRequest(finalizeCtx, authorizationHeader, org, project, identity, session.BaseBranch, session.BranchName, session.PRTitle, session.PRBody, files)
