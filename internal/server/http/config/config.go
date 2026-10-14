@@ -36,10 +36,6 @@ type ProjectListResponse struct {
 	ThumbnailURL string               `json:"thumbnail_url,omitempty"`
 }
 
-func isKnownType(t string) bool {
-	return config.IsKnownType(t)
-}
-
 func (handler *Handler) resolveConfigParams(ctx fiber.Ctx) (string, string) {
 	return servermw.ResolveConfigParams(ctx)
 }
@@ -61,7 +57,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 		configType = ctx.Query("type", string(config.TypeProjects))
 	}
 
-	if !isKnownType(configType) {
+	if !config.IsKnownType(configType) {
 		errResponse := httputil.NewError(apierror.TypeInvalidConfigType, fmt.Sprintf("Unknown config type: %s", configType), http.StatusBadRequest, map[string]any{"config_type": configType}, nil)
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
