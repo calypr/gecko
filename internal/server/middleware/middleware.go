@@ -180,7 +180,7 @@ func fenceUserEndpoint(authorizationHeader string) (string, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 		return "", fmt.Errorf("authorization token has an invalid iss")
 	}
-	return u.Scheme + "://" + u.Host + "/user", nil
+	return strings.TrimRight(iss, "/") + "/user", nil
 }
 
 func convertAnyToStringSlice(anySlice []any) ([]string, *httputil.ErrorResponse) {
