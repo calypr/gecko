@@ -12,7 +12,7 @@ type FieldConfig struct {
 
 type FilterTab struct {
 	Title        string                 `json:"title,omitempty"`
-	Fields       []string               `json:"fields"`
+	Fields       []string               `json:"fields,omitempty"`
 	FieldsConfig map[string]FieldConfig `json:"fieldsConfig,omitempty"`
 }
 

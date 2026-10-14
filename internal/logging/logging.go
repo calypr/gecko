@@ -31,20 +31,22 @@ type Entry struct {
 }
 
 func (cache *Cache) Write(logger arborist.Logger) {
-	if l, ok := logger.(*Handler); ok {
-		for _, log := range cache.logs {
-			switch log.lvl {
-			case LogLevelDebug:
-				l.Debug("%s", log.msg)
-			case LogLevelInfo:
-				l.Info("%s", log.msg)
-			case LogLevelWarning:
-				l.Warning("%s", log.msg)
-			case LogLevelError:
-				l.Error("%s", log.msg)
-			default:
-				l.Print("%s", log.msg)
-			}
+	l, ok := logger.(*Handler)
+	if !ok {
+		l = &Handler{Logger: log.New(os.Stderr, "", log.Ldate|log.Ltime)}
+	}
+	for _, log := range cache.logs {
+		switch log.lvl {
+		case LogLevelDebug:
+			l.Debug("%s", log.msg)
+		case LogLevelInfo:
+			l.Info("%s", log.msg)
+		case LogLevelWarning:
+			l.Warning("%s", log.msg)
+		case LogLevelError:
+			l.Error("%s", log.msg)
+		default:
+			l.Print("%s", log.msg)
 		}
 	}
 }

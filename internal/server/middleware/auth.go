@@ -44,7 +44,7 @@ func ConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fibe
 			case fiber.MethodPut, fiber.MethodDelete:
 				permMethod = "create"
 			default:
-				return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, fmt.Sprintf("Unsupported HTTP method %s on %s", method, ctx.Path()), http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, "Unsupported HTTP method", http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
 			}
 			ctx.Locals("projectId", configID)
 			return GeneralAuth(logger, authzHandler, permMethod, "*")(ctx)
@@ -56,14 +56,14 @@ func ConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fibe
 		if method == fiber.MethodPut || method == fiber.MethodDelete {
 			return writeError(ctx, logger, httputil.NewError(
 				apierror.TypeForbidden,
-				fmt.Sprintf("Route %s %s must use route-specific authorization; refusing global /programs fallback", method, ctx.Path()),
+				"Route must use route-specific authorization; refusing global /programs fallback",
 				http.StatusForbidden,
-				map[string]any{"method": method, "path": ctx.Path(), "config_type": configType},
+				map[string]any{"method": method, "config_type": configType},
 				nil,
 			))
 		}
 
-		return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, fmt.Sprintf("Unsupported HTTP method %s on %s", method, ctx.Path()), http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
+		return writeError(ctx, logger, httputil.NewError(apierror.TypeMethodNotAllowed, "Unsupported HTTP method", http.StatusMethodNotAllowed, map[string]any{"method": method}, nil))
 	}
 }
 
@@ -80,7 +80,7 @@ func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, met
 		}
 		projectSplit := strings.Split(projectID, "-")
 		if len(projectSplit) != 2 {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeInvalidProjectID, fmt.Sprintf("Failed to parse request body: %v", fmt.Sprintf("incorrect path %s", ctx.Path())), http.StatusNotFound, map[string]any{"project_id": projectID}, nil))
+			return writeError(ctx, logger, httputil.NewError(apierror.TypeInvalidProjectID, "organization and project are required", http.StatusBadRequest, map[string]any{"project_id": projectID}, nil))
 		}
 
 		anyList, err := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, service)
@@ -219,48 +219,7 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler ResourceAccessHandler) fi
 }
 
 func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method string) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
-		authorizationHeader := ctx.Get("Authorization")
-		if authorizationHeader == "" {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeMissingAuthorization, "Authorization token not provided", http.StatusUnauthorized, nil, nil))
-		}
-		organization := strings.TrimSpace(ctx.Params("orgTitle"))
-		project := strings.TrimSpace(ctx.Params("projectTitle"))
-		if organization == "" || project == "" {
-			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
-		}
-		resourcePath := ProgramProjectResourcePath(organization, project)
-		allowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, method, "*", resourcePath)
-		if err != nil {
-			if serverErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
-			}
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
-		}
-		if !allowed {
-			anyList, listErr := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, "*")
-			if listErr != nil {
-				if serverErr, ok := listErr.(*AccessError); ok {
-					return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
-				}
-				return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, listErr.Error(), http.StatusForbidden, nil, nil))
-			}
-			resources, conversionErr := convertAnyToStringSlice(anyList)
-			if conversionErr != nil {
-				return writeError(ctx, logger, conversionErr)
-			}
-			allowed = resourceListAllowsProjectAdminAction(resources, organization, project)
-		}
-		if !allowed {
-			return writeError(ctx, logger, httputil.NewError(apierror.TypeForbidden, fmt.Sprintf("User does not have required %s permission on resource %s", method, resourcePath), http.StatusForbidden, map[string]any{
-				"resource":     resourcePath,
-				"method":       method,
-				"organization": organization,
-				"project":      project,
-			}, nil))
-		}
-		return ctx.Next()
-	}
+	return ProjectConfigAuth(logger, authzHandler, method)
 }
 
 // GitProjectSetupAuth is for setup-adjacent routes that operate on an existing

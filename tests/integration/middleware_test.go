@@ -77,8 +77,8 @@ func TestGeneralAuthMware_BadProjectID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/ohsu", nil)
 	req.Header.Set("Authorization", "Bearer dummy")
 	resp, body := runFiber(app, req, t)
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-	assert.Contains(t, body, "Failed to parse request body")
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, body, "organization and project are required")
 }
 
 func TestGeneralAuthMware_GetAllowedResourcesNonServerError(t *testing.T) {

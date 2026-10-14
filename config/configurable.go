@@ -5,7 +5,10 @@ type Configurable interface {
 }
 
 func (c Config) IsZero() bool {
-	return len(c.ExplorerConfig) == 0
+	return len(c.ExplorerConfig) == 0 &&
+		len(c.SharedFilters.SharedFilter) == 0 &&
+		len(c.FileActions.Extensions) == 0 &&
+		len(c.FileActions.Actions) == 0
 }
 
 func (n NavPageLayoutProps) IsZero() bool {
