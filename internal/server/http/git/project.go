@@ -22,10 +22,6 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func organizationAllowedByResources(organization string, allowedResources []string) bool {
-	return servermw.ResourceListAllowsOrganization(allowedResources, organization)
-}
-
 func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string, appconfig.ProjectConfig, git.GitRepositoryIdentity, *httputil.ErrorResponse) {
 	organization := strings.TrimSpace(ctx.Params("orgTitle"))
 	project := strings.TrimSpace(ctx.Params("projectTitle"))
@@ -249,7 +245,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		return errResponse.Write(ctx)
 	}
 	allowedResources := statusAccess.readableResources
-	if !organizationAllowedByResources(organization, allowedResources) {
+	if !servermw.ResourceListAllowsOrganization(allowedResources, organization) {
 		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
@@ -365,7 +361,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		return errResponse.Write(ctx)
 	}
 	allowedResources := statusAccess.readableResources
-	if !organizationAllowedByResources(organization, allowedResources) {
+	if !servermw.ResourceListAllowsOrganization(allowedResources, organization) {
 		response := httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
