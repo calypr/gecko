@@ -47,7 +47,7 @@ Each flag falls back to the named environment variable when it is empty.
 | Flag | Env var | Purpose |
 | --- | --- | --- |
 | `-port` | — | Listen port. Default `8080`. |
-| `-db` | — | PostgreSQL DSN. Without it, all data-dependent route families (`/config/*`, `/git/*`, presentation, thumbnail) are skipped at startup; `/health` and swagger are still served. |
+| `-db` | `DATABASE_URL` | PostgreSQL DSN. Without it, all data-dependent route families (`/config/*`, `/git/*`, presentation, thumbnail) are skipped at startup; `/health` and swagger are still served. |
 | `-jwks` | `JWKS_ENDPOINT` | Fence JWKS endpoint. Without it, protected routes return `401`. |
 | `-github-api-base-url` | `GITHUB_API_BASE_URL` | GitHub API base URL. |
 | `-fence-base-url` | `FENCE_BASE_URL` | Fence base URL, used for the GitHub installation token exchange. |

@@ -1,6 +1,6 @@
 # Gecko storage-chain audit: implementation guide
 
-The storage-chain audit is a read-only cross-check of Git LFS pointers, Syfon project records, project bucket scope mappings, and Syfon bucket inventory. The handler is registered as `POST /api/v1/projects/:project_id/repair/storage-chain/audit` in [`internal/server/http/git/register.go`](../internal/server/http/git/register.go#L54). Repair endpoints are separate.
+The storage-chain audit is a read-only cross-check of Git LFS pointers, Syfon project records, project bucket scope mappings, and Syfon bucket inventory. The handler is registered as `POST /git/projects/:orgTitle/:projectTitle/repair/storage-chain/audit` in [`internal/server/http/git/register.go`](../internal/server/http/git/register.go). Repair endpoints are separate.
 
 ## Code map
 

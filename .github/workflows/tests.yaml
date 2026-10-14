@@ -12,7 +12,10 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.3'
+        go-version-file: go.mod
+
+    - name: Vet
+      run: go vet ./...
 
     - name: Start PostgreSQL
       run: |
@@ -23,7 +26,7 @@ jobs:
           -p 8081:5432 \
           -e POSTGRES_PASSWORD=your_strong_password \
           -e POSTGRES_USER=postgres \
-          postgres:10.4 > /dev/null
+          postgres:15 > /dev/null
 
         # Wait for PostgreSQL to be ready
         for i in {1..30}; do
