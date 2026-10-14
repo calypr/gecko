@@ -65,4 +65,3 @@ type GitUploadSessionFile struct {
 	Status      string         `db:"status"`
 	Error       sql.NullString `db:"error"`
 }
-
