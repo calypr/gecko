@@ -124,7 +124,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 		return httputil.JSON(responses, http.StatusOK).Write(ctx)
 	}
 
-	configList, err := geckodb.ConfigListByType(handler.db, configType)
+	configList, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, configType)
 	if err != nil {
 		errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("Database error: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType}, nil)
 		errResponse.WriteLog(handler.logger)

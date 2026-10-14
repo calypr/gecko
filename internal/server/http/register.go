@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"strings"
-
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/calypr/gecko/internal/server/http/config"
 	"github.com/calypr/gecko/internal/server/http/git"
@@ -19,6 +17,8 @@ func Register(app *fiber.App, deps Dependencies) {
 	authzHandler := servermw.NewFenceUserAccessHandler(nil)
 
 	app.Get("/swagger/doc.json", func(ctx fiber.Ctx) error {
+		// Intentionally public: the OpenAPI spec contains no secrets and is
+		// meant to be browsed by API consumers (e.g. Swagger UI).
 		return ctx.SendFile("./docs/swagger.json")
 	})
 
@@ -27,7 +27,9 @@ func Register(app *fiber.App, deps Dependencies) {
 	git.RegisterRoutes(app, handler, authzHandler)
 
 	app.Use(func(ctx fiber.Ctx) error {
-		ctx.Path(strings.TrimSuffix(ctx.Path(), "/"))
+		// Terminal fallback: routes have already run, so the request is a 404.
+		// Do not mutate ctx.Path() here — earlier routers have matched and
+		// rewriting the path would only confuse logs and downstream hooks.
 		return httputil.NotFound(ctx)
 	})
 }

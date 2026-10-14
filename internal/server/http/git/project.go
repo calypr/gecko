@@ -36,7 +36,7 @@ func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string
 	}
 	projectID := organization + "/" + project
 	var cfg appconfig.ProjectConfig
-	if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+	if err := geckodb.ConfigGETGenericContext(ctx.Context(), handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			response := httputil.NewError("not_found", fmt.Sprintf("no project config found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
 			response.WriteLog(handler.logger)
@@ -63,8 +63,8 @@ func (handler *Handler) resolveGitProject(ctx fiber.Ctx) (string, string, string
 	return organization, project, projectID, cfg, identity, nil
 }
 
-func (handler *Handler) loadGitProjectState(projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, error) {
-	state, err := geckodb.GitProjectStateByProjectID(handler.db, projectID)
+func (handler *Handler) loadGitProjectState(ctx context.Context, projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, error) {
+	state, err := geckodb.GitProjectStateByProjectIDContext(ctx, handler.db, projectID)
 	if err != nil || state == nil {
 		return state, err
 	}
@@ -79,7 +79,7 @@ func (handler *Handler) loadGitProjectState(projectID string, identity git.GitRe
 	state.RepoOwner = identity.Owner
 	state.RepoName = identity.Repo
 	state.MirrorPath = expectedMirrorPath
-	if err := geckodb.UpsertGitProjectState(handler.db, *state); err != nil {
+	if err := geckodb.UpsertGitProjectStateContext(ctx, handler.db, *state); err != nil {
 		return nil, fmt.Errorf("persist git project state mirror path: %w", err)
 	}
 	return state, nil
@@ -126,7 +126,7 @@ func shouldRefreshMirrorForRead(mirrorPath string, requireCurrentMirror bool) bo
 }
 
 func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
-	states, err := geckodb.ListGitProjectStates(handler.db)
+	states, err := geckodb.ListGitProjectStatesContext(ctx.Context(), handler.db)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list git state: %s", err), http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)
@@ -169,7 +169,7 @@ func (handler *Handler) handleGitProjectsGET(ctx fiber.Ctx) error {
 			copyState := state
 			statePtr = &copyState
 		}
-		orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, item.Organization)
+		orgState, _ := geckodb.GitOrganizationStateByOrganizationContext(ctx.Context(), handler.db, item.Organization)
 		status := handler.gitService.StatusFromState(projectID, item.Organization, item.Name, cfg, identity, statePtr, orgState)
 		if len(allowedResources) > 0 {
 			status.Accessible = servermw.GitProjectReadable(allowedResources, item.Organization, item.Name)
@@ -191,7 +191,7 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 	}
 	projectID := organization + "/" + project
 	var cfg appconfig.ProjectConfig
-	if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+	if err := geckodb.ConfigGETGenericContext(ctx.Context(), handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			response := httputil.NewError("not_found", fmt.Sprintf("no project config found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
 			response.WriteLog(handler.logger)
@@ -203,12 +203,12 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 	}
 	identity, identityErr := git.ParseRepositoryIdentity(cfg.SrcRepo)
 	if identityErr != nil {
-		orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, organization)
+		orgState, _ := geckodb.GitOrganizationStateByOrganizationContext(ctx.Context(), handler.db, organization)
 		status := handler.gitService.StatusFromState(projectID, organization, project, cfg, git.GitRepositoryIdentity{}, nil, orgState)
 		status.Accessible = true
 		return httputil.JSON(status, http.StatusOK).Write(ctx)
 	}
-	state, err := handler.loadGitProjectState(projectID, identity)
+	state, err := handler.loadGitProjectState(ctx.Context(), projectID, identity)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
@@ -223,7 +223,7 @@ func (handler *Handler) handleGitProjectGET(ctx fiber.Ctx) error {
 			handler.logger.Warning("failed to warm git mirror for %s: %v", projectID, err)
 		}
 	}
-	orgState, _ := geckodb.GitOrganizationStateByOrganization(handler.db, organization)
+	orgState, _ := geckodb.GitOrganizationStateByOrganizationContext(ctx.Context(), handler.db, organization)
 	status := handler.gitService.StatusFromState(projectID, organization, project, cfg, identity, state, orgState)
 	status.Accessible = true
 	return httputil.JSON(status, http.StatusOK).Write(ctx)
@@ -236,7 +236,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(appconfig.TypeProjects))
+	projectIDs, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, string(appconfig.TypeProjects))
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list project configs: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
 		response.WriteLog(handler.logger)
@@ -263,7 +263,7 @@ func (handler *Handler) handleGitOrganizationStatusGET(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleGitOrganizationsStatusGET(ctx fiber.Ctx) error {
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(appconfig.TypeProjects))
+	projectIDs, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, string(appconfig.TypeProjects))
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list project configs: %s", err), http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)
@@ -370,7 +370,7 @@ func (handler *Handler) handleGitOrganizationReconcilePOST(ctx fiber.Ctx) error 
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(appconfig.TypeProjects))
+	projectIDs, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, string(appconfig.TypeProjects))
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list project configs: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
 		response.WriteLog(handler.logger)
@@ -402,7 +402,7 @@ func (handler *Handler) handleGitOrganizationsReconcilePOST(ctx fiber.Ctx) error
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(appconfig.TypeProjects))
+	projectIDs, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, string(appconfig.TypeProjects))
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to list project configs: %s", err), http.StatusInternalServerError, nil, nil)
 		response.WriteLog(handler.logger)

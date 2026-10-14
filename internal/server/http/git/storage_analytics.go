@@ -501,7 +501,7 @@ func (handler *Handler) resolveGitAnalyticsContextWithMirrorPolicy(ctx fiber.Ctx
 	if errResponse != nil {
 		return nil, errResponse
 	}
-	state, err := handler.loadGitProjectState(projectID, identity)
+	state, err := handler.loadGitProjectState(ctx.Context(), projectID, identity)
 	if err != nil {
 		response := httputil.NewError("database_error", fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)

@@ -75,13 +75,14 @@ func (h *FenceUserAccessHandler) GetAllowedResources(ctx context.Context, token,
 }
 
 func (h *FenceUserAccessHandler) GetResourceAccess(ctx context.Context, token string) (ResourceAccessSnapshot, error) {
+	const unauthorizedMessage = "request is not authorized"
 	endpoint, err := fenceUserEndpoint(token)
 	if err != nil {
-		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: unauthorizedMessage}
 	}
 	validAuthorizationHeader, err := ValidateAuthorizationHeader(token)
 	if err != nil {
-		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: err.Error()}
+		return nil, &AccessError{StatusCode: http.StatusUnauthorized, Message: unauthorizedMessage}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)

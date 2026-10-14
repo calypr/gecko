@@ -41,7 +41,7 @@ func (service *ReconcileService) ReconcileOrganizations(ctx context.Context, aut
 
 func (service *ReconcileService) ReconcileOrganization(ctx context.Context, organization string, authorizationHeader string, projectIDs []string) error {
 	now := time.Now().UTC()
-	existingOrgState, _ := geckodb.GitOrganizationStateByOrganization(service.db, organization)
+	existingOrgState, _ := geckodb.GitOrganizationStateByOrganizationContext(ctx, service.db, organization)
 	projects := make([]trackedProject, 0)
 	owners := make(map[string]struct{})
 	for _, projectID := range projectIDs {
@@ -50,14 +50,14 @@ func (service *ReconcileService) ReconcileOrganization(ctx context.Context, orga
 			continue
 		}
 		var cfg appconfig.ProjectConfig
-		if err := geckodb.ConfigGETGeneric(service.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+		if err := geckodb.ConfigGETGenericContext(ctx, service.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
 			continue
 		}
 		identity, err := ParseRepositoryIdentity(cfg.SrcRepo)
 		if err != nil {
-			projectState, _ := geckodb.GitProjectStateByProjectID(service.db, projectID)
+			projectState, _ := geckodb.GitProjectStateByProjectIDContext(ctx, service.db, projectID)
 			if projectState != nil {
-				_ = geckodb.UpsertGitProjectState(service.db, *projectState)
+				_ = geckodb.UpsertGitProjectStateContext(ctx, service.db, *projectState)
 			}
 			continue
 		}
@@ -134,7 +134,7 @@ func (service *ReconcileService) ReconcileOrganization(ctx context.Context, orga
 			orgState.RepositorySelection = sql.NullString{String: orgInstallation.RepositorySelection, Valid: true}
 		}
 	}
-	if err := geckodb.UpsertGitOrganizationState(service.db, orgState); err != nil {
+	if err := geckodb.UpsertGitOrganizationStateContext(ctx, service.db, orgState); err != nil {
 		return WrapError(ErrorKindDatabase, http.StatusInternalServerError, "failed to persist git organization state", err, map[string]any{"organization": organization})
 	}
 
@@ -150,11 +150,11 @@ func (service *ReconcileService) BuildOrganizationsStatus(ctx context.Context, a
 	projectIDs = FilterProjectIDsByAllowedResources(projectIDs, allowedResources)
 	organizations := projectConfigOrganizations(projectIDs)
 	buckets, bucketsErr := service.storage.ListBuckets(ctx, authorizationHeader)
-	projectStates, err := geckodb.ListGitProjectStates(service.db)
+	projectStates, err := geckodb.ListGitProjectStatesContext(ctx, service.db)
 	if err != nil {
 		return GitOrganizationsStatusResponse{}, WrapError(ErrorKindDatabase, http.StatusInternalServerError, "failed to list git project states", err, nil)
 	}
-	organizationStates, err := geckodb.ListGitOrganizationStates(service.db)
+	organizationStates, err := geckodb.ListGitOrganizationStatesContext(ctx, service.db)
 	if err != nil {
 		return GitOrganizationsStatusResponse{}, WrapError(ErrorKindDatabase, http.StatusInternalServerError, "failed to list git organization states", err, nil)
 	}
@@ -183,11 +183,11 @@ func (service *ReconcileService) BuildOrganizationsStatus(ctx context.Context, a
 }
 
 func (service *ReconcileService) BuildSingleOrganizationStatus(ctx context.Context, authorizationHeader string, organization string, projectIDs []string, allowedResources []string) (GitOrganizationStatusResponse, error) {
-	projectStates, err := geckodb.ListGitProjectStates(service.db)
+	projectStates, err := geckodb.ListGitProjectStatesContext(ctx, service.db)
 	if err != nil {
 		return GitOrganizationStatusResponse{}, WrapError(ErrorKindDatabase, http.StatusInternalServerError, "failed to list git project states", err, map[string]any{"organization": organization})
 	}
-	organizationStates, err := geckodb.ListGitOrganizationStates(service.db)
+	organizationStates, err := geckodb.ListGitOrganizationStatesContext(ctx, service.db)
 	if err != nil {
 		return GitOrganizationStatusResponse{}, WrapError(ErrorKindDatabase, http.StatusInternalServerError, "failed to list git organization states", err, map[string]any{"organization": organization})
 	}
@@ -225,7 +225,7 @@ func (service *ReconcileService) BuildOrganizationStatus(ctx context.Context, or
 			continue
 		}
 		var cfg appconfig.ProjectConfig
-		if err := geckodb.ConfigGETGeneric(service.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+		if err := geckodb.ConfigGETGenericContext(ctx, service.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
 			continue
 		}
 		identity, _ := ParseRepositoryIdentity(cfg.SrcRepo)
@@ -300,7 +300,7 @@ type trackedProject struct {
 
 func (service *ReconcileService) reconcileProject(ctx context.Context, authorizationHeader, organization string, tracked trackedProject, ownerInstallation GitRepositoryInstallationStatus) error {
 	_, project := splitProjectID(tracked.projectID)
-	projectState, _ := geckodb.GitProjectStateByProjectID(service.db, tracked.projectID)
+	projectState, _ := geckodb.GitProjectStateByProjectIDContext(ctx, service.db, tracked.projectID)
 	if projectState == nil {
 		projectState = &geckodb.GitProjectState{
 			ProjectID: tracked.projectID,
@@ -312,25 +312,25 @@ func (service *ReconcileService) reconcileProject(ctx context.Context, authoriza
 	}
 	if ownerInstallation.Installed && ownerInstallation.RepositorySelection == "all" {
 		applyInstalledState(projectState, ownerInstallation.InstallationID, tracked.identity.Owner)
-		_ = geckodb.UpsertGitProjectState(service.db, *projectState)
+		_ = geckodb.UpsertGitProjectStateContext(ctx, service.db, *projectState)
 		return nil
 	}
 	accessToken, err := service.git.RequestInstallationToken(ctx, authorizationHeader, organization, project, tracked.identity, "read")
 	if err != nil {
 		if statusErr, ok := err.(*HTTPStatusError); ok && (statusErr.StatusCode == http.StatusForbidden || statusErr.StatusCode == http.StatusNotFound) {
 			clearInstalledState(projectState)
-			_ = geckodb.UpsertGitProjectState(service.db, *projectState)
+			_ = geckodb.UpsertGitProjectStateContext(ctx, service.db, *projectState)
 			return nil
 		}
 		return WrapError(ErrorKindIntegration, http.StatusBadGateway, "failed to obtain GitHub installation token", err, map[string]any{"organization": organization, "project_id": tracked.projectID, "repository": tracked.cfg.SrcRepo})
 	}
 	if _, err := service.git.FetchRepositoryMetadata(ctx, accessToken, tracked.identity); err != nil {
 		clearInstalledState(projectState)
-		_ = geckodb.UpsertGitProjectState(service.db, *projectState)
+		_ = geckodb.UpsertGitProjectStateContext(ctx, service.db, *projectState)
 		return nil
 	}
 	applyInstalledState(projectState, ownerInstallation.InstallationID, tracked.identity.Owner)
-	_ = geckodb.UpsertGitProjectState(service.db, *projectState)
+	_ = geckodb.UpsertGitProjectStateContext(ctx, service.db, *projectState)
 	return nil
 }
 

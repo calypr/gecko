@@ -18,8 +18,8 @@ import (
 	"github.com/google/uuid"
 )
 
-func (handler *Handler) ensureConnectedMirrorProject(projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, *httputil.ErrorResponse) {
-	state, err := handler.loadGitProjectState(projectID, identity)
+func (handler *Handler) ensureConnectedMirrorProject(ctx context.Context, projectID string, identity git.GitRepositoryIdentity) (*geckodb.GitProjectState, *httputil.ErrorResponse) {
+	state, err := handler.loadGitProjectState(ctx, projectID, identity)
 	if err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to read git project state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
@@ -57,7 +57,7 @@ func (handler *Handler) ensureMirrorReadyForUpload(ctx context.Context, authoriz
 	if err != nil {
 		return nil, err
 	}
-	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
+	if err := geckodb.UpsertGitProjectStateContext(ctx, handler.db, *updatedState); err != nil {
 		return nil, fmt.Errorf("persist refreshed git project state: %w", err)
 	}
 	return updatedState, nil
@@ -68,11 +68,10 @@ func sessionFilesFromManifest(sessionID string, subdirectory string, baseBranch 
 	if err != nil {
 		return nil, false, err
 	}
-	refName, hash, err := git.ResolveGitReference(openedRepo, baseBranch, mirrorState.DefaultBranch.String)
+	_, hash, err := git.ResolveGitReference(openedRepo, baseBranch, mirrorState.DefaultBranch.String)
 	if err != nil {
 		return nil, false, err
 	}
-	_ = refName
 	sessionFiles := make([]geckodb.GitUploadSessionFile, 0, len(files))
 	hasConflicts := false
 	seenPaths := make(map[string]struct{}, len(files))
@@ -128,7 +127,7 @@ func (handler *Handler) handleGitProjectUploadSessionPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	state, errResponse := handler.ensureConnectedMirrorProject(projectID, identity)
+	state, errResponse := handler.ensureConnectedMirrorProject(ctx.Context(), projectID, identity)
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}

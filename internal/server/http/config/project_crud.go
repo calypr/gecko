@@ -132,7 +132,7 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 			}
 		}
 	}
-	if err := geckodb.ConfigPUTGeneric(handler.db, configID, configType, cfg); err != nil {
+	if err := geckodb.ConfigPUTGenericContext(ctx.Context(), handler.db, configID, configType, cfg); err != nil {
 		errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("configPut failed: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
@@ -141,7 +141,7 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 	if projectCfg, ok := cfg.(*config.ProjectConfig); ok {
 		if handler.gitService != nil {
 			if identity, err := git.ParseRepositoryIdentity(projectCfg.SrcRepo); err == nil {
-				if existingState, existingErr := geckodb.GitProjectStateByProjectID(handler.db, configID); existingErr != nil {
+				if existingState, existingErr := geckodb.GitProjectStateByProjectIDContext(ctx.Context(), handler.db, configID); existingErr != nil {
 					errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("read existing git project state failed: %s", existingErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
 					errResponse.WriteLog(handler.logger)
 					return errResponse.Write(ctx)
@@ -307,7 +307,7 @@ func (handler *Handler) handleProjectOrganizationDELETE(ctx fiber.Ctx) error {
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)
 	}
-	projectIDs, err := geckodb.ConfigListByType(handler.db, string(config.TypeProjects))
+	projectIDs, err := geckodb.ConfigListByTypeContext(ctx.Context(), handler.db, string(config.TypeProjects))
 	if err != nil {
 		errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to list projects for organization delete: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization}, nil)
 		errResponse.WriteLog(handler.logger)
@@ -325,7 +325,7 @@ func (handler *Handler) handleProjectOrganizationDELETE(ctx fiber.Ctx) error {
 		if appErr := handler.deleteProject(ctx, authorizationHeader, string(config.TypeProjects), projectID, organization, projectName); appErr != nil {
 			return shared.WriteAppError(ctx, appErr)
 		}
-		if _, err := geckodb.ConfigDELETEGeneric(handler.db, projectID, string(config.TypeProjects)); err != nil {
+		if _, err := geckodb.ConfigDELETEGenericContext(ctx.Context(), handler.db, projectID, string(config.TypeProjects)); err != nil {
 			errResponse := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to delete project config %s during organization delete: %s", projectID, err), http.StatusInternalServerError, map[string]any{"organization": organization, "project_id": projectID}, nil)
 			errResponse.WriteLog(handler.logger)
 			return errResponse.Write(ctx)

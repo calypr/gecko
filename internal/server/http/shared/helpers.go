@@ -39,7 +39,9 @@ func WriteAppError(ctx fiber.Ctx, err error) error {
 		case git.ErrorKindUnauthorized:
 			errorType = apierror.TypeMissingAuthorization
 		}
-		return httputil.NewError(errorType, appErr.Error(), statusCode, appErr.Details, nil).Write(ctx)
+		return httputil.NewError(errorType, appErr.Error(), statusCode, appErr.Details, &err).Write(ctx)
 	}
-	return httputil.NewError(apierror.Type("internal_error"), err.Error(), http.StatusInternalServerError, nil, nil).Write(ctx)
+	// Non-domain errors keep their detail in the oplog only; the client gets a
+	// stable message so internal paths and upstream text are never echoed back.
+	return httputil.NewError(apierror.Type("internal_error"), "internal server error", http.StatusInternalServerError, nil, &err).Write(ctx)
 }

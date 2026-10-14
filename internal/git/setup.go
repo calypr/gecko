@@ -67,7 +67,7 @@ func (service *SetupService) InitializeProject(ctx context.Context, authorizatio
 		}
 	}
 
-	if err := geckodb.ConfigPUTGeneric(service.db, projectID, string(config.TypeProjects), &request.Config); err != nil {
+	if err := geckodb.ConfigPUTGenericContext(ctx, service.db, projectID, string(config.TypeProjects), &request.Config); err != nil {
 		if len(createdResourcePaths) > 0 {
 			bestEffortDeleteAuthzResources(ctx, authorizationHeader, createdResourcePaths)
 		}

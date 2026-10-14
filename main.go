@@ -37,7 +37,7 @@ func main() {
 	var dbURL = flag.String("db", "", "URL to connect to database")
 	var gripGraphName = flag.String("grip-graph-zname", "", "The graph name to use when querying Grip (overrides GRIP_GRAPH env var)")
 	var gripPort = flag.String("grip-port", "", "The rpc port to be used for connecting to Grip (overrides GRIP_PORT env var)")
-	var gripHost = flag.String("grip-host", "", "The hostname to be usd for connecting to Grip (overrides GRIP_HOST env var)")
+	var gripHost = flag.String("grip-host", "", "The hostname to be used for connecting to Grip (overrides GRIP_HOST env var)")
 	var githubAPIBaseFlag = flag.String("github-api-base-url", "", "GitHub API base URL (overrides GITHUB_API_BASE_URL env var)")
 	var fenceBaseURLFlag = flag.String("fence-base-url", "", "Fence base URL for GitHub App token exchange (overrides FENCE_BASE_URL env var)")
 	var gitDataDirFlag = flag.String("git-data-dir", "", "Directory for local git mirrors (overrides GIT_DATA_DIR env var)")
@@ -50,9 +50,13 @@ func main() {
 	if finalJWK == "" {
 		logger.Println("WARNING: no $JWKS_ENDPOINT or --jwks specified; endpoints requiring JWT validation will error")
 	}
+	databaseURL := firstNonEmpty(*dbURL, os.Getenv("DATABASE_URL"))
+	githubAPIBase := firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL"))
+	fenceBaseURL := firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL"))
+	gitDataDir := firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR"))
 
 	serverBuilder := server.NewServer().WithLogger(logger).WithJWTApp(authutils.NewJWTApplication(finalJWK))
-	if db, err := sqlx.Open("postgres", *dbURL); err != nil {
+	if db, err := sqlx.Open("postgres", databaseURL); err != nil {
 		logger.Println("WARNING: Failed to open database connection. Database endpoints will not be available.")
 	} else if err = db.Ping(); err != nil {
 		logger.Println("WARNING: DB ping failed. Database endpoints will not be available.")
@@ -60,20 +64,17 @@ func main() {
 	} else {
 		logger.Println("Successfully connected to PostgreSQL database.")
 		serverBuilder = serverBuilder.WithDB(db)
-		githubAPIBase := firstNonEmpty(*githubAPIBaseFlag, os.Getenv("GITHUB_API_BASE_URL"))
-		fenceBaseURL := firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL"))
-		gitDataDir := firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR"))
-		gitService := git.NewGitService(git.GitServiceConfig{
-			GitHubAPIBase: githubAPIBase,
-			FenceBaseURL:  fenceBaseURL,
-			DataDir:       gitDataDir,
-			FenceClient:   integrationfence.NewClient(nil, integrationfence.Config{BaseURL: fenceBaseURL}),
-			GitHubClient:  integrationgithub.NewClient(nil, integrationgithub.Config{APIBase: githubAPIBase}),
-		})
-		serverBuilder = serverBuilder.WithGitService(gitService)
-		serverBuilder = serverBuilder.WithThumbnailStore(thumbnail.NewFilesystemStore(gitDataDir))
-		serverBuilder = serverBuilder.WithPresentationStore(presentation.NewFilesystemStore(gitDataDir))
 	}
+	gitService := git.NewGitService(git.GitServiceConfig{
+		GitHubAPIBase: githubAPIBase,
+		FenceBaseURL:  fenceBaseURL,
+		DataDir:       gitDataDir,
+		FenceClient:   integrationfence.NewClient(nil, integrationfence.Config{BaseURL: fenceBaseURL}),
+		GitHubClient:  integrationgithub.NewClient(nil, integrationgithub.Config{APIBase: githubAPIBase}),
+	})
+	serverBuilder = serverBuilder.WithGitService(gitService)
+	serverBuilder = serverBuilder.WithThumbnailStore(thumbnail.NewFilesystemStore(gitDataDir))
+	serverBuilder = serverBuilder.WithPresentationStore(presentation.NewFilesystemStore(gitDataDir))
 
 	if gripHostVar != "" && gripPortVar != "" {
 		logger.Printf("Attempting to connect to Grip at %s:%s using graph %s", gripHostVar, gripPortVar, gripGraph)

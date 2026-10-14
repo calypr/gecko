@@ -36,7 +36,7 @@ func (handler *Handler) handleConfigGETByID(ctx fiber.Ctx, configType string, co
 		return errResponse.Write(ctx)
 	}
 
-	err := geckodb.ConfigGETGeneric(handler.db, configID, configType, cfg)
+	err := geckodb.ConfigGETGenericContext(ctx.Context(), handler.db, configID, configType, cfg)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			errResponse = httputil.NewError(apierror.TypeConfigNotFound, fmt.Sprintf("no config found with configId: %s of type: %s", configID, configType), http.StatusNotFound, map[string]any{"config_type": configType, "config_id": configID}, nil)
@@ -69,7 +69,7 @@ func (handler *Handler) handleConfigDELETE(ctx fiber.Ctx) error {
 }
 
 func (handler *Handler) handleConfigDELETEByID(ctx fiber.Ctx, configType string, configID string) error {
-	deleted, err := geckodb.ConfigDELETEGeneric(handler.db, configID, configType)
+	deleted, err := geckodb.ConfigDELETEGenericContext(ctx.Context(), handler.db, configID, configType)
 	if !deleted && err == nil {
 		errResponse := httputil.NewError(apierror.TypeConfigNotFound, fmt.Sprintf("no configId found with configId: %s in type: %s", configID, configType), http.StatusNotFound, map[string]any{"config_type": configType, "config_id": configID}, nil)
 		errResponse.WriteLog(handler.logger)
@@ -119,7 +119,7 @@ func (handler *Handler) handleConfigPUTByID(ctx fiber.Ctx, configType string, co
 			return errResponse.Write(ctx)
 		}
 	}
-	if err := geckodb.ConfigPUTGeneric(handler.db, configID, configType, cfg); err != nil {
+	if err := geckodb.ConfigPUTGenericContext(ctx.Context(), handler.db, configID, configType, cfg); err != nil {
 		errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("configPut failed: %s", err), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
 		errResponse.WriteLog(handler.logger)
 		return errResponse.Write(ctx)

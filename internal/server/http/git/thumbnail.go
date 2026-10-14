@@ -25,7 +25,7 @@ func (handler *Handler) resolveExistingProject(ctx fiber.Ctx) (string, string, s
 	}
 	projectID := organization + "/" + project
 	var cfg appconfig.ProjectConfig
-	if err := geckodb.ConfigGETGeneric(handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
+	if err := geckodb.ConfigGETGenericContext(ctx.Context(), handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			response := httputil.NewError("not_found", fmt.Sprintf("no project config found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
 			response.WriteLog(handler.logger)

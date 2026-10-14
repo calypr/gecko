@@ -22,10 +22,17 @@ type Document struct {
 
 // ConfigListByType fetches the list of all 'name' (configId) values from a specific table (configType).
 func ConfigListByType(db *sqlx.DB, configType string) ([]string, error) {
+	return ConfigListByTypeContext(context.Background(), db, configType)
+}
+
+func ConfigListByTypeContext(ctx context.Context, db *sqlx.DB, configType string) ([]string, error) {
+	if db == nil {
+		return []string{}, nil
+	}
 	var names []string
 	// NOTE: configType is validated in the handler against a fixed list, making this safe.
 	stmt := fmt.Sprintf("SELECT name FROM %s.%s", ConfigSchema, configType)
-	err := db.Select(&names, stmt)
+	err := db.SelectContext(ctx, &names, stmt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []string{}, nil
@@ -134,8 +141,15 @@ func configPutGenericContext(ctx context.Context, execFn func(context.Context, s
 // ConfigDELETEGeneric deletes a document by name (configId) from the specified table (configType).
 // Returns true if deleted, false if not found, or an error.
 func ConfigDELETEGeneric(db *sqlx.DB, configId string, configType string) (bool, error) {
+	return ConfigDELETEGenericContext(context.Background(), db, configId, configType)
+}
+
+func ConfigDELETEGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
 	// Check existence first
-	doc, err := DocumentByIDAndTable(db, configId, configType)
+	doc, err := DocumentByIDAndTableContext(ctx, db, configId, configType)
 	if err != nil {
 		return false, err
 	}
@@ -146,7 +160,7 @@ func ConfigDELETEGeneric(db *sqlx.DB, configId string, configType string) (bool,
 	// Delete the document
 	// NOTE: configType is validated in the handler against a fixed list, making this safe.
 	deleteStmt := fmt.Sprintf("DELETE FROM %s.%s WHERE name=$1", ConfigSchema, configType)
-	_, err = db.Exec(deleteStmt, configId)
+	_, err = db.ExecContext(ctx, deleteStmt, configId)
 	if err != nil {
 		return false, fmt.Errorf("error executing DELETE for %s in table %s: %w", configId, configType, err)
 	}

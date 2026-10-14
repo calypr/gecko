@@ -71,13 +71,15 @@ func NewError(errorType apierror.Type, message string, code int, details map[str
 			Details: details,
 		},
 	}
+	logged := message
 	if err != nil {
 		response.Err = *err
+		logged = fmt.Sprintf("%s: %v", message, *err)
 	}
 	if code >= http.StatusInternalServerError {
-		response.Log.Error("%s", message)
+		response.Log.Error("%s", logged)
 	} else {
-		response.Log.Info("%s", message)
+		response.Log.Info("%s", logged)
 	}
 	return response
 }

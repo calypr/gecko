@@ -184,8 +184,15 @@ func upsertGitProjectStateContext(ctx context.Context, namedExecFn func(context.
 }
 
 func ListGitProjectStates(db *sqlx.DB) (map[string]GitProjectState, error) {
+	return ListGitProjectStatesContext(context.Background(), db)
+}
+
+func ListGitProjectStatesContext(ctx context.Context, db *sqlx.DB) (map[string]GitProjectState, error) {
+	if db == nil {
+		return map[string]GitProjectState{}, nil
+	}
 	states := []GitProjectState{}
-	if err := db.Select(&states, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state`); err != nil {
+	if err := db.SelectContext(ctx, &states, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state`); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return map[string]GitProjectState{}, nil
 		}

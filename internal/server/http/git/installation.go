@@ -172,7 +172,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	if err := handler.persistConnectedOrganizationState(organization, githubOwner, installation); err != nil {
+	if err := handler.persistConnectedOrganizationState(ctx.Context(), organization, githubOwner, installation); err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist organization git state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization, "github_owner": githubOwner}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
@@ -201,7 +201,7 @@ func (handler *Handler) handleGitOrganizationConnectPOST(ctx fiber.Ctx) error {
 	}, http.StatusOK).Write(ctx)
 }
 
-func (handler *Handler) persistConnectedOrganizationState(organization string, githubOwner string, installation git.GitRepositoryInstallationStatus) error {
+func (handler *Handler) persistConnectedOrganizationState(ctx context.Context, organization string, githubOwner string, installation git.GitRepositoryInstallationStatus) error {
 	now := time.Now().UTC()
 	state := geckodb.GitOrganizationState{
 		Organization: organization,
@@ -234,7 +234,7 @@ func (handler *Handler) persistConnectedOrganizationState(organization string, g
 	if strings.TrimSpace(installation.RepositorySelection) != "" {
 		state.RepositorySelection = sql.NullString{String: strings.TrimSpace(installation.RepositorySelection), Valid: true}
 	}
-	return geckodb.UpsertGitOrganizationState(handler.db, state)
+	return geckodb.UpsertGitOrganizationStateContext(ctx, handler.db, state)
 }
 
 func (handler *Handler) handleGitProjectEditConnectPOST(ctx fiber.Ctx) error {
@@ -338,7 +338,7 @@ func (handler *Handler) loadOrBootstrapConnectedOrganizationState(ctx context.Co
 		response := httputil.NewError(apierror.Type("conflict"), "organization is not connected to the GitHub App", http.StatusConflict, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
 		return nil, response
 	}
-	if err := handler.persistConnectedOrganizationState(organization, identity.Owner, installation); err != nil {
+	if err := handler.persistConnectedOrganizationState(ctx, organization, identity.Owner, installation); err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist organization git state: %s", err), http.StatusInternalServerError, map[string]any{"organization": organization, "project": project, "github_owner": identity.Owner}, nil)
 		return nil, response
 	}
@@ -518,7 +518,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	if errResponse != nil {
 		return errResponse.Write(ctx)
 	}
-	state, err := handler.loadGitProjectState(projectID, identity)
+	state, err := handler.loadGitProjectState(ctx.Context(), projectID, identity)
 	if err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to read git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
