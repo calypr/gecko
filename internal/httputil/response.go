@@ -34,20 +34,20 @@ func (response *JSONResponse) Write(ctx fiber.Ctx) error {
 	ctx.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 	ctx.Status(response.code)
 
+	pretty := WantPrettyJSON(ctx)
+
 	var body []byte
 	var err error
 	if msg, ok := response.content.(proto.Message); ok {
 		opts := protojson.MarshalOptions{EmitUnpopulated: true, UseProtoNames: true}
-		if WantPrettyJSON(ctx) {
+		if pretty {
 			opts.Indent = "    "
 		}
 		body, err = opts.Marshal(msg)
+	} else if pretty {
+		body, err = json.MarshalIndent(response.content, "", "    ")
 	} else {
-		if WantPrettyJSON(ctx) {
-			body, err = json.MarshalIndent(response.content, "", "    ")
-		} else {
-			body, err = json.Marshal(response.content)
-		}
+		body, err = json.Marshal(response.content)
 	}
 	if err != nil {
 		return err
