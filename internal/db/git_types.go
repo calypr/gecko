@@ -34,38 +34,6 @@ type GitOrganizationState struct {
 	LastError              sql.NullString `db:"last_error"`
 }
 
-type GitPendingRepository struct {
-	ID              string         `db:"id"`
-	InstallationID  int64          `db:"installation_id"`
-	SetupSessionID  sql.NullString `db:"setup_session_id"`
-	CreatedByUserID sql.NullString `db:"created_by_user_id"`
-	Source          string         `db:"source"`
-	Organization    string         `db:"organization"`
-	RepoID          int64          `db:"repo_id"`
-	RepoName        string         `db:"repo_name"`
-	RepoFullName    string         `db:"repo_full_name"`
-	RepoHTMLURL     sql.NullString `db:"repo_html_url"`
-	RepoCloneURL    sql.NullString `db:"repo_clone_url"`
-	RepoHost        string         `db:"repo_host"`
-	RepoOwner       string         `db:"repo_owner"`
-	RepoPath        string         `db:"repo_path"`
-	AddedAt         time.Time      `db:"added_at"`
-	UpdatedAt       time.Time      `db:"updated_at"`
-	ResolvedAt      sql.NullTime   `db:"resolved_at"`
-	RemovedAt       sql.NullTime   `db:"removed_at"`
-}
-
-type GitSetupSession struct {
-	ID              string        `db:"id"`
-	CreatedByUserID string        `db:"created_by_user_id"`
-	Organization    string        `db:"organization"`
-	InstallationID  sql.NullInt64 `db:"installation_id"`
-	BeforeRepoIDs   string        `db:"before_repo_ids"`
-	CreatedAt       time.Time     `db:"created_at"`
-	UpdatedAt       time.Time     `db:"updated_at"`
-	CompletedAt     sql.NullTime  `db:"completed_at"`
-}
-
 type GitUploadSession struct {
 	ID             string         `db:"id"`
 	ProjectID      string         `db:"project_id"`
@@ -98,9 +66,3 @@ type GitUploadSessionFile struct {
 	Error       sql.NullString `db:"error"`
 }
 
-func (state GitProjectState) RefreshedAt() *time.Time {
-	if !state.LastRefreshedAt.Valid {
-		return nil
-	}
-	return &state.LastRefreshedAt.Time
-}

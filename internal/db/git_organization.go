@@ -9,10 +9,6 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func GitOrganizationStateByOrganization(db *sqlx.DB, organization string) (*GitOrganizationState, error) {
-	return GitOrganizationStateByOrganizationContext(context.Background(), db, organization)
-}
-
 func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB, organization string) (*GitOrganizationState, error) {
 	if db == nil {
 		return nil, nil
@@ -26,10 +22,6 @@ func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB,
 		return nil, err
 	}
 	return &state, nil
-}
-
-func UpsertGitOrganizationState(db *sqlx.DB, state GitOrganizationState) error {
-	return UpsertGitOrganizationStateContext(context.Background(), db, state)
 }
 
 func UpsertGitOrganizationStateContext(ctx context.Context, db *sqlx.DB, state GitOrganizationState) error {
@@ -58,10 +50,6 @@ func UpsertGitOrganizationStateContext(ctx context.Context, db *sqlx.DB, state G
 		return fmt.Errorf("upsert git organization state: %w", err)
 	}
 	return nil
-}
-
-func ListGitOrganizationStates(db *sqlx.DB) (map[string]GitOrganizationState, error) {
-	return ListGitOrganizationStatesContext(context.Background(), db)
 }
 
 func ListGitOrganizationStatesContext(ctx context.Context, db *sqlx.DB) (map[string]GitOrganizationState, error) {

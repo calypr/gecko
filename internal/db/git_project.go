@@ -120,10 +120,6 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 	return nil
 }
 
-func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState, error) {
-	return GitProjectStateByProjectIDContext(context.Background(), db, projectID)
-}
-
 func GitProjectStateByProjectIDContext(ctx context.Context, db *sqlx.DB, projectID string) (*GitProjectState, error) {
 	if db == nil {
 		return nil, nil
@@ -137,10 +133,6 @@ func GitProjectStateByProjectIDContext(ctx context.Context, db *sqlx.DB, project
 		return nil, err
 	}
 	return &state, nil
-}
-
-func UpsertGitProjectState(db *sqlx.DB, state GitProjectState) error {
-	return UpsertGitProjectStateContext(context.Background(), db, state)
 }
 
 func UpsertGitProjectStateContext(ctx context.Context, db *sqlx.DB, state GitProjectState) error {
@@ -181,10 +173,6 @@ func upsertGitProjectStateContext(ctx context.Context, namedExecFn func(context.
 		return fmt.Errorf("upsert git project state: %w", err)
 	}
 	return nil
-}
-
-func ListGitProjectStates(db *sqlx.DB) (map[string]GitProjectState, error) {
-	return ListGitProjectStatesContext(context.Background(), db)
 }
 
 func ListGitProjectStatesContext(ctx context.Context, db *sqlx.DB) (map[string]GitProjectState, error) {

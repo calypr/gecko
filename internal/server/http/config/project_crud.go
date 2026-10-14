@@ -159,7 +159,7 @@ func (handler *Handler) handleProjectConfigPUT(ctx fiber.Ctx) error {
 					MirrorPath: handler.gitService.MirrorPathForIdentity(identity),
 					SyncState:  git.GitSyncNeverSynced,
 				}
-				if upsertErr := geckodb.UpsertGitProjectState(handler.db, state); upsertErr != nil {
+				if upsertErr := geckodb.UpsertGitProjectStateContext(ctx.Context(), handler.db, state); upsertErr != nil {
 					errResponse = httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("upsert git project state failed: %s", upsertErr), http.StatusInternalServerError, map[string]any{"config_type": configType, "config_id": configID}, nil)
 					errResponse.WriteLog(handler.logger)
 					return errResponse.Write(ctx)

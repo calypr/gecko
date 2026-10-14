@@ -159,13 +159,6 @@ type CalyprProjectReadiness struct {
 	Config CalyprReadinessCheck `json:"config"`
 }
 
-type CalyprProjectSetupResponse struct {
-	ProjectID    string                 `json:"project_id"`
-	ResourcePath string                 `json:"resource_path"`
-	Configured   bool                   `json:"configured"`
-	Readiness    CalyprProjectReadiness `json:"readiness"`
-}
-
 // GitHubInstallationRepository is an alias for domain.GitHubInstallationRepository.
 type GitHubInstallationRepository = domain.GitHubInstallationRepository
 

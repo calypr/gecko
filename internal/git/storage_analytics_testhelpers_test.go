@@ -76,11 +76,6 @@ func ptrBool(value bool) *bool {
 	return &copyValue
 }
 
-func int64Ptr(value int64) *int64 {
-	copyValue := value
-	return &copyValue
-}
-
 func applyFinding(kind string, normalizedPath string, objectIDs []string, bucketURLs []string) GitStorageCleanupApplyFinding {
 	policy := storageRepairPolicyForKind(kind)
 	return GitStorageCleanupApplyFinding{

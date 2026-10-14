@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -40,8 +39,4 @@ func requireIntegrationServer(t *testing.T) string {
 	}
 	_ = conn.Close()
 	return baseURL
-}
-
-func integrationURL(path string) string {
-	return fmt.Sprintf("%s%s", integrationBaseURL(), path)
 }

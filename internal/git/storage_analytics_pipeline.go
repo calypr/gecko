@@ -1187,49 +1187,6 @@ func countRecordSet(recordSet *storageAuditRecordSet) int {
 	return countRecordStates(recordSet.allProjectRecords)
 }
 
-func mergeBucketInventoryWithPresentProbes(bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, recordSet *storageAuditRecordSet) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject) {
-	if recordSet == nil {
-		return bucketObjects, bucketObjectsByURL
-	}
-	if bucketObjectsByURL == nil {
-		bucketObjectsByURL = make(map[string]gintegrationsyfon.ProjectBucketObject)
-	}
-	for _, group := range recordSet.allProjectRecords {
-		for _, record := range group {
-			for _, probe := range record.AccessProbes {
-				if strings.TrimSpace(probe.Status) != "present" {
-					continue
-				}
-				objectURL := canonicalStorageURL(probe.Bucket, probe.Key, probe.ObjectURL)
-				if objectURL == "" {
-					continue
-				}
-				if _, ok := bucketObjectsByURL[objectURL]; ok {
-					continue
-				}
-				item := bucketObjectFromPresentProbe(objectURL, probe)
-				bucketObjectsByURL[objectURL] = item
-				bucketObjects = append(bucketObjects, item)
-			}
-		}
-	}
-	return bucketObjects, bucketObjectsByURL
-}
-
-func bucketObjectFromPresentProbe(objectURL string, probe gintegrationsyfon.BulkStorageProbeResult) gintegrationsyfon.ProjectBucketObject {
-	return gintegrationsyfon.ProjectBucketObject{
-		ObjectURL:    objectURL,
-		Provider:     strings.TrimSpace(probe.Provider),
-		Bucket:       strings.TrimSpace(probe.Bucket),
-		Key:          strings.Trim(strings.TrimSpace(probe.Key), "/"),
-		Path:         strings.TrimSpace(probe.Path),
-		SizeBytes:    derefInt64(probe.SizeBytes),
-		MetaSHA256:   strings.TrimSpace(probe.MetaSHA256),
-		ETag:         strings.TrimSpace(probe.ETag),
-		LastModified: strings.TrimSpace(probe.LastModified),
-	}
-}
-
 func recordNeedsTargetedProbe(record projectRecordState, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {
 	resolution := resolveRecordStorage(record, bucketObjectsByURL)
 	if len(resolution.matchedBucketObjectURLs) == 0 {

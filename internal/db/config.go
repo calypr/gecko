@@ -20,11 +20,7 @@ type Document struct {
 	Content json.RawMessage `db:"content"` // Store JSON as raw bytes
 }
 
-// ConfigListByType fetches the list of all 'name' (configId) values from a specific table (configType).
-func ConfigListByType(db *sqlx.DB, configType string) ([]string, error) {
-	return ConfigListByTypeContext(context.Background(), db, configType)
-}
-
+// ConfigListByTypeContext fetches the list of all 'name' (configId) values from a specific table (configType).
 func ConfigListByTypeContext(ctx context.Context, db *sqlx.DB, configType string) ([]string, error) {
 	if db == nil {
 		return []string{}, nil
@@ -42,12 +38,8 @@ func ConfigListByTypeContext(ctx context.Context, db *sqlx.DB, configType string
 	return names, nil
 }
 
-// DocumentByIDAndTable fetches the Document struct (ID, Name, Content) by name (configId) from a specific table (configType).
+// DocumentByIDAndTableContext fetches the Document struct (ID, Name, Content) by name (configId) from a specific table (configType).
 // Returns nil, nil if no rows are found.
-func DocumentByIDAndTable(db *sqlx.DB, configId string, configType string) (*Document, error) {
-	return DocumentByIDAndTableContext(context.Background(), db, configId, configType)
-}
-
 func DocumentByIDAndTableContext(ctx context.Context, db *sqlx.DB, configId string, configType string) (*Document, error) {
 	if db == nil {
 		return nil, nil
@@ -76,12 +68,8 @@ func DocumentByIDAndTableContext(ctx context.Context, db *sqlx.DB, configId stri
 	return doc, nil
 }
 
-// ConfigGETGeneric fetches a document and unmarshals its JSON content into the 'target' struct.
+// ConfigGETGenericContext fetches a document and unmarshals its JSON content into the 'target' struct.
 // 'target' must be a pointer to the configuration struct (e.g., *config.AppsPageConfig).
-func ConfigGETGeneric(db *sqlx.DB, configId string, configType string, target any) error {
-	return ConfigGETGenericContext(context.Background(), db, configId, configType, target)
-}
-
 func ConfigGETGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string, target any) error {
 	doc, err := DocumentByIDAndTableContext(ctx, db, configId, configType)
 	if err != nil {
@@ -97,11 +85,7 @@ func ConfigGETGenericContext(ctx context.Context, db *sqlx.DB, configId string, 
 	return nil
 }
 
-// ConfigPUTGeneric marshals 'data' (any Go struct) and performs an INSERT or UPDATE (upsert) in the specified table.
-func ConfigPUTGeneric(db *sqlx.DB, configId string, configType string, data any) error {
-	return ConfigPUTGenericContext(context.Background(), db, configId, configType, data)
-}
-
+// ConfigPUTGenericContext marshals 'data' (any Go struct) and performs an INSERT or UPDATE (upsert) in the specified table.
 func ConfigPUTGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string, data any) error {
 	if db == nil {
 		return nil
@@ -138,12 +122,8 @@ func configPutGenericContext(ctx context.Context, execFn func(context.Context, s
 	return nil
 }
 
-// ConfigDELETEGeneric deletes a document by name (configId) from the specified table (configType).
+// ConfigDELETEGenericContext deletes a document by name (configId) from the specified table (configType).
 // Returns true if deleted, false if not found, or an error.
-func ConfigDELETEGeneric(db *sqlx.DB, configId string, configType string) (bool, error) {
-	return ConfigDELETEGenericContext(context.Background(), db, configId, configType)
-}
-
 func ConfigDELETEGenericContext(ctx context.Context, db *sqlx.DB, configId string, configType string) (bool, error) {
 	if db == nil {
 		return false, nil

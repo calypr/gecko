@@ -267,13 +267,6 @@ func normalizedGitOnlyRegistrationPaths(paths []string) []string {
 	return out
 }
 
-func gitOnlyRegistrationScopeReason(urls []string, scopes []domain.StorageBucketScope, organization string, project string) string {
-	if len(urls) == 0 {
-		return fmt.Sprintf("no configured bucket mapping applies to project %s/%s", organization, project)
-	}
-	return fmt.Sprintf("multiple configured bucket mappings apply (%d); choose a single storage mapping before creating a Syfon record", len(urls))
-}
-
 func buildGitOnlyRegistrationCandidates(results []GitOnlySyfonRegistrationResult) []gitOnlyRegistrationCandidate {
 	byChecksum := make(map[string]*gitOnlyRegistrationCandidate)
 	for index := range results {

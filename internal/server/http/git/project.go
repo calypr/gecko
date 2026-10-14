@@ -100,17 +100,17 @@ func (handler *Handler) ensureMirrorReadyForRead(ctx context.Context, authorizat
 	if err != nil {
 		state.SyncState = git.GitSyncError
 		state.LastError = sql.NullString{String: err.Error(), Valid: true}
-		_ = geckodb.UpsertGitProjectState(handler.db, *state)
+		_ = geckodb.UpsertGitProjectStateContext(ctx, handler.db, *state)
 		return state, err
 	}
 	_, updatedState, err := handler.gitService.RefreshProject(ctx, projectID, identity, state, accessToken)
 	if err != nil {
 		state.SyncState = git.GitSyncError
 		state.LastError = sql.NullString{String: err.Error(), Valid: true}
-		_ = geckodb.UpsertGitProjectState(handler.db, *state)
+		_ = geckodb.UpsertGitProjectStateContext(ctx, handler.db, *state)
 		return state, err
 	}
-	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
+	if err := geckodb.UpsertGitProjectStateContext(ctx, handler.db, *updatedState); err != nil {
 		return nil, fmt.Errorf("persist refreshed git project state: %w", err)
 	}
 	return updatedState, nil

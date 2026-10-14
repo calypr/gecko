@@ -548,7 +548,7 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	}
 	state.SyncState = git.GitSyncUpdating
 	state.LastError = sql.NullString{}
-	if err := geckodb.UpsertGitProjectState(handler.db, *state); err != nil {
+	if err := geckodb.UpsertGitProjectStateContext(ctx.Context(), handler.db, *state); err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist updating git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
@@ -557,12 +557,12 @@ func (handler *Handler) handleGitProjectUpdatePOST(ctx fiber.Ctx) error {
 	if err != nil {
 		state.SyncState = git.GitSyncError
 		state.LastError = sql.NullString{String: err.Error(), Valid: true}
-		_ = geckodb.UpsertGitProjectState(handler.db, *state)
+		_ = geckodb.UpsertGitProjectStateContext(ctx.Context(), handler.db, *state)
 		response := httputil.NewError(apierror.Type("integration_error"), fmt.Sprintf("failed to update git checkout for %s/%s: %s", organization, project, err), http.StatusBadGateway, map[string]any{"project_id": projectID, "repository": cfg.SrcRepo}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
 	}
-	if err := geckodb.UpsertGitProjectState(handler.db, *updatedState); err != nil {
+	if err := geckodb.UpsertGitProjectStateContext(ctx.Context(), handler.db, *updatedState); err != nil {
 		response := httputil.NewError(apierror.TypeDatabaseError, fmt.Sprintf("failed to persist updated git state: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
 		response.WriteLog(handler.logger)
 		return response.Write(ctx)
