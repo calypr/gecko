@@ -14,25 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/httpclient"
 	google_github "github.com/google/go-github/v87/github"
 )
-
-type Config struct {
-	APIBase                     string
-	DisableTransportDiagnostics bool
-}
-
-type Client struct {
-	client *http.Client
-	config Config
-}
-
-type GitHubRepositoryMetadata struct {
-	DefaultBranch string `json:"default_branch"`
-	HTMLURL       string `json:"html_url"`
-}
 
 func NewClient(client *http.Client, config Config) *Client {
 	if client == nil {

@@ -10,46 +10,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/access"
+	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/httpclient"
-	servermw "github.com/calypr/gecko/internal/server/middleware"
 )
-
-type Config struct {
-	BaseURL string
-}
-
-type Client struct {
-	client *http.Client
-	config Config
-}
 
 func NewClient(client *http.Client, config Config) *Client {
 	if client == nil {
 		client = httpclient.NewServiceClient(30 * time.Second)
 	}
 	return &Client{client: client, config: config}
-}
-
-type fenceGitHubInstallURLResponse struct {
-	InstallURL string `json:"install_url"`
-}
-
-type fenceGitHubInstallationStatusResponse struct {
-	Installed           bool   `json:"installed"`
-	InstallationID      *int64 `json:"installation_id"`
-	Target              string `json:"target"`
-	TargetType          string `json:"target_type"`
-	HTMLURL             string `json:"html_url"`
-	RepositorySelection string `json:"repository_selection"`
-}
-
-type fenceGitHubInstallationRepositoriesResponse struct {
-	Repositories []domain.GitHubInstallationRepository `json:"repositories"`
-}
-
-type fenceGitHubTokenResponse struct {
-	Token string `json:"token"`
 }
 
 func (c *Client) requestFenceGitHubBroker(ctx context.Context, authorizationHeader string, requestPayload map[string]any, responsePayload any) error {
@@ -60,7 +30,7 @@ func (c *Client) requestFenceGitHubBroker(ctx context.Context, authorizationHead
 			Message:    "Fence base URL is not configured for GitHub App broker requests",
 		}
 	}
-	validAuthorizationHeader, err := servermw.ValidateAuthorizationHeader(authorizationHeader)
+	validAuthorizationHeader, err := access.ValidateAuthorizationHeader(authorizationHeader)
 	if err != nil {
 		return &domain.HTTPStatusError{
 			StatusCode: http.StatusUnauthorized,
@@ -181,8 +151,8 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, authorization
 	return payload.Repositories, nil
 }
 
-func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, access string) (string, error) {
-	requestedAccess := strings.TrimSpace(access)
+func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity domain.GitRepositoryIdentity, requestedAccessType string) (string, error) {
+	requestedAccess := strings.TrimSpace(requestedAccessType)
 	if requestedAccess == "" {
 		requestedAccess = "read"
 	}
@@ -197,7 +167,7 @@ func (c *Client) RequestInstallationToken(ctx context.Context, authorizationHead
 	}, &payload); err != nil {
 		return "", err
 	}
-	return servermw.ValidateAccessToken(payload.Token)
+	return access.ValidateAccessToken(payload.Token)
 }
 
 func decodeFenceErrorResponse(body []byte) string {

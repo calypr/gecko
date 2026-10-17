@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/calypr/gecko/config"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
@@ -22,6 +23,9 @@ type Document struct {
 
 // ConfigListByTypeContext fetches the list of all 'name' (configId) values from a specific table (configType).
 func ConfigListByTypeContext(ctx context.Context, db *sqlx.DB, configType string) ([]string, error) {
+	if err := validateConfigType(configType); err != nil {
+		return nil, err
+	}
 	if db == nil {
 		return []string{}, nil
 	}
@@ -41,6 +45,9 @@ func ConfigListByTypeContext(ctx context.Context, db *sqlx.DB, configType string
 // DocumentByIDAndTableContext fetches the Document struct (ID, Name, Content) by name (configId) from a specific table (configType).
 // Returns nil, nil if no rows are found.
 func DocumentByIDAndTableContext(ctx context.Context, db *sqlx.DB, configId string, configType string) (*Document, error) {
+	if err := validateConfigType(configType); err != nil {
+		return nil, err
+	}
 	if db == nil {
 		return nil, nil
 	}
@@ -101,6 +108,9 @@ func ConfigPUTGenericTxContext(ctx context.Context, tx *sqlx.Tx, configId string
 }
 
 func configPutGenericContext(ctx context.Context, execFn func(context.Context, string, ...any) (sql.Result, error), configId string, configType string, data any) error {
+	if err := validateConfigType(configType); err != nil {
+		return err
+	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("error marshalling data for %s: %w", configId, err)
@@ -145,4 +155,11 @@ func ConfigDELETEGenericContext(ctx context.Context, db *sqlx.DB, configId strin
 		return false, fmt.Errorf("error executing DELETE for %s in table %s: %w", configId, configType, err)
 	}
 	return true, nil
+}
+
+func validateConfigType(configType string) error {
+	if !config.IsKnownType(configType) {
+		return fmt.Errorf("unknown config type %q", configType)
+	}
+	return nil
 }

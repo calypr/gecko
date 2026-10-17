@@ -48,15 +48,11 @@ Each flag falls back to the named environment variable when it is empty.
 | --- | --- | --- |
 | `-port` | — | Listen port. Default `8080`. |
 | `-db` | `DATABASE_URL` | PostgreSQL DSN. Without it, all data-dependent route families (`/config/*`, `/git/*`, presentation, thumbnail) are skipped at startup; `/health` and swagger are still served. |
-| `-jwks` | `JWKS_ENDPOINT` | Fence JWKS endpoint. Without it, protected routes return `401`. |
 | `-github-api-base-url` | `GITHUB_API_BASE_URL` | GitHub API base URL. |
 | `-fence-base-url` | `FENCE_BASE_URL` | Fence base URL, used for the GitHub installation token exchange. |
 | `-git-data-dir` | `GIT_DATA_DIR` | Directory for local git mirrors. |
-| `-grip-host` | `GRIP_HOST` | Reserved. Parsed and passed down, no code path uses it today. |
-| `-grip-port` | `GRIP_PORT` | Reserved. Same as `-grip-host`. |
-| `-grip-graph-zname` | `GRIP_GRAPH` | Reserved. Same as `-grip-host`. |
 
-Environment variables read inside `internal/git`:
+Environment variables read inside `internal/repo`:
 
 | Env var | Purpose |
 | --- | --- |

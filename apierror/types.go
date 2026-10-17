@@ -1,5 +1,7 @@
 package apierror
 
+import "net/http"
+
 type Type string
 
 const (
@@ -26,4 +28,19 @@ type Error struct {
 	Message string         `json:"message"`
 	Code    int            `json:"code"`
 	Details map[string]any `json:"details,omitempty"`
+}
+
+func TypeForStatus(code int) Type {
+	switch code {
+	case http.StatusUnauthorized:
+		return TypeUnauthorized
+	case http.StatusForbidden:
+		return TypeForbidden
+	case http.StatusNotFound:
+		return TypeNotFound
+	case http.StatusMethodNotAllowed:
+		return TypeMethodNotAllowed
+	default:
+		return TypeAuthorizationServiceError
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -411,12 +412,12 @@ func TestRegisterProjectObjectsUsesDRSRegistrationEndpoint(t *testing.T) {
 func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	t.Helper()
 
-	requests := 0
+	var requests atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		requests++
+		requests.Add(1)
 		var req struct {
 			Items []struct {
 				ID                string `json:"id"`
@@ -468,8 +469,8 @@ func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkProbeStorageObjects returned error: %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("expected 2 bulk probe requests, got %d", requests)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected 2 bulk probe requests, got %d", got)
 	}
 	if len(results) != len(items) {
 		t.Fatalf("expected %d results, got %d", len(items), len(results))
@@ -554,12 +555,12 @@ func TestBulkListStorageObjectsSendsExpectedName(t *testing.T) {
 }
 
 func TestBulkListStorageObjectsDeduplicatesIdenticalRequests(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk-list" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		requests++
+		requests.Add(1)
 		var req struct {
 			Items []struct {
 				ID                string `json:"id"`
@@ -604,8 +605,8 @@ func TestBulkListStorageObjectsDeduplicatesIdenticalRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkListStorageObjects returned error: %v", err)
 	}
-	if requests != 1 {
-		t.Fatalf("expected one bulk-list request, got %d", requests)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one bulk-list request, got %d", got)
 	}
 	if len(results) != 2 || results[0].ObjectURL != "s3://bucket/file.bin" || results[1].ObjectURL != "s3://bucket/file.bin" {
 		t.Fatalf("expected deduplicated response to fan out to all original items, got %+v", results)

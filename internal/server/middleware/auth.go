@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +8,7 @@ import (
 	ggmw "github.com/bmeg/grip-graphql/middleware"
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/config"
+	"github.com/calypr/gecko/internal/access"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/gofiber/fiber/v3"
 	"github.com/uc-cdis/arborist/arborist"
@@ -31,7 +31,7 @@ func ResolveConfigParams(ctx fiber.Ctx) (string, string) {
 	return configType, configID
 }
 
-func ConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fiber.Handler {
+func ConfigAuth(logger arborist.Logger, authzHandler access.ResourceAccessHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		method := ctx.Method()
 		configType, configID := ResolveConfigParams(ctx)
@@ -67,7 +67,7 @@ func ConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fibe
 	}
 }
 
-func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method, service string) fiber.Handler {
+func GeneralAuth(logger arborist.Logger, authzHandler access.ResourceAccessHandler, method, service string) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		authorizationHeader := ctx.Get("Authorization")
 		if authorizationHeader == "" {
@@ -86,10 +86,10 @@ func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, met
 		anyList, err := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, service)
 		if err != nil {
 			if serverErr, ok := err.(*ggmw.ServerError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 			}
-			if accessErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(accessErr.StatusCode), accessErr.Message, accessErr.StatusCode, nil, nil))
+			if accessErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(accessErr.StatusCode), accessErr.Message, accessErr.StatusCode, nil, nil))
 			}
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeNotFound, "expecting error to be serverError type", http.StatusNotFound, nil, nil))
 		}
@@ -116,7 +116,7 @@ func GeneralAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, met
 	}
 }
 
-func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method string) fiber.Handler {
+func ProjectConfigAuth(logger arborist.Logger, authzHandler access.ResourceAccessHandler, method string) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		authorizationHeader := ctx.Get("Authorization")
 		if authorizationHeader == "" {
@@ -127,19 +127,19 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 		if organization == "" || project == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
-		resourcePath := ProgramProjectResourcePath(organization, project)
+		resourcePath := access.ProgramProjectResourcePath(organization, project)
 		allowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, method, "*", resourcePath)
 		if err != nil {
-			if serverErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+			if serverErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 			}
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
 		if !allowed {
 			anyList, listErr := authzHandler.GetAllowedResources(ctx.Context(), authorizationHeader, method, "*")
 			if listErr != nil {
-				if serverErr, ok := listErr.(*AccessError); ok {
-					return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+				if serverErr, ok := listErr.(*access.AccessError); ok {
+					return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 				}
 				return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, listErr.Error(), http.StatusForbidden, nil, nil))
 			}
@@ -162,7 +162,7 @@ func ProjectConfigAuth(logger arborist.Logger, authzHandler ResourceAccessHandle
 }
 
 func resourceListAllowsProjectAdminAction(resources []string, organization string, project string) bool {
-	projectResource := ProgramProjectResourcePath(organization, project)
+	projectResource := access.ProgramProjectResourcePath(organization, project)
 	projectCollectionResource := fmt.Sprintf("/programs/%s/projects", organization)
 	organizationResource := fmt.Sprintf("/programs/%s", organization)
 
@@ -185,7 +185,7 @@ func RequireAuthorization(logger arborist.Logger) fiber.Handler {
 	}
 }
 
-func GitProjectAuth(logger arborist.Logger, jwtHandler ResourceAccessHandler) fiber.Handler {
+func GitProjectAuth(logger arborist.Logger, jwtHandler access.ResourceAccessHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		if jwtHandler == nil {
 			return ctx.Next()
@@ -200,25 +200,28 @@ func GitProjectAuth(logger arborist.Logger, jwtHandler ResourceAccessHandler) fi
 		if organization == "" || project == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
-		resources, conversionErr := GitAllowedResources(ctx.Context(), jwtHandler, token, permission)
-		if conversionErr != nil {
-			return writeError(ctx, logger, conversionErr)
+		resources, err := access.AllowedResources(ctx.Context(), jwtHandler, token, permission, "*")
+		if err != nil {
+			if serverErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+			}
+			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil))
 		}
-		if GitProjectReadable(resources, organization, project) {
+		if access.ResourceListAllowsProject(resources, organization, project) {
 			return ctx.Next()
 		}
 		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to %s on project %s/%s", permission, organization, project), http.StatusForbidden, map[string]any{
 			"organization":                 organization,
 			"project":                      project,
 			"method":                       permission,
-			"resource_path":                ProgramProjectResourcePath(organization, project),
+			"resource_path":                access.ProgramProjectResourcePath(organization, project),
 			"request_access":               true,
-			"request_access_resource_path": ProgramProjectResourcePath(organization, project),
+			"request_access_resource_path": access.ProgramProjectResourcePath(organization, project),
 		}, nil))
 	}
 }
 
-func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessHandler, method string) fiber.Handler {
+func GitProjectMutationAuth(logger arborist.Logger, authzHandler access.ResourceAccessHandler, method string) fiber.Handler {
 	return ProjectConfigAuth(logger, authzHandler, method)
 }
 
@@ -227,7 +230,7 @@ func GitProjectMutationAuth(logger arborist.Logger, authzHandler ResourceAccessH
 // this in front of the bootstrap /git/projects/:orgTitle/:projectTitle/setup
 // route because Arborist must decide whether the caller can create or attach to
 // missing org/project resources.
-func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHandler) fiber.Handler {
+func GitProjectSetupAuth(logger arborist.Logger, authzHandler access.ResourceAccessHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		authorizationHeader := ctx.Get("Authorization")
 		if authorizationHeader == "" {
@@ -238,11 +241,11 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 		if organization == "" || project == "" {
 			return writeError(ctx, logger, httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil))
 		}
-		projectResource := ProgramProjectResourcePath(organization, project)
+		projectResource := access.ProgramProjectResourcePath(organization, project)
 		projectReadable, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "read", "*", projectResource)
 		if err != nil {
-			if serverErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+			if serverErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 			}
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
@@ -252,8 +255,8 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 		orgProjectsResource := fmt.Sprintf("/programs/%s/projects", organization)
 		orgCreateAllowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "create-descendant", "arborist", orgProjectsResource)
 		if err != nil {
-			if serverErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+			if serverErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 			}
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
@@ -263,8 +266,8 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 		orgResource := fmt.Sprintf("/programs/%s", organization)
 		orgManageAllowed, err := authzHandler.CheckResourceServiceAccess(ctx.Context(), authorizationHeader, "manage-owners", "arborist", orgResource)
 		if err != nil {
-			if serverErr, ok := err.(*AccessError); ok {
-				return writeError(ctx, logger, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
+			if serverErr, ok := err.(*access.AccessError); ok {
+				return writeError(ctx, logger, httputil.NewError(apierror.TypeForStatus(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil))
 			}
 			return writeError(ctx, logger, httputil.NewError(apierror.TypeAuthorizationServiceError, err.Error(), http.StatusForbidden, nil, nil))
 		}
@@ -281,7 +284,7 @@ func GitProjectSetupAuth(logger arborist.Logger, authzHandler ResourceAccessHand
 	}
 }
 
-func GitOrganizationAuth(logger arborist.Logger, jwtHandler ResourceAccessHandler) fiber.Handler {
+func GitOrganizationAuth(logger arborist.Logger, jwtHandler access.ResourceAccessHandler) fiber.Handler {
 	return func(ctx fiber.Ctx) error {
 		if jwtHandler == nil {
 			return ctx.Next()
@@ -302,71 +305,26 @@ func GitOrganizationAuth(logger arborist.Logger, jwtHandler ResourceAccessHandle
 		if conversionErr != nil {
 			return writeError(ctx, logger, conversionErr)
 		}
-		if ResourceListAllowsOrganization(resources, organization) {
+		if access.ResourceListAllowsOrganization(resources, organization) {
 			return ctx.Next()
 		}
 		return writeError(ctx, logger, httputil.NewError("forbidden", fmt.Sprintf("User is not allowed to read organization %s", organization), http.StatusForbidden, map[string]any{"organization": organization, "method": "read"}, nil))
 	}
 }
 
-func GitAllowedResources(ctx context.Context, jwtHandler ResourceAccessHandler, token string, permission string) ([]string, *httputil.ErrorResponse) {
-	allowed, err := jwtHandler.GetAllowedResources(ctx, token, permission, "*")
-	if err != nil {
-		if serverErr, ok := err.(*AccessError); ok {
-			return nil, httputil.NewError(serviceErrorType(serverErr.StatusCode), serverErr.Message, serverErr.StatusCode, nil, nil)
+func convertAnyToStringSlice(anySlice []any) ([]string, *httputil.ErrorResponse) {
+	stringSlice := make([]string, 0, len(anySlice))
+	for _, value := range anySlice {
+		item, ok := value.(string)
+		if !ok {
+			return nil, httputil.NewError(apierror.TypeInvalidAuthorizationResponse, fmt.Sprintf("Element %v is not a string", value), http.StatusInternalServerError, nil, nil)
 		}
-		return nil, httputil.NewError("authorization_service_error", fmt.Sprintf("authorization lookup failed: %s", err), http.StatusForbidden, nil, nil)
+		stringSlice = append(stringSlice, item)
 	}
-	return convertAnyToStringSlice(allowed)
-}
-
-func GitProjectReadable(resources []string, organization string, project string) bool {
-	return ResourceListAllowsProject(resources, organization, project)
-}
-
-func serviceErrorType(code int) apierror.Type {
-	switch code {
-	case http.StatusUnauthorized:
-		return apierror.TypeUnauthorized
-	case http.StatusForbidden:
-		return apierror.TypeForbidden
-	case http.StatusNotFound:
-		return apierror.TypeNotFound
-	case http.StatusMethodNotAllowed:
-		return apierror.TypeMethodNotAllowed
-	default:
-		return apierror.TypeAuthorizationServiceError
-	}
+	return stringSlice, nil
 }
 
 func writeError(ctx fiber.Ctx, logger arborist.Logger, response *httputil.ErrorResponse) error {
 	response.WriteLog(logger)
 	return response.Write(ctx)
-}
-
-func CleanAccessToken(raw string) string {
-	token := strings.TrimSpace(raw)
-	if strings.HasPrefix(strings.ToLower(token), "bearer ") {
-		token = strings.TrimSpace(token[len("bearer "):])
-	}
-	return token
-}
-
-func ValidateAccessToken(raw string) (string, error) {
-	token := CleanAccessToken(raw)
-	if token == "" {
-		return "", fmt.Errorf("git access token is required")
-	}
-	return token, nil
-}
-
-func ValidateAuthorizationHeader(raw string) (string, error) {
-	token := strings.TrimSpace(raw)
-	if token == "" {
-		return "", fmt.Errorf("authorization header is required")
-	}
-	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
-		return "", fmt.Errorf("authorization header must use bearer auth")
-	}
-	return token, nil
 }
