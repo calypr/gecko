@@ -487,10 +487,11 @@ func logStorageChainInputResult(stage string, count int, err error) {
 	log.Printf("INFO: storage_chain_input_done stage=%s count=%d", strings.TrimSpace(stage), count)
 }
 
-type chainAuditAccumulator struct {
-	findings                   []model.ChainFinding
-	summary                    model.ChainSummary
-	missingBucketDebugLogCount int
+type storageAuditBaseInputs struct {
+	index             *repoindex.Index
+	inventory         []model.RepoInventoryFile
+	RecordsByChecksum map[string][]sarecord.State
+	usageByObjectID   map[string]gintegrationsyfon.FileUsage
 }
 
 func (service *Service) loadStorageAuditBaseInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*storageAuditBaseInputs, error) {
