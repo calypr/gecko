@@ -3,6 +3,7 @@ package repo
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/google/go-github/v87/github"
 )
+
+var ErrInvalidManifestCursor = errors.New("invalid manifest cursor")
 
 func BuildTreeResponse(projectID string, ref string, path string, repo *gogit.Repository, hash plumbing.Hash, options TreeResponseOptions) (*TreeResponse, error) {
 	commit, err := repo.CommitObject(hash)
@@ -121,7 +124,7 @@ func BuildManifestResponse(projectID string, ref string, path string, repo *gogi
 		return entries[i].Path < entries[j].Path
 	})
 	if offset > len(entries) {
-		return nil, fmt.Errorf("invalid manifest cursor")
+		return nil, ErrInvalidManifestCursor
 	}
 
 	end := len(entries)
@@ -187,14 +190,14 @@ func parseGitManifestCursor(raw string, ref string, path string) (int, error) {
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
-		return 0, fmt.Errorf("invalid manifest cursor")
+		return 0, ErrInvalidManifestCursor
 	}
 	var payload gitManifestCursor
 	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return 0, fmt.Errorf("invalid manifest cursor")
+		return 0, ErrInvalidManifestCursor
 	}
 	if payload.Ref != ref || payload.Path != path || payload.Offset < 0 {
-		return 0, fmt.Errorf("invalid manifest cursor")
+		return 0, ErrInvalidManifestCursor
 	}
 	return payload.Offset, nil
 }

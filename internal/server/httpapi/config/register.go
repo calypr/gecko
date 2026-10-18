@@ -1,4 +1,4 @@
-package httpapi
+package config
 
 import (
 	"github.com/calypr/gecko/internal/access"
@@ -6,8 +6,15 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func registerConfigRoutes(app *fiber.App, sharedHandler *Handler, authzHandler access.ResourceAccessHandler) {
-	handler := newConfigHandler(sharedHandler)
+func configTypeMiddleware(configType string) fiber.Handler {
+	return func(ctx fiber.Ctx) error {
+		ctx.Locals("configType", configType)
+		return ctx.Next()
+	}
+}
+
+func Register(app *fiber.App, deps Dependencies, authzHandler access.ResourceAccessHandler) {
+	handler := NewHandler(deps)
 	if handler.DB == nil {
 		handler.Logger.Warning("Skipping DB endpoints — no database configured")
 		return
@@ -17,14 +24,14 @@ func registerConfigRoutes(app *fiber.App, sharedHandler *Handler, authzHandler a
 	configGroup.Get("/types", handler.handleConfigTypesGET)
 	configGroup.Get("/list", handler.handleConfigListGET)
 
-	handler.registerTypedConfigRoutes(configGroup.Group("/explorer", ConfigTypeMiddleware("explorer")), true, authzHandler)
-	handler.registerTypedConfigRoutes(configGroup.Group("/nav", ConfigTypeMiddleware("nav")), false, authzHandler)
-	handler.registerTypedConfigRoutes(configGroup.Group("/file_summary", ConfigTypeMiddleware("file_summary")), false, authzHandler)
-	handler.registerTypedConfigRoutes(configGroup.Group("/project", ConfigTypeMiddleware("project")), false, authzHandler)
-	handler.registerProjectConfigRoutes(configGroup.Group("/projects", ConfigTypeMiddleware("projects")), authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/explorer", configTypeMiddleware("explorer")), true, authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/nav", configTypeMiddleware("nav")), false, authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/file_summary", configTypeMiddleware("file_summary")), false, authzHandler)
+	handler.registerTypedConfigRoutes(configGroup.Group("/project", configTypeMiddleware("project")), false, authzHandler)
+	handler.registerProjectConfigRoutes(configGroup.Group("/projects", configTypeMiddleware("projects")), authzHandler)
 }
 
-func (handler *ConfigHandler) registerTypedConfigRoutes(group fiber.Router, includeDefaultGet bool, authzHandler access.ResourceAccessHandler) {
+func (handler *Handler) registerTypedConfigRoutes(group fiber.Router, includeDefaultGet bool, authzHandler access.ResourceAccessHandler) {
 	group.Get("/list", handler.handleConfigListGET)
 	if includeDefaultGet {
 		group.Get("/", servermw.ConfigAuth(handler.Logger, authzHandler), handler.handleConfigGET)
@@ -34,7 +41,7 @@ func (handler *ConfigHandler) registerTypedConfigRoutes(group fiber.Router, incl
 	group.Delete("/:configId", servermw.ConfigAuth(handler.Logger, authzHandler), handler.handleConfigDELETE)
 }
 
-func (handler *ConfigHandler) registerProjectConfigRoutes(projects fiber.Router, authzHandler access.ResourceAccessHandler) {
+func (handler *Handler) registerProjectConfigRoutes(projects fiber.Router, authzHandler access.ResourceAccessHandler) {
 	projects.Get("", handler.handleConfigListGET)
 	projects.Get("/list", handler.handleConfigListGET)
 	projects.Get("/summary", handler.handleProjectSummaryGET)

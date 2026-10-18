@@ -1,4 +1,4 @@
-package httpapi
+package git
 
 import (
 	"bytes"
@@ -17,6 +17,7 @@ import (
 	"github.com/calypr/gecko/internal/access"
 	geckologging "github.com/calypr/gecko/internal/logging"
 	"github.com/calypr/gecko/internal/presentation"
+	projectpkg "github.com/calypr/gecko/internal/project"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
@@ -39,25 +40,37 @@ func (handler fakePresentationAccessHandler) CheckResourceServiceAccess(_ contex
 	return false, nil
 }
 
-func newPresentationConfigTestServer(t *testing.T) (*GitHandler, sqlmock.Sqlmock, func()) {
+func newPresentationConfigTestServer(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
-	handler := &GitHandler{
-		db:                sqlx.NewDb(db, "sqlmock"),
-		logger:            &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)},
-		presentationStore: presentation.NewFilesystemStore(t.TempDir()),
-	}
+	dbx := sqlx.NewDb(db, "sqlmock")
+	presentationStore := presentation.NewFilesystemStore(t.TempDir())
+	handler := &Handler{Dependencies: Dependencies{
+		DB:                dbx,
+		Logger:            &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)},
+		PresentationStore: presentationStore,
+		ProjectRead:       projectpkg.NewReadService(dbx, nil),
+	}}
 	return handler, mock, func() { _ = db.Close() }
 }
 
-func newPresentationConfigApp(handler *GitHandler, authz access.ResourceAccessHandler) *fiber.App {
+func storedPresentationPath(t *testing.T, handler *Handler, organization string, project string) string {
+	t.Helper()
+	store, ok := handler.PresentationStore.(*presentation.FilesystemStore)
+	if !ok {
+		t.Fatalf("presentation store is %T, want *presentation.FilesystemStore", handler.PresentationStore)
+	}
+	return store.ProjectPresentationPath(organization, project)
+}
+
+func newPresentationConfigApp(handler *Handler, authz access.ResourceAccessHandler) *fiber.App {
 	app := fiber.New()
-	app.Get("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.logger, authz, "read"), handler.handleGitProjectPresentationConfigGET)
-	app.Put("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.logger, authz, "update"), handler.handleGitProjectPresentationConfigPUT)
-	app.Post("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.logger, authz, "update"), handler.handleGitProjectPresentationConfigPUT)
+	app.Get("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.Logger, authz, "read"), handler.handleGitProjectPresentationConfigGET)
+	app.Put("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.Logger, authz, "update"), handler.handleGitProjectPresentationConfigPUT)
+	app.Post("/git/projects/:orgTitle/:projectTitle/presentationConfig", servermw.ProjectConfigAuth(handler.Logger, authz, "update"), handler.handleGitProjectPresentationConfigPUT)
 	return app
 }
 
@@ -142,7 +155,7 @@ func TestGitProjectPresentationConfigPUTPersistsRawHTML(t *testing.T) {
 	if payload.PresentationConfig != expectedStored {
 		t.Fatalf("unexpected sanitized response: %q", payload.PresentationConfig)
 	}
-	data, err := os.ReadFile(handler.presentationStore.ProjectPresentationPath("org-a", "proj-a"))
+	data, err := os.ReadFile(storedPresentationPath(t, handler, "org-a", "proj-a"))
 	if err != nil {
 		t.Fatalf("read stored presentation: %v", err)
 	}
@@ -172,8 +185,8 @@ func TestGitProjectPresentationConfigPOSTUsesSameWritePath(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
-	if filepath.Base(handler.presentationStore.ProjectPresentationPath("org-a", "proj-a")) != "proj-a_presentation.html" {
-		t.Fatalf("unexpected presentation filename: %q", filepath.Base(handler.presentationStore.ProjectPresentationPath("org-a", "proj-a")))
+	if filepath.Base(storedPresentationPath(t, handler, "org-a", "proj-a")) != "proj-a_presentation.html" {
+		t.Fatalf("unexpected presentation filename: %q", filepath.Base(storedPresentationPath(t, handler, "org-a", "proj-a")))
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

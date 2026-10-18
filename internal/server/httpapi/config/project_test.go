@@ -1,4 +1,4 @@
-package httpapi
+package config
 
 import (
 	"bytes"
@@ -12,20 +12,26 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/calypr/gecko/config"
+	appconfig "github.com/calypr/gecko/config"
+	"github.com/calypr/gecko/internal/configuration"
 	geckologging "github.com/calypr/gecko/internal/logging"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 )
 
-func newProjectConfigTestServer(t *testing.T) (*ConfigHandler, sqlmock.Sqlmock, func()) {
+func newProjectConfigTestServer(t *testing.T) (*Handler, sqlmock.Sqlmock, func()) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock: %v", err)
 	}
-	srv := &ConfigHandler{db: sqlx.NewDb(db, "sqlmock"), logger: &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)}}
+	dbx := sqlx.NewDb(db, "sqlmock")
+	srv := &Handler{Dependencies: Dependencies{
+		DB:            dbx,
+		Logger:        &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)},
+		ConfigService: configuration.NewService(dbx, nil),
+	}}
 	return srv, mock, func() { _ = db.Close() }
 }
 
@@ -46,7 +52,7 @@ func TestProjectConfigListGET_PluralProjects(t *testing.T) {
 	mock.ExpectQuery(`SELECT name, content FROM config_schema\.projects ORDER BY name`).WillReturnRows(rows)
 
 	app := fiber.New()
-	projects := app.Group("/config/projects", ConfigTypeMiddleware(string(config.TypeProjects)))
+	projects := app.Group("/config/projects", configTypeMiddleware(string(appconfig.TypeProjects)))
 	projects.Get("/list", srv.handleConfigListGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/list", nil))
@@ -97,7 +103,7 @@ func TestExplorerListStillReadsExplorerConfigs(t *testing.T) {
 	mock.ExpectQuery(`SELECT name FROM config_schema\.explorer`).WillReturnRows(rows)
 
 	app := fiber.New()
-	group := app.Group("/config/explorer", ConfigTypeMiddleware(string(config.TypeExplorer)))
+	group := app.Group("/config/explorer", configTypeMiddleware(string(appconfig.TypeExplorer)))
 	group.Get("/list", srv.handleConfigListGET)
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/explorer/list", nil))
 	defer resp.Body.Close()
@@ -120,7 +126,7 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 	srv, mock, cleanup := newProjectConfigTestServer(t)
 	defer cleanup()
 
-	project := config.ProjectConfig{
+	project := appconfig.ProjectConfig{
 		Title:        "BForePC",
 		ContactEmail: "sanati@ohsu.edu",
 		SrcRepo:      "https://source.ohsu.edu/CBDS/BForePC.git",
@@ -139,8 +145,8 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 		WillReturnRows(rows)
 
 	app := fiber.New()
-	projects := app.Group("/config/projects", ConfigTypeMiddleware(string(config.TypeProjects)))
-	projects.Get("/:orgTitle/:projectTitle", servermw.ConfigAuth(srv.logger, nil), srv.handleProjectConfigGET)
+	projects := app.Group("/config/projects", configTypeMiddleware(string(appconfig.TypeProjects)))
+	projects.Get("/:orgTitle/:projectTitle", servermw.ConfigAuth(srv.Logger, nil), srv.handleProjectConfigGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/HTAN_INT/BForePC", nil))
 	defer resp.Body.Close()
@@ -156,15 +162,15 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 func TestProjectConfigPUT_ByOrganizationAndProject(t *testing.T) {
 	srv, mock, cleanup := newProjectConfigTestServer(t)
 	defer cleanup()
-	originalValidator := config.ValidateProjectRepository
-	config.ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
+	originalValidator := appconfig.ValidateProjectRepository
+	appconfig.ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
 		return raw, nil
 	}
 	defer func() {
-		config.ValidateProjectRepository = originalValidator
+		appconfig.ValidateProjectRepository = originalValidator
 	}()
 
-	project := config.ProjectConfig{
+	project := appconfig.ProjectConfig{
 		Title:        "BForePC",
 		ContactEmail: "sanati@ohsu.edu",
 		SrcRepo:      "github.com/example/BForePC",
@@ -183,7 +189,7 @@ func TestProjectConfigPUT_ByOrganizationAndProject(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	app := fiber.New()
-	projects := app.Group("/config/projects", ConfigTypeMiddleware(string(config.TypeProjects)))
+	projects := app.Group("/config/projects", configTypeMiddleware(string(appconfig.TypeProjects)))
 	projects.Put("/:orgTitle/:projectTitle", srv.handleProjectConfigPUT)
 
 	req := httptest.NewRequest(http.MethodPut, "/config/projects/HTAN_INT/BForePC", bytes.NewReader(content))

@@ -1,57 +1,46 @@
-package httpapi
+package git
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/calypr/gecko/internal/server/httpapi/core"
 	"io"
 	"net/http"
 	"strings"
 
-	appconfig "github.com/calypr/gecko/config"
-	geckodb "github.com/calypr/gecko/internal/db"
+	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/httputil"
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/gofiber/fiber/v3"
 )
 
-func (handler *GitHandler) resolveExistingProject(ctx fiber.Ctx) (string, string, string, *httputil.ErrorResponse) {
+func (handler *Handler) resolveExistingProject(ctx fiber.Ctx) (string, string, string, error) {
 	organization := strings.TrimSpace(ctx.Params("orgTitle"))
 	project := strings.TrimSpace(ctx.Params("projectTitle"))
 	if organization == "" || project == "" {
-		response := httputil.NewError("invalid_request", "organization and project are required", http.StatusBadRequest, nil, nil)
-		response.WriteLog(handler.logger)
-		return "", "", "", response
+		return "", "", "", domain.NewError(domain.ErrorKindValidation, http.StatusBadRequest, "organization and project are required", nil)
 	}
 	projectID := organization + "/" + project
-	var cfg appconfig.ProjectConfig
-	if err := geckodb.ConfigGETGenericContext(ctx.Context(), handler.db, projectID, string(appconfig.TypeProjects), &cfg); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			response := httputil.NewError("not_found", fmt.Sprintf("no project config found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
-			response.WriteLog(handler.logger)
-			return "", "", "", response
-		}
-		response := httputil.NewError("database_error", fmt.Sprintf("failed to load project config: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
-		return "", "", "", response
+	if _, err := handler.ProjectRead.ProjectConfig(ctx.Context(), projectID); err != nil {
+		return "", "", "", err
 	}
 	return organization, project, projectID, nil
 }
 
-func (handler *GitHandler) handleGitProjectThumbnailGET(ctx fiber.Ctx) error {
-	organization, project, projectID, errResponse := handler.resolveExistingProject(ctx)
-	if errResponse != nil {
-		return errResponse.Write(ctx)
+func (handler *Handler) handleGitProjectThumbnailGET(ctx fiber.Ctx) error {
+	organization, project, projectID, err := handler.resolveExistingProject(ctx)
+	if err != nil {
+		return core.WriteAppError(ctx, err, handler.Logger)
 	}
-	path, contentType, err := handler.thumbnailStore.GetPath(organization, project)
+	path, contentType, err := handler.ThumbnailStore.GetPath(organization, project)
 	if err != nil {
 		if errors.Is(err, thumbnail.ErrNoThumbnail) {
 			response := httputil.NewError("not_found", fmt.Sprintf("no thumbnail found for %s", projectID), http.StatusNotFound, map[string]any{"project_id": projectID}, nil)
-			response.WriteLog(handler.logger)
+			response.WriteLog(handler.Logger)
 			return response.Write(ctx)
 		}
 		response := httputil.NewError("internal_error", fmt.Sprintf("failed to load project thumbnail: %s", err), http.StatusInternalServerError, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	if strings.TrimSpace(contentType) != "" {
@@ -60,26 +49,26 @@ func (handler *GitHandler) handleGitProjectThumbnailGET(ctx fiber.Ctx) error {
 	return ctx.SendFile(path)
 }
 
-func (handler *GitHandler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
-	organization, project, projectID, errResponse := handler.resolveExistingProject(ctx)
-	if errResponse != nil {
-		return errResponse.Write(ctx)
+func (handler *Handler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
+	organization, project, projectID, err := handler.resolveExistingProject(ctx)
+	if err != nil {
+		return core.WriteAppError(ctx, err, handler.Logger)
 	}
 	fileHeader, err := ctx.FormFile("thumbnail")
 	if err != nil {
 		response := httputil.NewError("validation_failed", "thumbnail image is required", http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	if fileHeader.Size > int64(thumbnail.MaxProjectThumbnailBytes) {
 		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", thumbnail.MaxProjectThumbnailBytes), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	file, err := fileHeader.Open()
 	if err != nil {
 		response := httputil.NewError("invalid_request", fmt.Sprintf("failed to open thumbnail upload: %s", err), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	defer file.Close()
@@ -87,16 +76,16 @@ func (handler *GitHandler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
 	data, err := io.ReadAll(io.LimitReader(file, int64(thumbnail.MaxProjectThumbnailBytes)+1))
 	if err != nil {
 		response := httputil.NewError("invalid_request", fmt.Sprintf("failed to read thumbnail upload: %s", err), http.StatusBadRequest, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	if len(data) > thumbnail.MaxProjectThumbnailBytes {
 		response := httputil.NewError("validation_failed", fmt.Sprintf("thumbnail image must be %d bytes or smaller", thumbnail.MaxProjectThumbnailBytes), http.StatusRequestEntityTooLarge, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 
-	_, contentType, err := handler.thumbnailStore.Save(organization, project, data)
+	_, contentType, err := handler.ThumbnailStore.Save(organization, project, data)
 	if err != nil {
 		response := httputil.NewError(
 			"validation_failed",
@@ -111,21 +100,21 @@ func (handler *GitHandler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
 			map[string]any{"project_id": projectID},
 			nil,
 		)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	return httputil.JSON(map[string]any{"success": true, "project_id": projectID, "content_type": contentType}, http.StatusOK).Write(ctx)
 }
 
-func (handler *GitHandler) handleGitProjectThumbnailDELETE(ctx fiber.Ctx) error {
-	organization, project, projectID, errResponse := handler.resolveExistingProject(ctx)
-	if errResponse != nil {
-		return errResponse.Write(ctx)
+func (handler *Handler) handleGitProjectThumbnailDELETE(ctx fiber.Ctx) error {
+	organization, project, projectID, err := handler.resolveExistingProject(ctx)
+	if err != nil {
+		return core.WriteAppError(ctx, err, handler.Logger)
 	}
-	err := handler.thumbnailStore.Delete(organization, project)
+	err = handler.ThumbnailStore.Delete(organization, project)
 	if err != nil && !errors.Is(err, thumbnail.ErrNoThumbnail) {
 		response := httputil.NewError("integration_error", fmt.Sprintf("failed to delete project thumbnail: %s", err), http.StatusBadGateway, map[string]any{"project_id": projectID}, nil)
-		response.WriteLog(handler.logger)
+		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
 	return httputil.JSON(map[string]any{"success": true, "project_id": projectID}, http.StatusOK).Write(ctx)

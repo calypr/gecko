@@ -1,4 +1,4 @@
-package httpapi
+package git
 
 import (
 	"bytes"
@@ -29,7 +29,7 @@ func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
 }
 
-func newGitHandlerTestServer(t *testing.T, fenceServer *httptest.Server, githubTransport http.RoundTripper) (*GitHandler, sqlmock.Sqlmock, func()) {
+func newHandlerTestServer(t *testing.T, fenceServer *httptest.Server, githubTransport http.RoundTripper) (*Handler, sqlmock.Sqlmock, func()) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -52,12 +52,14 @@ func newGitHandlerTestServer(t *testing.T, fenceServer *httptest.Server, githubT
 		HTTPClient:    githubClient,
 		FenceClient:   intfence.NewClient(fenceClient, intfence.Config{BaseURL: fenceBaseURL}),
 	})
-	handler := &GitHandler{
-		Handler:     &Handler{},
-		db:          sqlx.NewDb(db, "sqlmock"),
-		logger:      logger,
-		repoService: repoSvc,
-	}
+	dbx := sqlx.NewDb(db, "sqlmock")
+	handler := &Handler{Dependencies: Dependencies{
+		DB:                  dbx,
+		Logger:              logger,
+		RepoService:         repoSvc,
+		ProjectRead:         projectpkg.NewReadService(dbx, repoSvc),
+		ProjectInstallation: projectpkg.NewInstallationService(dbx, repoSvc),
+	}}
 	return handler, mock, func() { _ = db.Close() }
 }
 
@@ -79,7 +81,7 @@ func TestGitOrganizationInitConnectReturnsRedirectWithoutRepository(t *testing.T
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	app := fiber.New()
@@ -129,7 +131,7 @@ func TestGitOrganizationInitConnectAppendsRepositorySuggestionWhenResolvable(t *
 		}, nil
 	})
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, githubTransport)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, githubTransport)
 	defer cleanup()
 
 	app := fiber.New()
@@ -177,7 +179,7 @@ func TestGitOrganizationInitConnectFallsBackToPlainRedirectWhenRepositoryLookupF
 		}, nil
 	})
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, githubTransport)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, githubTransport)
 	defer cleanup()
 
 	app := fiber.New()
@@ -248,7 +250,7 @@ func TestGitOrganizationInitConnectFallsBackToAppInstallationURLWhenRepositoryLo
 		return nil, nil
 	})
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, githubTransport)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, githubTransport)
 	defer cleanup()
 
 	app := fiber.New()
@@ -299,7 +301,7 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	projectCfg := appconfig.ProjectConfig{Title: "proj-a", OrgTitle: "TEST", ProjectTitle: "proj-a", SrcRepo: ""}
@@ -365,7 +367,7 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 }
 
 func TestGitOrganizationConnectRequiresGitHubOwner(t *testing.T) {
-	handler, _, cleanup := newGitHandlerTestServer(t, nil, nil)
+	handler, _, cleanup := newHandlerTestServer(t, nil, nil)
 	defer cleanup()
 
 	app := fiber.New()
@@ -416,7 +418,7 @@ func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	mock.ExpectExec(`INSERT INTO config_schema\.git_organization_state`).
@@ -474,7 +476,7 @@ func TestGitProjectEditConnectRejectsRepositoryOutsideInstallation(t *testing.T)
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	projectCfg := appconfig.ProjectConfig{Title: "proj-a", OrgTitle: "TEST", ProjectTitle: "proj-a", SrcRepo: ""}
@@ -524,7 +526,7 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	projectCfg := appconfig.ProjectConfig{Title: "proj-a", OrgTitle: "TEST", ProjectTitle: "proj-a", SrcRepo: ""}
@@ -564,7 +566,7 @@ func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	projectCfg := appconfig.ProjectConfig{
@@ -626,7 +628,7 @@ func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *t
 	}))
 	defer fenceServer.Close()
 
-	handler, mock, cleanup := newGitHandlerTestServer(t, fenceServer, nil)
+	handler, mock, cleanup := newHandlerTestServer(t, fenceServer, nil)
 	defer cleanup()
 
 	projectCfg := appconfig.ProjectConfig{

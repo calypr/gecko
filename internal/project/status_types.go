@@ -4,6 +4,7 @@ import (
 	"time"
 
 	appconfig "github.com/calypr/gecko/config"
+	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/repo"
 )
@@ -22,6 +23,8 @@ const (
 )
 
 type GitRepositoryInstallationStatus = domain.GitRepositoryInstallationStatus
+
+type GitProjectState = geckodb.GitProjectState
 
 type GitProjectStatusResponse struct {
 	ProjectID                       string                       `json:"project_id"`

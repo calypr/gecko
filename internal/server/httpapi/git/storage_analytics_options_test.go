@@ -1,15 +1,11 @@
-package httpapi
+package git
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
-	geckologging "github.com/calypr/gecko/internal/logging"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -74,29 +70,5 @@ func TestParseStorageChildrenRequestOptionsReadsCursorAndSort(t *testing.T) {
 	}
 	if body["cursor"] != "abc123" || body["sort_by"] != "name" || body["sort_order"] != "asc" || body["limit"].(float64) != 15 {
 		t.Fatalf("unexpected parsed options: %+v", body)
-	}
-}
-
-func TestWriteGitAnalyticsErrorClassifiesCleanupApplyValidation(t *testing.T) {
-	handler := &GitHandler{logger: &geckologging.Handler{Logger: log.New(os.Stdout, "", 0)}}
-	app := fiber.New()
-	app.Post("/apply", func(ctx fiber.Ctx) error {
-		return handler.writeGitAnalyticsError(ctx, "org/proj", "main", "data", fmt.Errorf("cleanup apply requires findings from a prior audit; refusing to rebuild audit during apply"))
-	})
-	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/apply", nil))
-	if err != nil {
-		t.Fatalf("run request: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", resp.StatusCode)
-	}
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	errorBody, ok := body["error"].(map[string]any)
-	if !ok || errorBody["type"] != "invalid_request" {
-		t.Fatalf("expected invalid_request error, got %+v", body)
 	}
 }

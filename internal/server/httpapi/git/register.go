@@ -1,4 +1,4 @@
-package httpapi
+package git
 
 import (
 	"github.com/calypr/gecko/internal/access"
@@ -6,10 +6,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func registerGitRoutes(app *fiber.App, sharedHandler *Handler, authzHandler access.ResourceAccessHandler) {
-	handler := newGitHandler(sharedHandler)
+func Register(app *fiber.App, deps Dependencies, authzHandler access.ResourceAccessHandler) {
+	handler := NewHandler(deps)
 	if handler.RepoService == nil {
-		handler.logger.Warning("git routes not registered: git service is nil")
+		handler.Logger.Warning("git routes not registered: git service is nil")
 		return
 	}
 	gitGroup := app.Group("/git")

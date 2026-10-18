@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/calypr/gecko/internal/access"
 	httpapi "github.com/calypr/gecko/internal/server/httpapi"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
@@ -29,12 +30,6 @@ func (server *Server) MakeRouter() *fiber.App {
 	})
 	app.Use(servermw.RequestLogger(server.Logger))
 
-	httpapi.Register(app, httpapi.Dependencies{
-		DB:                server.db,
-		Logger:            server.Logger,
-		RepoService:       server.repoService,
-		ThumbnailStore:    server.thumbnailStore,
-		PresentationStore: server.presentationStore,
-	})
+	httpapi.Register(app, server.newAPIDependencies(), access.NewFenceUserAccessHandler(nil))
 	return app
 }

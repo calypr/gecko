@@ -1,4 +1,4 @@
-package httpapi
+package health
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ import (
 
 func TestHealthRequiresDatabase(t *testing.T) {
 	app := fiber.New()
-	registerHealthRoutes(app, &Handler{Logger: &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}})
+	Register(app, Dependencies{Logger: &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}})
 
 	response, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil))
 	if err != nil {
@@ -45,7 +45,7 @@ func TestHealthChecksDatabase(t *testing.T) {
 			defer db.Close()
 			mock.ExpectPing().WillReturnError(test.ping)
 			app := fiber.New()
-			registerHealthRoutes(app, &Handler{
+			Register(app, Dependencies{
 				DB:     sqlx.NewDb(db, "sqlmock"),
 				Logger: &geckologging.Handler{Logger: log.New(io.Discard, "", 0)},
 			})

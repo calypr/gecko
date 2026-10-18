@@ -23,8 +23,11 @@ var importRules = []rule{
 	{pkg: "internal/db", forbidden: []string{"internal/server"}},
 	{pkg: "internal/repo", forbidden: []string{"internal/project", "internal/storageaudit", "internal/server/httpapi", "internal/server/middleware", "github.com/gofiber/fiber"}},
 	{pkg: "internal/upload", forbidden: []string{"internal/project", "internal/storageaudit", "internal/server/httpapi", "internal/server/middleware", "github.com/gofiber/fiber"}},
+	{pkg: "internal/gitanalytics", forbidden: []string{"internal/server/httpapi", "internal/server/middleware", "github.com/gofiber/fiber"}},
 	{pkg: "internal/project", forbidden: []string{"internal/upload", "internal/server/httpapi", "internal/server/middleware", "github.com/gofiber/fiber"}},
+	{pkg: "internal/server/httpapi", forbidden: []string{"internal/db"}},
 	{pkg: "internal/storageaudit", forbidden: []string{"internal/project", "internal/upload", "internal/server/httpapi", "internal/server/middleware", "github.com/gofiber/fiber"}},
+	{pkg: "internal/storageaudit/cleanup", forbidden: []string{"internal/storageaudit/chain"}},
 	{pkg: "internal/domain", forbidden: []string{"internal", "github.com/gofiber/fiber"}},
 }
 
