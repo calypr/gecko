@@ -11,10 +11,13 @@ import (
 )
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*gintegrationsyfon.ProjectBucketSummary, error) {
+	fake.mu.Lock()
 	fake.listProjectBucketSummaryCalls++
 	fake.listProjectBucketSummaryMode = mode
+	objects := append([]gintegrationsyfon.ProjectBucketObject(nil), fake.BucketObjects...)
+	fake.mu.Unlock()
 	var totalBytes int64
-	for _, item := range fake.BucketObjects {
+	for _, item := range objects {
 		totalBytes += item.SizeBytes
 	}
 	return &gintegrationsyfon.ProjectBucketSummary{
@@ -22,8 +25,8 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectBucketSummary(ctx context.Co
 		Bucket:      "bucket",
 		Prefix:      organization + "/" + project,
 		ObjectURL:   "s3://bucket/" + organization + "/" + project,
-		Exists:      len(fake.BucketObjects) > 0,
-		ObjectCount: len(fake.BucketObjects),
+		Exists:      len(objects) > 0,
+		ObjectCount: len(objects),
 		TotalBytes:  totalBytes,
 		Mode:        mode,
 	}, nil
@@ -65,6 +68,8 @@ func (fake *fakeStorageAnalyticsBackend) BulkConfirmStorageObjects(ctx context.C
 }
 
 func markBrokenAccessURLs(fake *fakeStorageAnalyticsBackend, urls ...string) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	if fake.probeResultsByURL == nil {
 		fake.probeResultsByURL = make(map[string]gintegrationsyfon.BulkStorageProbeResult)
 	}
@@ -102,6 +107,8 @@ func (fake *fakeStorageAnalyticsBackend) BulkListStorageObjects(ctx context.Cont
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.deletedIDs = append(fake.deletedIDs, objectIDs...)
 	if deleteStorageData {
 		fake.deletedStorageIDs = append(fake.deletedStorageIDs, objectIDs...)
@@ -110,6 +117,8 @@ func (fake *fakeStorageAnalyticsBackend) BulkDeleteObjects(ctx context.Context, 
 }
 
 func (fake *fakeStorageAnalyticsBackend) DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]gintegrationsyfon.ProjectBucketDeleteResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.deletedBucketObjects = append(fake.deletedBucketObjects, objectURLs...)
 	results := make([]gintegrationsyfon.ProjectBucketDeleteResult, 0, len(objectURLs))
 	for _, objectURL := range objectURLs {
@@ -122,6 +131,8 @@ func (fake *fakeStorageAnalyticsBackend) DeleteProjectBucketObjects(ctx context.
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkUpdateAccessMethods(ctx context.Context, authorizationHeader string, updates map[string][]gintegrationsyfon.ProjectAccessMethod) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	if fake.updatedAccessMethods == nil {
 		fake.updatedAccessMethods = map[string][]gintegrationsyfon.ProjectAccessMethod{}
 	}
@@ -132,6 +143,8 @@ func (fake *fakeStorageAnalyticsBackend) BulkUpdateAccessMethods(ctx context.Con
 }
 
 func (fake *fakeStorageAnalyticsBackend) RegisterProjectObjects(ctx context.Context, authorizationHeader string, candidates []gintegrationsyfon.ProjectObjectRegistration) ([]gintegrationsyfon.ProjectObjectRegistrationResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.registeredObjects = append(fake.registeredObjects, candidates...)
 	results := make([]gintegrationsyfon.ProjectObjectRegistrationResult, len(candidates))
 	for index, candidate := range candidates {
@@ -202,6 +215,8 @@ type fakeStorageAnalyticsBackend struct {
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.listBucketsCalls++
 	out := make(map[string]domain.StorageBucket, len(fake.buckets))
 	for bucket, metadata := range fake.buckets {
@@ -211,21 +226,29 @@ func (fake *fakeStorageAnalyticsBackend) ListBuckets(ctx context.Context, author
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListBucketScopes(ctx context.Context, authorizationHeader string, bucket string) ([]domain.StorageBucketScope, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.listBucketScopesCalls++
 	return append([]domain.StorageBucketScope(nil), fake.bucketScopes[bucket]...), nil
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	return append([]gintegrationsyfon.ProjectRecord(nil), fake.projectRecords...), nil
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) ([]gintegrationsyfon.ProjectRecord, error) {
+	fake.mu.Lock()
 	fake.listProjectAuditRecordsCalls++
 	fake.listProjectAuditRecordsPathPrefix = pathPrefix
-	if fake.listProjectAuditRecordsDelay > 0 {
-		time.Sleep(fake.listProjectAuditRecordsDelay)
+	delay := fake.listProjectAuditRecordsDelay
+	records := append([]gintegrationsyfon.ProjectRecord(nil), fake.projectRecords...)
+	fake.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
 	}
-	return append([]gintegrationsyfon.ProjectRecord(nil), fake.projectRecords...), nil
+	return records, nil
 }
 
 func (fake *fakeStorageAnalyticsBackend) GetProjectMetricsSummary(ctx context.Context, authorizationHeader string, organization string, project string) (*gintegrationsyfon.ProjectMetricsSummary, error) {
@@ -267,24 +290,31 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectScopes(ctx context.Context, 
 }
 
 func (fake *fakeStorageAnalyticsBackend) BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error) {
+	fake.mu.Lock()
 	fake.bulkGetProjectRecordsCalls++
 	fake.bulkChecksums = append([]string(nil), checksums...)
-	if fake.bulkGetDelay > 0 {
-		time.Sleep(fake.bulkGetDelay)
-	}
+	delay := fake.bulkGetDelay
+	var bulkRecords map[string][]gintegrationsyfon.ProjectRecord
 	if fake.bulkRecords != nil {
-		out := make(map[string][]gintegrationsyfon.ProjectRecord, len(fake.bulkRecords))
+		bulkRecords = make(map[string][]gintegrationsyfon.ProjectRecord, len(fake.bulkRecords))
 		for checksum, records := range fake.bulkRecords {
-			out[checksum] = append([]gintegrationsyfon.ProjectRecord(nil), records...)
+			bulkRecords[checksum] = append([]gintegrationsyfon.ProjectRecord(nil), records...)
 		}
-		return out, nil
+	}
+	projectRecords := append([]gintegrationsyfon.ProjectRecord(nil), fake.projectRecords...)
+	fake.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if bulkRecords != nil {
+		return bulkRecords, nil
 	}
 	allowed := make(map[string]struct{}, len(checksums))
 	for _, checksum := range checksums {
 		allowed[strings.TrimSpace(checksum)] = struct{}{}
 	}
 	out := make(map[string][]gintegrationsyfon.ProjectRecord)
-	for _, record := range fake.projectRecords {
+	for _, record := range projectRecords {
 		if _, ok := allowed[record.Checksum]; !ok {
 			continue
 		}
@@ -297,6 +327,8 @@ func (fake *fakeStorageAnalyticsBackend) BulkGetProjectRecordsByChecksum(ctx con
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsage(ctx context.Context, authorizationHeader string, organization string, project string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.listProjectFileUsageCalls++
 	out := make(map[string]gintegrationsyfon.FileUsage, len(fake.usageByObject))
 	for objectID, usage := range fake.usageByObject {
@@ -306,6 +338,8 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsage(ctx context.Contex
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsageByObjectIDs(ctx context.Context, authorizationHeader string, organization string, project string, objectIDs []string, inactiveDays int) (map[string]gintegrationsyfon.FileUsage, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.listProjectFileUsageByObjectIDsCalls++
 	fake.listProjectFileUsageObjectIDs = append(fake.listProjectFileUsageObjectIDs, objectIDs...)
 	if fake.listProjectFileUsageByObjectIDsErr != nil {
@@ -321,6 +355,8 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectFileUsageByObjectIDs(ctx con
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	fake.listProjectBucketObjectsCalls++
 	fake.listProjectBucketObjectsPathPrefix = pathPrefix
 	if fake.listProjectBucketObjectsErr != nil {
@@ -335,24 +371,35 @@ func (fake *fakeStorageAnalyticsBackend) ListProjectBucketObjects(ctx context.Co
 }
 
 func (fake *fakeStorageAnalyticsBackend) ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, pathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error) {
+	fake.mu.Lock()
 	fake.listProjectBucketInventoryCalls++
 	fake.listProjectBucketInventoryPathPrefix = pathPrefix
-	if fake.listProjectBucketInventoryStarted != nil {
-		fake.listProjectBucketInventoryStartOnce.Do(func() { close(fake.listProjectBucketInventoryStarted) })
+	objects := append([]gintegrationsyfon.ProjectBucketObject(nil), fake.BucketObjects...)
+	complete := !fake.bucketInventoryIncomplete
+	warning := fake.BucketInventoryWarning
+	observedAt := fake.bucketInventoryObservedAt
+	started := fake.listProjectBucketInventoryStarted
+	startOnce := &fake.listProjectBucketInventoryStartOnce
+	release := fake.listProjectBucketInventoryRelease
+	delay := fake.listProjectBucketInventoryDelay
+	err := fake.listProjectBucketObjectsErr
+	fake.mu.Unlock()
+	if started != nil {
+		startOnce.Do(func() { close(started) })
 	}
-	if fake.listProjectBucketInventoryRelease != nil {
-		<-fake.listProjectBucketInventoryRelease
+	if release != nil {
+		<-release
 	}
-	if fake.listProjectBucketInventoryDelay > 0 {
-		time.Sleep(fake.listProjectBucketInventoryDelay)
+	if delay > 0 {
+		time.Sleep(delay)
 	}
-	if fake.listProjectBucketObjectsErr != nil {
-		return gintegrationsyfon.ProjectBucketInventory{}, fake.listProjectBucketObjectsErr
+	if err != nil {
+		return gintegrationsyfon.ProjectBucketInventory{}, err
 	}
 	return gintegrationsyfon.ProjectBucketInventory{
-		Objects:    append([]gintegrationsyfon.ProjectBucketObject(nil), fake.BucketObjects...),
-		Complete:   !fake.bucketInventoryIncomplete,
-		Warning:    fake.BucketInventoryWarning,
-		ObservedAt: fake.bucketInventoryObservedAt,
+		Objects:    objects,
+		Complete:   complete,
+		Warning:    warning,
+		ObservedAt: observedAt,
 	}, nil
 }
