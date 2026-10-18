@@ -12,6 +12,8 @@ import (
 
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/domain"
+	gitapi "github.com/calypr/gecko/internal/integrations/github"
+	"github.com/calypr/gecko/internal/storagepath"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/google/go-github/v87/github"
 	"github.com/jmoiron/sqlx"
@@ -41,7 +43,7 @@ func (service *Service) EnsureDataDir() error {
 }
 
 func (service *Service) MirrorPathForIdentity(identity Identity) string {
-	return filepath.Join(service.config.DataDir, sanitizePathPart(identity.Host), sanitizePathPart(identity.Owner), sanitizePathPart(identity.Repo)+".git")
+	return filepath.Join(service.config.DataDir, storagepath.SanitizePart(identity.Host), storagepath.SanitizePart(identity.Owner), storagepath.SanitizePart(identity.Repo)+".git")
 }
 
 func (service *Service) LoadProjectState(ctx context.Context, db *sqlx.DB, projectID string, identity Identity) (*geckodb.GitProjectState, error) {
@@ -178,6 +180,6 @@ func (service *Service) RequestInstallationToken(ctx context.Context, authorizat
 		log.Printf("INFO: github_installation_token_request_done organization=%s project=%s owner=%s repo=%s access=%s token_received=false duration_ms=%d error=%q", organization, project, identity.Owner, identity.Repo, access, time.Since(started).Milliseconds(), err.Error())
 		return "", err
 	}
-	log.Printf("INFO: github_installation_token_request_done organization=%s project=%s owner=%s repo=%s access=%s token_received=%t token_fingerprint=%s token_length=%d duration_ms=%d", organization, project, identity.Owner, identity.Repo, access, strings.TrimSpace(token) != "", githubAccessTokenFingerprint(token), githubAccessTokenLength(token), time.Since(started).Milliseconds())
+	log.Printf("INFO: github_installation_token_request_done organization=%s project=%s owner=%s repo=%s access=%s token_received=%t token_fingerprint=%s token_length=%d duration_ms=%d", organization, project, identity.Owner, identity.Repo, access, strings.TrimSpace(token) != "", gitapi.TokenFingerprint(token), gitapi.TokenLength(token), time.Since(started).Milliseconds())
 	return token, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/calypr/gecko/internal/access"
 	"github.com/calypr/gecko/internal/domain"
+	gitapi "github.com/calypr/gecko/internal/integrations/github"
 	"github.com/google/go-github/v87/github"
 )
 
@@ -34,7 +35,7 @@ func (service *Service) GetGitHubFileMetadata(ctx context.Context, authorization
 	if strings.TrimSpace(ref) != "" {
 		opts.Ref = strings.TrimSpace(ref)
 	}
-	metadata, response, err := getGitHubFileContents(ctx, client, identity, path, opts, strings.TrimRight(service.config.GitHubAPIBase, "/"), strings.TrimSpace(accessToken) != "", githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken))
+	metadata, response, err := getGitHubFileContents(ctx, client, identity, path, opts, strings.TrimRight(service.config.GitHubAPIBase, "/"), strings.TrimSpace(accessToken) != "", gitapi.TokenFingerprint(accessToken), gitapi.TokenLength(accessToken))
 	if err != nil {
 		statusCode := http.StatusBadGateway
 		if response != nil && response.StatusCode > 0 {

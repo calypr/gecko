@@ -62,11 +62,6 @@ func (service *Service) Init(db *sqlx.DB) error {
 	return geckodb.EnsureGitProjectStateTable(db)
 }
 
-func sanitizePathPart(value string) string {
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
-	return replacer.Replace(value)
-}
-
 const SyncStateReady = "ready"
 
 type ProjectRefreshResponse struct {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	gitapi "github.com/calypr/gecko/internal/integrations/github"
 	"github.com/google/go-github/v87/github"
 )
 
@@ -37,7 +38,7 @@ func TestGetGitHubFileContentsUsesInstallationToken(t *testing.T) {
 	metadata, _, err := getGitHubFileContents(context.Background(), client, Identity{
 		Owner: "BForePC",
 		Repo:  "BForePC",
-	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, githubAccessTokenFingerprint("install-token"), githubAccessTokenLength("install-token"))
+	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, gitapi.TokenFingerprint("install-token"), gitapi.TokenLength("install-token"))
 	if err != nil {
 		t.Fatalf("get github file contents: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestGetGitHubFileContentsDoesNotRetryEOF(t *testing.T) {
 	_, _, err = getGitHubFileContents(context.Background(), client, Identity{
 		Owner: "BForePC",
 		Repo:  "BForePC",
-	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, githubAccessTokenFingerprint("install-token"), githubAccessTokenLength("install-token"))
+	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, gitapi.TokenFingerprint("install-token"), gitapi.TokenLength("install-token"))
 	if err == nil {
 		t.Fatal("expected EOF error")
 	}
@@ -94,7 +95,7 @@ func TestGetGitHubFileContentsDoesNotRetryUnauthorized(t *testing.T) {
 	_, _, err = getGitHubFileContents(context.Background(), client, Identity{
 		Owner: "BForePC",
 		Repo:  "BForePC",
-	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, githubAccessTokenFingerprint("bad-token"), githubAccessTokenLength("bad-token"))
+	}, "META/Practitioner.ndjson", &github.RepositoryContentGetOptions{Ref: "main"}, "https://api.github.com", true, gitapi.TokenFingerprint("bad-token"), gitapi.TokenLength("bad-token"))
 	if err == nil {
 		t.Fatal("expected unauthorized error")
 	}

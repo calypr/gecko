@@ -50,8 +50,8 @@ func (c *Client) fetchRepositoryMetadata(ctx context.Context, client *google_git
 	started := time.Now()
 	requestURL := c.repositoryMetadataRequestURL(identity)
 	authConfigured := strings.TrimSpace(accessToken) != ""
-	tokenFingerprint := githubAccessTokenFingerprint(accessToken)
-	tokenLength := githubAccessTokenLength(accessToken)
+	tokenFingerprint := TokenFingerprint(accessToken)
+	tokenLength := TokenLength(accessToken)
 	log.Printf("INFO: github_repository_metadata_request_start owner=%s repo=%s request_url=%q auth_configured=%t auth_scheme=Bearer token_fingerprint=%s token_length=%d", identity.Owner, identity.Repo, requestURL, authConfigured, tokenFingerprint, tokenLength)
 	repo, response, err := client.Repositories.Get(ctx, identity.Owner, identity.Repo)
 	statusCode := 0
@@ -85,7 +85,7 @@ func (c *Client) repositoryMetadataRequestURL(identity domain.GitRepositoryIdent
 	return fmt.Sprintf("%s/repos/%s/%s", apiBase, identity.Owner, identity.Repo)
 }
 
-func githubAccessTokenFingerprint(accessToken string) string {
+func TokenFingerprint(accessToken string) string {
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
 		return ""
@@ -94,7 +94,7 @@ func githubAccessTokenFingerprint(accessToken string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-func githubAccessTokenLength(accessToken string) int {
+func TokenLength(accessToken string) int {
 	return len(strings.TrimSpace(accessToken))
 }
 
@@ -108,7 +108,7 @@ func (c *Client) logTransportDiagnostic(parent context.Context, accessToken stri
 	}
 	parsed, err := url.Parse(apiBase)
 	if err != nil {
-		log.Printf("INFO: github_transport_diagnostic_done api_base=%q token_fingerprint=%s token_length=%d original_error_type=%T original_error=%q diagnostic_error=%q", apiBase, githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken), originalErr, originalErr.Error(), err.Error())
+		log.Printf("INFO: github_transport_diagnostic_done api_base=%q token_fingerprint=%s token_length=%d original_error_type=%T original_error=%q diagnostic_error=%q", apiBase, TokenFingerprint(accessToken), TokenLength(accessToken), originalErr, originalErr.Error(), err.Error())
 		return
 	}
 	host := parsed.Hostname()
@@ -121,7 +121,7 @@ func (c *Client) logTransportDiagnostic(parent context.Context, accessToken stri
 		}
 	}
 	address := net.JoinHostPort(host, port)
-	log.Printf("INFO: github_transport_diagnostic_start api_base=%q host=%s port=%s scheme=%s token_fingerprint=%s token_length=%d original_error_type=%T original_error=%q", apiBase, host, port, parsed.Scheme, githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken), originalErr, originalErr.Error())
+	log.Printf("INFO: github_transport_diagnostic_start api_base=%q host=%s port=%s scheme=%s token_fingerprint=%s token_length=%d original_error_type=%T original_error=%q", apiBase, host, port, parsed.Scheme, TokenFingerprint(accessToken), TokenLength(accessToken), originalErr, originalErr.Error())
 
 	diagCtx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
@@ -174,7 +174,7 @@ func (c *Client) logHTTPDiagnostic(ctx context.Context, apiBase string, accessTo
 	requestURL := strings.TrimRight(apiBase, "/") + "/rate_limit"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q token_fingerprint=%s token_length=%d duration_ms=%d error_type=%T error=%q", requestURL, githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken), time.Since(started).Milliseconds(), err, err.Error())
+		log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q token_fingerprint=%s token_length=%d duration_ms=%d error_type=%T error=%q", requestURL, TokenFingerprint(accessToken), TokenLength(accessToken), time.Since(started).Milliseconds(), err, err.Error())
 		return
 	}
 	if strings.TrimSpace(accessToken) != "" {
@@ -183,12 +183,12 @@ func (c *Client) logHTTPDiagnostic(ctx context.Context, apiBase string, accessTo
 	request.Header.Set("Accept", "application/vnd.github+json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d duration_ms=%d error_type=%T error=%q", requestURL, strings.TrimSpace(accessToken) != "", githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken), time.Since(started).Milliseconds(), err, err.Error())
+		log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d duration_ms=%d error_type=%T error=%q", requestURL, strings.TrimSpace(accessToken) != "", TokenFingerprint(accessToken), TokenLength(accessToken), time.Since(started).Milliseconds(), err, err.Error())
 		return
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
-	log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d status=%d rate_limit_remaining=%q rate_limit_reset=%q duration_ms=%d", requestURL, strings.TrimSpace(accessToken) != "", githubAccessTokenFingerprint(accessToken), githubAccessTokenLength(accessToken), response.StatusCode, response.Header.Get("X-RateLimit-Remaining"), response.Header.Get("X-RateLimit-Reset"), time.Since(started).Milliseconds())
+	log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d status=%d rate_limit_remaining=%q rate_limit_reset=%q duration_ms=%d", requestURL, strings.TrimSpace(accessToken) != "", TokenFingerprint(accessToken), TokenLength(accessToken), response.StatusCode, response.Header.Get("X-RateLimit-Remaining"), response.Header.Get("X-RateLimit-Reset"), time.Since(started).Milliseconds())
 }
 
 func (c *Client) githubClient(accessToken string) (*google_github.Client, error) {
