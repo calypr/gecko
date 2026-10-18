@@ -183,7 +183,7 @@ func synthesizeBucketInventoryFromProbes(allProjectRecords map[string][]sarecord
 					Bucket:       strings.TrimSpace(probe.Bucket),
 					Key:          strings.TrimSpace(probe.Key),
 					Path:         strings.TrimSpace(probe.Path),
-					SizeBytes:    derefInt64(probe.SizeBytes),
+					SizeBytes:    sarecord.DerefInt64(probe.SizeBytes),
 					MetaSHA256:   strings.TrimSpace(probe.MetaSHA256),
 					ETag:         strings.TrimSpace(probe.ETag),
 					LastModified: strings.TrimSpace(probe.LastModified),

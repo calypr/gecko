@@ -34,7 +34,7 @@ func CloneResponse(response model.ChainAuditResponse) model.ChainAuditResponse {
 func CloneCachedExactJoinState(value CachedExactJoinState) CachedExactJoinState {
 	return CachedExactJoinState{
 		CachedAt:          value.CachedAt,
-		RecordsByChecksum: cloneRecordStateMap(value.RecordsByChecksum),
+		RecordsByChecksum: record.CloneStateMap(value.RecordsByChecksum),
 		UsageByObjectID:   CloneFileUsageMap(value.UsageByObjectID),
 	}
 }
@@ -59,8 +59,4 @@ func CloneStringIntMap(input map[string]int) map[string]int {
 		out[key] = value
 	}
 	return out
-}
-
-func cloneRecordStateMap(input map[string][]record.State) map[string][]record.State {
-	return record.CloneStateMap(input)
 }

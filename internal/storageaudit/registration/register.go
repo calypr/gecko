@@ -155,7 +155,7 @@ func (service *Service) RegisterGitOnlySyfonRecords(ctx context.Context, authori
 			if result.BucketObjectURL == "" {
 				result.BucketObjectURL = item.ObjectURL
 			}
-			result.BucketSizeBytes = derefInt64(probe.SizeBytes)
+			result.BucketSizeBytes = record.DerefInt64(probe.SizeBytes)
 			if !probe.Exists || strings.TrimSpace(probe.Status) != "present" {
 				continue
 			}
@@ -327,11 +327,4 @@ func buildGitOnlyRegistrationCandidates(results []model.GitOnlySyfonRegistration
 		out = append(out, *candidate)
 	}
 	return out
-}
-
-func derefInt64(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
 }

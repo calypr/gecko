@@ -156,10 +156,3 @@ func mergeRecordSetProbes(base *sarecord.RecordSet, probed *sarecord.RecordSet) 
 		AllProjectRecords: attach(base.AllProjectRecords),
 	}
 }
-
-func derefInt64(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
-}

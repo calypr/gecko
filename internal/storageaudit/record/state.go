@@ -24,6 +24,13 @@ func CountStates(input map[string][]State) int {
 	return count
 }
 
+func DerefInt64(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 func CloneStateMap(input map[string][]State) map[string][]State {
 	if input == nil {
 		return nil
