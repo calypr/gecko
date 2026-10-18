@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 	"strings"
 	"time"
+
+	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 
 	"github.com/calypr/gecko/internal/storageaudit/model"
 	"github.com/calypr/gecko/internal/storageaudit/storecache"
@@ -283,6 +284,17 @@ func applyStorageChainAuditCacheMetadata(response *model.ChainAuditResponse, hit
 	response.Summary.AuditCacheError = strings.TrimSpace(cacheError)
 }
 
+type InflightResponseRefresh struct {
+	done               chan struct{}
+	forceBucketRefresh bool
+	value              storecache.CachedResponse
+	err                error
+}
+
+// coalesceStorageChainAuditRefresh ensures a root audit has one authoritative
+// refresh result per cache key. The UI can issue overlapping forced refreshes;
+// without this guard, a partial bucket LIST from the later request can replace
+// the completed response from the earlier request.
 func (service *Service) coalesceStorageChainAuditRefresh(ctx context.Context, key string, forceBucketRefresh bool, refresh func() (storecache.CachedResponse, error)) (storecache.CachedResponse, bool, error) {
 	var work *InflightResponseRefresh
 	for {
