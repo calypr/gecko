@@ -59,11 +59,11 @@ func (c *Client) fetchRepositoryMetadata(ctx context.Context, client *google_git
 	rateLimitReset := ""
 	if response != nil {
 		rateLimitRemaining = response.Rate.Remaining
-		if !response.Rate.Reset.Time.IsZero() {
-			rateLimitReset = response.Rate.Reset.Time.UTC().Format(time.RFC3339)
+		if !response.Rate.Reset.IsZero() {
+			rateLimitReset = response.Rate.Reset.UTC().Format(time.RFC3339)
 		}
 		if response.Response != nil {
-			statusCode = response.Response.StatusCode
+			statusCode = response.StatusCode
 		}
 	}
 	if err == nil {
@@ -186,7 +186,7 @@ func (c *Client) logHTTPDiagnostic(ctx context.Context, apiBase string, accessTo
 		log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d duration_ms=%d error_type=%T error=%q", requestURL, strings.TrimSpace(accessToken) != "", TokenFingerprint(accessToken), TokenLength(accessToken), time.Since(started).Milliseconds(), err, err.Error())
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
 	log.Printf("INFO: github_transport_diagnostic_stage stage=http request_url=%q auth_configured=%t token_fingerprint=%s token_length=%d status=%d rate_limit_remaining=%q rate_limit_reset=%q duration_ms=%d", requestURL, strings.TrimSpace(accessToken) != "", TokenFingerprint(accessToken), TokenLength(accessToken), response.StatusCode, response.Header.Get("X-RateLimit-Remaining"), response.Header.Get("X-RateLimit-Reset"), time.Since(started).Milliseconds())
 }

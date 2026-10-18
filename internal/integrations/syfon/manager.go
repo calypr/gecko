@@ -302,7 +302,7 @@ func (manager *Manager) requestJSON(ctx context.Context, authorizationHeader str
 	if err != nil {
 		return fmt.Errorf("request syfon %s %s: %w", method, requestPath, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusBadRequest {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return &HTTPError{

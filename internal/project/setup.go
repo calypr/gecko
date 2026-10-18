@@ -235,7 +235,7 @@ func createAuthzOwnedDescendant(ctx context.Context, authorizationHeader string,
 	if err != nil {
 		return fmt.Errorf("request arborist descendant create: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	responseBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("arborist descendant create failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))
@@ -257,7 +257,7 @@ func DeleteAuthzResource(ctx context.Context, authorizationHeader, resourcePath 
 	if err != nil {
 		return fmt.Errorf("request arborist resource delete: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("arborist resource delete failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(responseBody)))

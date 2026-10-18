@@ -25,8 +25,8 @@ func generateImageBytes(t *testing.T, format string, width, height int) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
+	defer func() { _ = os.Remove(tempFile.Name()) }()
+	defer func() { _ = tempFile.Close() }()
 
 	if format == "png" {
 		if err := png.Encode(tempFile, img); err != nil {
@@ -100,7 +100,7 @@ func TestFilesystemStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	store := NewFilesystemStore(tempDir)
 	org := "TestOrg"

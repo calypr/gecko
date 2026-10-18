@@ -90,7 +90,7 @@ func TestGitOrganizationInitConnectReturnsRedirectWithoutRepository(t *testing.T
 	req.Header.Set("Authorization", "Bearer test")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
@@ -142,7 +142,7 @@ func TestGitOrganizationInitConnectAppendsRepositorySuggestionWhenResolvable(t *
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -190,7 +190,7 @@ func TestGitOrganizationInitConnectFallsBackToPlainRedirectWhenRepositoryLookupF
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -261,7 +261,7 @@ func TestGitOrganizationInitConnectFallsBackToAppInstallationURLWhenRepositoryLo
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -340,7 +340,7 @@ func TestGitProjectEditConnectUpdatesProjectConfigAndState(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -377,7 +377,7 @@ func TestGitOrganizationConnectRequiresGitHubOwner(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, payload)
@@ -444,7 +444,7 @@ func TestGitOrganizationConnectForwardsGitHubOwner(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -500,7 +500,7 @@ func TestGitProjectEditConnectRejectsRepositoryOutsideInstallation(t *testing.T)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)
@@ -550,7 +550,7 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)
@@ -605,7 +605,7 @@ func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, payload)
@@ -653,7 +653,7 @@ func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *t
 	req.Header.Set("Authorization", "Bearer test")
 
 	resp := runGitRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, payload)

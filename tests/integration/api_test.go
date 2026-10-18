@@ -23,7 +23,7 @@ func TestHealthCheck(t *testing.T) {
 	resp, err := http.DefaultClient.Do(makeRequest(t, "GET", baseURL+"/health", nil))
 	assert.NoError(t, err)
 	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		buf := new(bytes.Buffer)
 		if _, err := buf.ReadFrom(resp.Body); err != nil {
 			t.Fatalf("read body: %v", err)

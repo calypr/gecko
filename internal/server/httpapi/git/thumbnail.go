@@ -71,7 +71,7 @@ func (handler *Handler) handleGitProjectThumbnailPUT(ctx fiber.Ctx) error {
 		response.WriteLog(handler.Logger)
 		return response.Write(ctx)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(file, int64(thumbnail.MaxProjectThumbnailBytes)+1))
 	if err != nil {

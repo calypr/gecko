@@ -60,7 +60,7 @@ func TestParseStorageChildrenRequestOptionsReadsCursorAndSort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}

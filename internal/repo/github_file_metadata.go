@@ -85,11 +85,11 @@ func getGitHubFileContents(ctx context.Context, client *github.Client, identity 
 	rateLimitReset := ""
 	if response != nil {
 		rateLimitRemaining = response.Rate.Remaining
-		if !response.Rate.Reset.Time.IsZero() {
-			rateLimitReset = response.Rate.Reset.Time.UTC().Format(time.RFC3339)
+		if !response.Rate.Reset.IsZero() {
+			rateLimitReset = response.Rate.Reset.UTC().Format(time.RFC3339)
 		}
 		if response.Response != nil {
-			statusCode = response.Response.StatusCode
+			statusCode = response.StatusCode
 		}
 	}
 	if err == nil {

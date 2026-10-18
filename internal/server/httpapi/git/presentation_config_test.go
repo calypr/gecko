@@ -118,7 +118,7 @@ func TestGitProjectPresentationConfigGETNoConfigFallsBackToEmpty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/git/projects/org-a/proj-a/presentationConfig", nil)
 	req.Header.Set("Authorization", "Bearer test")
 	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -148,7 +148,7 @@ func TestGitProjectPresentationConfigPUTPersistsRawHTML(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test")
 	req.Header.Set("Content-Type", "application/json")
 	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -182,7 +182,7 @@ func TestGitProjectPresentationConfigPOSTUsesSameWritePath(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test")
 	req.Header.Set("Content-Type", "application/json")
 	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -206,7 +206,7 @@ func TestGitProjectPresentationConfigPUTRejectsUnknownFields(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer test")
 	req.Header.Set("Content-Type", "application/json")
 	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d", resp.StatusCode)
@@ -224,7 +224,7 @@ func TestGitProjectPresentationConfigRouteRequiresProjectAccess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/git/projects/org-a/proj-a/presentationConfig", nil)
 	req.Header.Set("Authorization", "Bearer test")
 	resp := runPresentationConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected status 403, got %d", resp.StatusCode)

@@ -60,7 +60,7 @@ func (s *FilesystemStore) GetPath(organization string, project string) (string, 
 		if openErr != nil {
 			return "", "", fmt.Errorf("open thumbnail: %w", openErr)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		header := make([]byte, 512)
 		n, readErr := file.Read(header)
 		if readErr != nil && readErr != io.EOF {

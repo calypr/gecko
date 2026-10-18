@@ -56,7 +56,7 @@ func TestProjectConfigListGET_PluralProjects(t *testing.T) {
 	projects.Get("/list", srv.handleConfigListGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/list", nil))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -78,7 +78,7 @@ func TestPublicListEnumeratesProjectsWithoutOptionalConfig(t *testing.T) {
 	app := fiber.New()
 	app.Get("/config/list", srv.handleConfigListGET)
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/list", nil))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
@@ -106,7 +106,7 @@ func TestExplorerListStillReadsExplorerConfigs(t *testing.T) {
 	group := app.Group("/config/explorer", configTypeMiddleware(string(appconfig.TypeExplorer)))
 	group.Get("/list", srv.handleConfigListGET)
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/explorer/list", nil))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
 	}
@@ -149,7 +149,7 @@ func TestProjectConfigGET_ByOrganizationAndProject(t *testing.T) {
 	projects.Get("/:orgTitle/:projectTitle", servermw.ConfigAuth(srv.Logger, nil), srv.handleProjectConfigGET)
 
 	resp := runProjectConfigRequest(t, app, httptest.NewRequest(http.MethodGet, "/config/projects/HTAN_INT/BForePC", nil))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -195,7 +195,7 @@ func TestProjectConfigPUT_ByOrganizationAndProject(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/config/projects/HTAN_INT/BForePC", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "application/json")
 	resp := runProjectConfigRequest(t, app, req)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)

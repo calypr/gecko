@@ -32,7 +32,7 @@ func (manager *Manager) CleanupProject(ctx context.Context, authorizationHeader 
 	if err != nil {
 		return fmt.Errorf("request syfon project cleanup: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("syfon project cleanup failed with status %d", resp.StatusCode)
 	}

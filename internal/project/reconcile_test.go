@@ -18,7 +18,7 @@ func TestBuildOrganizationStatusTreatsSetupOnlyProjectAsAwaitingGitHubConnect(t 
 	if err != nil {
 		t.Fatalf("create sqlmock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	projectCfg := appconfig.ProjectConfig{
 		Title:        "proj-a",

@@ -31,7 +31,7 @@ func unmarshal(body []byte, x any) *ErrorResponse {
 	err := dec.Decode(x)
 	if err != nil {
 		structType := reflect.TypeOf(x)
-		if structType.Kind() == reflect.Ptr {
+		if structType.Kind() == reflect.Pointer {
 			structType = structType.Elem()
 		}
 
