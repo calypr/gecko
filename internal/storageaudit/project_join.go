@@ -176,7 +176,7 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 	log.Printf(
 		"INFO: storage_chain_validation_request_built mode=%s record_count=%d access_url_count=%d unique_request_count=%d duplicate_request_count=%d build_ms=%d",
 		mode,
-		countRecordStates(allProjectRecords),
+		sarecord.CountStates(allProjectRecords),
 		accessURLCount,
 		len(items),
 		accessURLCount-len(items),
@@ -240,12 +240,4 @@ func cloneRecordStateMap(input map[string][]sarecord.State) map[string][]sarecor
 		out[checksum] = append([]sarecord.State(nil), group...)
 	}
 	return out
-}
-
-func countRecordStates(input map[string][]sarecord.State) int {
-	count := 0
-	for _, group := range input {
-		count += len(group)
-	}
-	return count
 }

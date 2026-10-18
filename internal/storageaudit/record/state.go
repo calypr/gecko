@@ -16,6 +16,14 @@ type State struct {
 	AccessProbes            []gintegrationsyfon.BulkStorageProbeResult
 }
 
+func CountStates(input map[string][]State) int {
+	count := 0
+	for _, group := range input {
+		count += len(group)
+	}
+	return count
+}
+
 type RecordSet struct {
 	RecordsByChecksum map[string][]State
 	AllProjectRecords map[string][]State

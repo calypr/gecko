@@ -93,7 +93,7 @@ func countRecordSet(recordSet *sarecord.RecordSet) int {
 	if recordSet == nil {
 		return 0
 	}
-	return countRecordStates(recordSet.AllProjectRecords)
+	return sarecord.CountStates(recordSet.AllProjectRecords)
 }
 
 func recordNeedsTargetedProbe(record sarecord.State, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) bool {

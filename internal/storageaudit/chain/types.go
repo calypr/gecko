@@ -109,14 +109,6 @@ func New(store Store) *Service {
 	}
 }
 
-func countRecordStates(input map[string][]record.State) int {
-	count := 0
-	for _, group := range input {
-		count += len(group)
-	}
-	return count
-}
-
 func (service *Service) EvictProjectAuditRecords(cacheKey string) {
 	service.chainInputMu.Lock()
 	delete(service.projectAuditCache, cacheKey)

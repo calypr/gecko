@@ -72,7 +72,7 @@ func (service *Service) buildStorageChainView(ctx context.Context, authorization
 				}
 				probedRecordSet = mergeRecordSetProbes(probedRecordSet, exactRecordSet)
 			}
-			timings.RecordMemory("inventory_list_validation", "syfon_records", countRecordStates(probedRecordSet.AllProjectRecords), "bucket_objects", len(view.BucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
+			timings.RecordMemory("inventory_list_validation", "syfon_records", sarecord.CountStates(probedRecordSet.AllProjectRecords), "bucket_objects", len(view.BucketObjectsByURL), "exact_probe_records", countRecordSet(candidates))
 			view.RecordsByChecksum = probedRecordSet.RecordsByChecksum
 			view.AllProjectRecords = probedRecordSet.AllProjectRecords
 			return view, nil
@@ -93,7 +93,7 @@ func (service *Service) buildStorageChainView(ctx context.Context, authorization
 		}
 		timings.Record(stage, time.Since(probeStart))
 		if probedRecordSet != nil {
-			timings.RecordMemory(stage, "syfon_records", countRecordStates(probedRecordSet.AllProjectRecords))
+			timings.RecordMemory(stage, "syfon_records", sarecord.CountStates(probedRecordSet.AllProjectRecords))
 		}
 		if probeErr != nil {
 			return nil, probeErr
@@ -121,7 +121,7 @@ func (service *Service) buildStorageChainView(ctx context.Context, authorization
 	probedSubset, probeErr := service.attachProjectStorageProbes(ctx, authorizationHeader, probeCandidates)
 	timings.Record("bulk_probe", time.Since(probeStart))
 	if probedSubset != nil {
-		timings.RecordMemory("bulk_probe", "probe_records", countRecordStates(probedSubset.AllProjectRecords))
+		timings.RecordMemory("bulk_probe", "probe_records", sarecord.CountStates(probedSubset.AllProjectRecords))
 	}
 	if probeErr != nil {
 		return nil, probeErr

@@ -193,7 +193,7 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 		options.Timings.RecordMemory(
 			"chain_setup_total",
 			"git_files", len(inputs.inventory),
-			"syfon_records", countRecordStates(inputs.recordSet.AllProjectRecords),
+			"syfon_records", sarecord.CountStates(inputs.recordSet.AllProjectRecords),
 			"bucket_objects", len(inputs.BucketObjects),
 		)
 	}
@@ -207,7 +207,7 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 	if storageView != nil {
 		options.Timings.RecordMemory(
 			"storage_view",
-			"syfon_records", countRecordStates(storageView.AllProjectRecords),
+			"syfon_records", sarecord.CountStates(storageView.AllProjectRecords),
 			"bucket_objects", len(storageView.BucketObjectsByURL),
 		)
 	}
@@ -224,7 +224,7 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 	options.Timings.RecordMemory(
 		"model_build",
 		"total_findings", len(auditModel.Findings),
-		"syfon_records", countRecordStates(storageView.AllProjectRecords),
+		"syfon_records", sarecord.CountStates(storageView.AllProjectRecords),
 		"bucket_objects", len(storageView.BucketObjectsByURL),
 		"git_files", len(inputs.inventory),
 	)
