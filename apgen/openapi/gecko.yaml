@@ -35,8 +35,8 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                type: string
+                example: "Healthy"
         '503':
           description: Database unavailable or server not ready
           content:
@@ -163,7 +163,50 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /projects:
+  /config/explorer:
+    get:
+      tags: [config]
+      summary: Get the default explorer configuration
+      description: Returns the default configuration document for the explorer config group.
+      operationId: getExplorerConfig
+      responses:
+        '200':
+          description: Configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /config/{configType}/list:
+    get:
+      tags: [config]
+      summary: List a typed config group
+      description: Lists the configuration ids for a typed config group.
+      operationId: listTypedConfigs
+      parameters:
+        - name: configType
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of config ids
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /config/projects:
     get:
       tags: [projects]
       summary: List projects visible to the caller
@@ -180,7 +223,7 @@ paths:
                   $ref: '#/components/schemas/ProjectListResponse'
         '500':
           $ref: '#/components/responses/InternalError'
-  /projects/list:
+  /config/projects/list:
     get:
       tags: [projects]
       summary: List projects (alias of /projects)
@@ -196,7 +239,7 @@ paths:
                   $ref: '#/components/schemas/ProjectListResponse'
         '500':
           $ref: '#/components/responses/InternalError'
-  /projects/summary:
+  /config/projects/summary:
     get:
       tags: [projects]
       summary: List project summaries
@@ -212,7 +255,7 @@ paths:
                   $ref: '#/components/schemas/ProjectSummaryResponse'
         '500':
           $ref: '#/components/responses/InternalError'
-  /projects/{orgTitle}:
+  /config/projects/{orgTitle}:
     delete:
       tags: [projects]
       summary: Delete all projects for an organization
@@ -225,12 +268,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /projects/{orgTitle}/{projectTitle}:
+  /config/projects/{orgTitle}/{projectTitle}:
     parameters:
       - $ref: '#/components/parameters/OrgTitle'
       - $ref: '#/components/parameters/ProjectTitle'
@@ -295,91 +341,15 @@ paths:
       summary: List git-backed projects
       description: Lists projects from the git-backed project registry, filtered to the projects the caller's token is allowed to read (Fence/Arborist resource list).
       operationId: listGitProjects
-      parameters:
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 50
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 0
-        - name: query
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: includeDeleted
-          in: query
-          required: false
-          description: Set to "true" to include soft-deleted projects.
-          schema:
-            type: string
-            enum: ["true", "false"]
-            default: "false"
       responses:
         '200':
           description: Projects visible to the caller, with git sync status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ListProjectsResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
-  /git/projects/batch:
-    post:
-      tags: [git]
-      summary: Get multiple projects in one request
-      operationId: batchGetProjects
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BatchProjectRequest'
-      responses:
-        '200':
-          description: Projects found (missing ids are omitted)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchGetProjectsResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '500':
-          $ref: '#/components/responses/InternalError'
-  /git/projects/batch-delete:
-    post:
-      tags: [git]
-      summary: Delete multiple projects in one request
-      operationId: batchDeleteProjects
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BatchProjectRequest'
-      responses:
-        '200':
-          description: Deleted and failed project ids
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchDeleteProjectsResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
+                type: array
+                items:
+                  $ref: '#/components/schemas/GitProjectStatusResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -412,12 +382,12 @@ paths:
       description: Re-runs the organization setup/reconciliation workflow for all organizations the caller's token allows, completing pending GitHub connections where possible.
       operationId: reconcileGitOrganizations
       responses:
-        '202':
-          description: Reconciliation accepted
+        '200':
+          description: Organizations status after reconciliation
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                $ref: '#/components/schemas/GitOrganizationsStatusResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -432,6 +402,14 @@ paths:
       operationId: initConnectGitOrganization
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Organization connection initialized
@@ -455,6 +433,14 @@ paths:
       operationId: connectGitOrganization
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Organization connected
@@ -505,11 +491,11 @@ paths:
         - $ref: '#/components/parameters/OrgTitle'
       responses:
         '200':
-          description: Organization reconciled
+          description: Organization reconciled, with its current status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                $ref: '#/components/schemas/GitOrganizationStatusResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -643,17 +629,30 @@ paths:
       requestBody:
         required: true
         content:
-          image/*:
+          multipart/form-data:
             schema:
-              type: string
-              format: binary
+              type: object
+              required:
+                - thumbnail
+              properties:
+                thumbnail:
+                  type: string
+                  format: binary
+                  description: PNG or JPG image file.
       responses:
         '200':
           description: Thumbnail stored
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  project_id:
+                    type: string
+                  content_type:
+                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -672,11 +671,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  project_id:
+                    type: string
         '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          # 404 handling mirrors the generic not-found payload.
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
@@ -717,11 +718,12 @@ paths:
               additionalProperties: true
       responses:
         '200':
-          description: Presentation configuration accepted and stored
+          description: The stored presentation configuration
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                additionalProperties: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -746,11 +748,12 @@ paths:
               additionalProperties: true
       responses:
         '200':
-          description: Presentation configuration accepted and stored
+          description: The stored presentation configuration
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                additionalProperties: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -770,13 +773,21 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Connection updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                $ref: '#/components/schemas/GitOrganizationConnectResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -802,7 +813,20 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StatusResponse'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  project_id:
+                    type: string
+                  sync_state:
+                    type: string
+                  default_branch:
+                    type: string
+                  last_fetched_ref:
+                    type: string
+                  error:
+                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -847,9 +871,13 @@ paths:
         - name: ref
           in: query
           required: false
-          description: Git ref (branch or tag) to read; defaults to the repository default branch.
           schema:
             type: string
+        - $ref: '#/components/parameters/ViewQuery'
+        - $ref: '#/components/parameters/IncludeSizeQuery'
+        - $ref: '#/components/parameters/IncludeLastModifiedQuery'
+        - $ref: '#/components/parameters/IncludeLFSPointerQuery'
+        - $ref: '#/components/parameters/LimitQuery'
       responses:
         '200':
           description: Repository tree
@@ -864,7 +892,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /git/projects/{orgTitle}/{projectTitle}/tree/*:
+  /git/projects/{orgTitle}/{projectTitle}/tree/{path}:
     get:
       tags: [git]
       summary: List a subtree of the project repository
@@ -873,11 +901,21 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
         - name: ref
           in: query
           required: false
           schema:
             type: string
+        - $ref: '#/components/parameters/ViewQuery'
+        - $ref: '#/components/parameters/IncludeSizeQuery'
+        - $ref: '#/components/parameters/IncludeLastModifiedQuery'
+        - $ref: '#/components/parameters/IncludeLFSPointerQuery'
+        - $ref: '#/components/parameters/LimitQuery'
       responses:
         '200':
           description: Repository subtree
@@ -906,6 +944,9 @@ paths:
           required: false
           schema:
             type: string
+        - $ref: '#/components/parameters/FilesOnlyQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
       responses:
         '200':
           description: Project manifest
@@ -920,7 +961,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /git/projects/{orgTitle}/{projectTitle}/manifest/*:
+  /git/projects/{orgTitle}/{projectTitle}/manifest/{path}:
     get:
       tags: [git]
       summary: Read a nested manifest document
@@ -928,11 +969,19 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
         - name: ref
           in: query
           required: false
           schema:
             type: string
+        - $ref: '#/components/parameters/FilesOnlyQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
       responses:
         '200':
           description: Nested manifest document
@@ -947,7 +996,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /git/projects/{orgTitle}/{projectTitle}/file/*:
+  /git/projects/{orgTitle}/{projectTitle}/file/{path}:
     get:
       tags: [git]
       summary: Read a file from the project repository
@@ -956,6 +1005,11 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
         - name: ref
           in: query
           required: false
@@ -979,7 +1033,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
-  /git/projects/{orgTitle}/{projectTitle}/download/*:
+  /git/projects/{orgTitle}/{projectTitle}/download/{path}:
     get:
       tags: [git]
       summary: Download a file from the project repository
@@ -988,19 +1042,19 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
         - name: ref
           in: query
           required: false
           schema:
             type: string
       responses:
-        '200':
-          description: File content as a binary stream
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
+        '302':
+          description: Redirect to the GitHub download URL for the file
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -1016,6 +1070,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+        - $ref: '#/components/parameters/GitSubpathQuery'
       responses:
         '200':
           description: Storage summary
@@ -1038,22 +1094,13 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
-        - name: path
-          in: query
-          required: false
-          description: Optional storage path prefix; defaults to the project root.
-          schema:
-            type: string
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/RefQuery'
+        - $ref: '#/components/parameters/GitSubpathQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/SortByQuery'
+        - $ref: '#/components/parameters/SortOrderQuery'
+        - $ref: '#/components/parameters/SummaryModeQuery'
       responses:
         '200':
           description: Child storage entries (files and sub-folders)
@@ -1076,21 +1123,16 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
-        - name: path
-          in: query
-          required: false
-          schema:
-            type: string
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
+        - $ref: '#/components/parameters/RefQuery'
+        - $ref: '#/components/parameters/GitSubpathQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/SortByQuery'
+        - $ref: '#/components/parameters/SortOrderQuery'
+        - $ref: '#/components/parameters/SummaryModeQuery'
+        - $ref: '#/components/parameters/ForceRefreshQuery'
+        - $ref: '#/components/parameters/ForceAuditRefreshQuery'
+        - $ref: '#/components/parameters/ForceBucketInventoryRefreshQuery'
       responses:
         '200':
           description: Folder contents and per-child storage summaries
@@ -1113,6 +1155,15 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Diff audit report
@@ -1136,6 +1187,15 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Storage chain audit report
@@ -1159,6 +1219,15 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Registration result
@@ -1183,6 +1252,15 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Storage cleanup audit report
@@ -1206,6 +1284,15 @@ paths:
       parameters:
         - $ref: '#/components/parameters/OrgTitle'
         - $ref: '#/components/parameters/ProjectTitle'
+        - $ref: '#/components/parameters/RefQuery'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Cleanup result
@@ -1342,6 +1429,14 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+
       responses:
         '200':
           description: Upload session finalized
@@ -1378,6 +1473,96 @@ components:
       name: projectTitle
       in: path
       required: true
+      schema:
+        type: string
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+    ViewQuery:
+      name: view
+      in: query
+      required: false
+      schema:
+        type: string
+    IncludeSizeQuery:
+      name: include_size
+      in: query
+      required: false
+      schema:
+        type: string
+    IncludeLastModifiedQuery:
+      name: include_last_modified
+      in: query
+      required: false
+      schema:
+        type: string
+    IncludeLFSPointerQuery:
+      name: include_lfs_pointer
+      in: query
+      required: false
+      schema:
+        type: string
+    FilesOnlyQuery:
+      name: files_only
+      in: query
+      required: false
+      schema:
+        type: string
+    CursorQuery:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    RefQuery:
+      name: ref
+      in: query
+      required: false
+      schema:
+        type: string
+    GitSubpathQuery:
+      name: git_subpath
+      in: query
+      required: false
+      schema:
+        type: string
+    SortByQuery:
+      name: sort_by
+      in: query
+      required: false
+      schema:
+        type: string
+    SortOrderQuery:
+      name: sort_order
+      in: query
+      required: false
+      schema:
+        type: string
+    SummaryModeQuery:
+      name: summary_mode
+      in: query
+      required: false
+      schema:
+        type: string
+    ForceRefreshQuery:
+      name: force_refresh
+      in: query
+      required: false
+      schema:
+        type: string
+    ForceAuditRefreshQuery:
+      name: force_audit_refresh
+      in: query
+      required: false
+      schema:
+        type: string
+    ForceBucketInventoryRefreshQuery:
+      name: force_bucket_inventory_refresh
+      in: query
+      required: false
       schema:
         type: string
   responses:
@@ -1417,7 +1602,7 @@ components:
       description: Standard error envelope returned by every handler on failure.
       required: [error]
       properties:
-        error:
+         error:
           type: object
           properties:
             type:
@@ -1426,6 +1611,9 @@ components:
             message:
               type: string
               description: Human-readable message.
+            code:
+              type: integer
+              description: Logical status code (mirrors the HTTP status).
             details:
               type: object
               additionalProperties: true
@@ -1543,6 +1731,12 @@ components:
     ProjectSummaryResponse:
       type: object
       description: Display-oriented summary of a project.
+      required:
+        - organization
+        - project
+        - title
+        - contact_email
+        - description
       properties:
         organization:
           type: string
@@ -1559,6 +1753,14 @@ components:
     ProjectListResponse:
       type: object
       description: A project entry with its configuration, as returned by /projects listings.
+      required:
+        - resourcePath
+        - configData
+        - organization
+        - project
+        - title
+        - contact_email
+        - description
       properties:
         resourcePath:
           type: string

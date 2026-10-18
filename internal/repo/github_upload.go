@@ -22,6 +22,41 @@ func githubWriteStatusError(message string, response *github.Response, err error
 	}
 }
 
+func (service *Service) FindGitHubUploadPullRequest(
+	ctx context.Context,
+	authorizationHeader string,
+	organization string,
+	project string,
+	identity Identity,
+	baseBranch string,
+	branchName string,
+) (string, string, bool, error) {
+	accessToken, err := service.RequestInstallationToken(ctx, authorizationHeader, organization, project, identity, "write")
+	if err != nil {
+		return "", "", false, err
+	}
+	client, err := service.githubClient(accessToken)
+	if err != nil {
+		return "", "", false, err
+	}
+	prs, response, err := client.PullRequests.List(ctx, identity.Owner, identity.Repo, &github.PullRequestListOptions{
+		State: "open",
+		Head:  identity.Owner + ":" + branchName,
+		Base:  baseBranch,
+		ListOptions: github.ListOptions{
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return "", "", false, githubWriteStatusError("failed to find GitHub pull request", response, err)
+	}
+	if len(prs) == 0 {
+		return "", "", false, nil
+	}
+	pr := prs[0]
+	return pr.GetHead().GetSHA(), pr.GetHTMLURL(), true, nil
+}
+
 func (service *Service) CreateGitHubUploadPullRequest(
 	ctx context.Context,
 	authorizationHeader string,

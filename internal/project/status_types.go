@@ -6,7 +6,6 @@ import (
 	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/domain"
-	"github.com/calypr/gecko/internal/repo"
 )
 
 const (
@@ -97,8 +96,6 @@ type GitOrganizationsStatusResponse struct {
 	ConfigurationState     string                          `json:"configuration_state"`
 	Organizations          []GitOrganizationStatusResponse `json:"organizations"`
 }
-
-type GitProjectRefreshResponse = repo.ProjectRefreshResponse
 
 func OrganizationConfigurationState(appInstalled bool, configuredProjects int, totalProjects int) string {
 	switch {

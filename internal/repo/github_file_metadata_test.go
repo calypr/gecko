@@ -59,7 +59,7 @@ func TestGetGitHubFileMetadataUsesReadTokenAndReturnsContent(t *testing.T) {
 		"Bearer user-token",
 		"Ellrott_Lab",
 		"test",
-		Identity{Owner: "BForePC", Repo: "BForePC"},
+		Identity{Host: "github.com", Owner: "BForePC", Repo: "BForePC"},
 		"main",
 		"META/Practitioner.ndjson",
 	)
@@ -117,7 +117,7 @@ func TestGetGitHubFileMetadataMapsGitHubNotFound(t *testing.T) {
 		"Bearer user-token",
 		"Ellrott_Lab",
 		"test",
-		Identity{Owner: "BForePC", Repo: "BForePC"},
+		Identity{Host: "github.com", Owner: "BForePC", Repo: "BForePC"},
 		"main",
 		"META/Missing.ndjson",
 	)

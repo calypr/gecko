@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/calypr/gecko/internal/access"
-	httpapi "github.com/calypr/gecko/internal/server/httpapi"
+	"github.com/calypr/gecko/internal/server/httpapi/apiserver"
 	servermw "github.com/calypr/gecko/internal/server/middleware"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
 
 func (server *Server) MakeRouter() *fiber.App {
@@ -30,6 +30,9 @@ func (server *Server) MakeRouter() *fiber.App {
 	})
 	app.Use(servermw.RequestLogger(server.Logger))
 
-	httpapi.Register(app, server.newAPIDependencies(), access.NewFenceUserAccessHandler(nil))
+	// The generated strict OpenAPI router is the single source for the HTTP
+	// surface: it routes every config/git/health operation, enforces
+	// authorization, and serves the spec at /swagger/doc.json.
+	app.Use(adaptor.HTTPHandler(apiserver.NewRouter(server.newAPIServer())))
 	return app
 }

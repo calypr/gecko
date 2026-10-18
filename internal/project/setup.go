@@ -17,7 +17,6 @@ import (
 	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/integrations/syfon"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -182,26 +181,8 @@ type arboristOwnedDescendantRequest struct {
 	Template   string `json:"template"`
 }
 
-func fenceIssuerBaseURL(authorizationHeader string) (string, error) {
-	token := access.CleanAccessToken(authorizationHeader)
-	if token == "" {
-		return "", fmt.Errorf("authorization header is required")
-	}
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	claims := jwt.MapClaims{}
-	if _, _, err := parser.ParseUnverified(token, claims); err != nil {
-		return "", fmt.Errorf("failed to parse authorization token: %w", err)
-	}
-	iss, _ := claims["iss"].(string)
-	iss = strings.TrimSpace(iss)
-	if iss == "" {
-		return "", fmt.Errorf("authorization token does not include iss")
-	}
-	return strings.TrimSuffix(strings.TrimSuffix(iss, "/user"), "/"), nil
-}
-
 func arboristOwnedDescendantURL(authorizationHeader string) (string, error) {
-	baseURL, err := fenceIssuerBaseURL(authorizationHeader)
+	baseURL, err := access.FenceIssuerBaseURL(authorizationHeader)
 	if err != nil {
 		return "", err
 	}
@@ -209,7 +190,7 @@ func arboristOwnedDescendantURL(authorizationHeader string) (string, error) {
 }
 
 func arboristOwnershipResourceURL(authorizationHeader, resourcePath string) (string, error) {
-	baseURL, err := fenceIssuerBaseURL(authorizationHeader)
+	baseURL, err := access.FenceIssuerBaseURL(authorizationHeader)
 	if err != nil {
 		return "", err
 	}

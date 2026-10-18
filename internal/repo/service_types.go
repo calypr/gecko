@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/calypr/gecko/config"
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/httpclient"
 	"github.com/calypr/gecko/internal/integrations/fence"
@@ -19,6 +20,7 @@ import (
 type ServiceConfig struct {
 	DataDir              string
 	GitHubAPIBase        string
+	AllowedGitHubHosts   []string
 	FenceBaseURL         string
 	HTTPClient           *http.Client
 	FenceClient          *fence.Client
@@ -36,6 +38,9 @@ type Service struct {
 func NewService(config ServiceConfig) *Service {
 	if config.GitHubAPIBase == "" {
 		config.GitHubAPIBase = "https://api.github.com"
+	}
+	if len(config.AllowedGitHubHosts) == 0 {
+		config.AllowedGitHubHosts = appconfig.GitHubWebHostsForAPIBase(config.GitHubAPIBase)
 	}
 	client := config.HTTPClient
 	if client == nil {

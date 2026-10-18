@@ -9,48 +9,41 @@ import (
 	"github.com/calypr/gecko/internal/gitanalytics"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/project"
-	httpapi "github.com/calypr/gecko/internal/server/httpapi"
-	configapi "github.com/calypr/gecko/internal/server/httpapi/config"
-	gitapi "github.com/calypr/gecko/internal/server/httpapi/git"
-	healthapi "github.com/calypr/gecko/internal/server/httpapi/health"
+	"github.com/calypr/gecko/internal/server/httpapi/apiserver"
 	"github.com/calypr/gecko/internal/storageaudit"
 	"github.com/calypr/gecko/internal/upload"
 )
 
-func (server *Server) newAPIDependencies() httpapi.Dependencies {
-	deps := httpapi.Dependencies{
-		Config: configapi.Dependencies{
-			DB:             server.db,
-			Logger:         server.Logger,
-			ThumbnailStore: server.thumbnailStore,
-		},
-		Git: gitapi.Dependencies{
-			DB:                server.db,
-			Logger:            server.Logger,
-			RepoService:       server.repoService,
-			ThumbnailStore:    server.thumbnailStore,
-			PresentationStore: server.presentationStore,
-		},
-		Health: healthapi.Dependencies{DB: server.db, Logger: server.Logger},
+// newAPIServer builds the strict OpenAPI server implementation from the
+// application services, so the generated router enforces the same behavior and
+// authorization the HTTP surface always had.
+func (server *Server) newAPIServer() *apiserver.Server {
+	s := &apiserver.Server{
+		Logger:            server.Logger,
+		DB:                server.db,
+		RepoService:       server.repoService,
+		ThumbnailStore:    server.thumbnailStore,
+		PresentationStore: server.presentationStore,
+		Authz:             access.NewFenceUserAccessHandler(nil),
 	}
 	if server.repoService == nil {
-		return deps
+		return s
 	}
 
 	storageManager := gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), nil)
-	deps.Git.ProjectSetup = project.NewSetupService(server.db, storageManager, access.NewFenceUserAccessHandler(nil))
-	deps.Git.ProjectSync = project.NewReconcileService(server.db, storageManager, server.repoService)
+	s.ProjectSetup = project.NewSetupService(server.db, storageManager, access.NewFenceUserAccessHandler(nil))
+	s.ProjectSync = project.NewReconcileService(server.db, storageManager, server.repoService)
 	if server.db != nil {
-		deps.Git.ProjectRead = project.NewReadService(server.db, server.repoService)
-		deps.Git.ProjectInstallation = project.NewInstallationService(server.db, server.repoService)
-		deps.Git.UploadService = upload.NewService(server.db, server.repoService)
-		deps.Config.ConfigService = configuration.NewService(server.db, server.repoService)
-		deps.Config.DeleteService = project.NewDeleteService(server.db, deps.Git.ProjectSetup, server.thumbnailStore)
+		s.ProjectRead = project.NewReadService(server.db, server.repoService)
+		s.ProjectInstallation = project.NewInstallationService(server.db, server.repoService)
+		s.UploadService = upload.NewService(server.db, server.repoService)
+		s.ConfigService = configuration.NewService(server.db, server.repoService)
+		s.DeleteService = project.NewDeleteService(server.db, s.ProjectSetup, server.thumbnailStore)
 	}
 	if storageManager != nil {
-		deps.Git.StorageAnalytics = storageaudit.NewStorageAnalyticsService(storageManager)
-		deps.Git.StorageAnalytics.EnableStorageChainAuditResponseCacheFromEnv()
-		deps.Git.Analytics = gitanalytics.NewService(deps.Git.ProjectRead, deps.Git.StorageAnalytics)
+		s.StorageAnalytics = storageaudit.NewStorageAnalyticsService(storageManager)
+		s.StorageAnalytics.EnableStorageChainAuditResponseCacheFromEnv()
+		s.Analytics = gitanalytics.NewService(s.ProjectRead, s.StorageAnalytics)
 	}
-	return deps
+	return s
 }

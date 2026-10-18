@@ -6,24 +6,10 @@ import (
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/domain"
 	"github.com/calypr/gecko/internal/httputil"
-	"github.com/gofiber/fiber/v3"
-	"github.com/uc-cdis/arborist/arborist"
 )
 
-// WriteAppError converts a domain error into the standard error envelope.
+// ErrorResponse converts an application error into the standard error envelope.
 // Errors that are not *domain.Error become 500 so internal details stay internal.
-// Callers may pass a logger to preserve the error-log write behavior of handlers
-// that previously built and logged an ErrorResponse by hand.
-func WriteAppError(ctx fiber.Ctx, err error, loggers ...arborist.Logger) error {
-	response := ErrorResponse(err)
-	for _, logger := range loggers {
-		if logger != nil {
-			response.WriteLog(logger)
-		}
-	}
-	return response.Write(ctx)
-}
-
 func ErrorResponse(err error) *httputil.ErrorResponse {
 	var response *httputil.ErrorResponse
 	if appErr, ok := err.(*domain.Error); ok {

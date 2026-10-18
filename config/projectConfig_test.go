@@ -57,3 +57,39 @@ func TestProjectConfigValidateRejectsMissingFields(t *testing.T) {
 		t.Fatalf("expected missing title error, got %v", err)
 	}
 }
+
+func TestNormalizeProjectRepositoryURLRejectsUnlistedHost(t *testing.T) {
+	_, err := NormalizeProjectRepositoryURLWithHosts("https://attacker.example/owner/repo.git", []string{"github.com"})
+	if err == nil || !strings.Contains(err.Error(), "is not allowed") {
+		t.Fatalf("expected host rejection, got %v", err)
+	}
+}
+
+func TestNormalizeProjectRepositoryURLAllowsEnterpriseHost(t *testing.T) {
+	got, err := NormalizeProjectRepositoryURLWithHosts("https://github.example.org/owner/repo.git", []string{"github.example.org"})
+	if err != nil {
+		t.Fatalf("NormalizeProjectRepositoryURLWithHosts() error = %v", err)
+	}
+	if got != "github.example.org/owner/repo" {
+		t.Fatalf("normalized repo = %q", got)
+	}
+}
+
+func TestNormalizeProjectRepositoryURLMapsSSHHostToGitHub(t *testing.T) {
+	got, err := NormalizeProjectRepositoryURLWithHosts("git@ssh.github.com:443/owner/repo.git", nil)
+	if err != nil {
+		t.Fatalf("NormalizeProjectRepositoryURLWithHosts() error = %v", err)
+	}
+	if got != "github.com/owner/repo" {
+		t.Fatalf("normalized repo = %q", got)
+	}
+}
+
+func TestGitHubWebHostsForAPIBase(t *testing.T) {
+	if got := GitHubWebHostsForAPIBase("https://api.github.com"); len(got) != 1 || got[0] != "github.com" {
+		t.Fatalf("public hosts = %v", got)
+	}
+	if got := GitHubWebHostsForAPIBase("https://github.example.org/api/v3"); len(got) != 2 || got[0] != "github.com" || got[1] != "github.example.org" {
+		t.Fatalf("enterprise hosts = %v", got)
+	}
+}

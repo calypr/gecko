@@ -8,8 +8,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	SetFenceTrust(FenceTrust{AllowedIssuers: []string{"https://example.test", "https://example.org"}})
+	os.Exit(m.Run())
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -127,8 +133,15 @@ func TestFenceUserEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if endpoint != "https://example.org/user/user" {
+	if endpoint != "https://example.org/user" {
 		t.Fatalf("unexpected endpoint %q", endpoint)
+	}
+}
+
+func TestFenceUserEndpointRejectsUntrustedIssuer(t *testing.T) {
+	token := "Bearer " + buildUnverifiedJWT(t, map[string]any{"iss": "https://attacker.example"})
+	if _, err := FenceUserEndpoint(token); err == nil {
+		t.Fatal("expected untrusted issuer to be rejected")
 	}
 }
 

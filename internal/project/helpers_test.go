@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -16,6 +17,11 @@ import (
 	geckodb "github.com/calypr/gecko/internal/db"
 	"github.com/calypr/gecko/internal/domain"
 )
+
+func TestMain(m *testing.M) {
+	access.SetFenceTrust(access.FenceTrust{AllowedIssuers: []string{"https://fence.example.org"}})
+	os.Exit(m.Run())
+}
 
 func TestOrganizationConfigurationState(t *testing.T) {
 	tests := []struct {
@@ -247,12 +253,12 @@ func TestStorageConfigFromIntent(t *testing.T) {
 
 func TestFenceIssuerURLs(t *testing.T) {
 	token := unsignedJWT(t, jwt.MapClaims{"iss": "https://fence.example.org/user"})
-	baseURL, err := fenceIssuerBaseURL("Bearer " + token)
+	baseURL, err := access.FenceIssuerBaseURL("Bearer " + token)
 	if err != nil {
-		t.Fatalf("fenceIssuerBaseURL() error = %v", err)
+		t.Fatalf("FenceIssuerBaseURL() error = %v", err)
 	}
 	if baseURL != "https://fence.example.org" {
-		t.Fatalf("fenceIssuerBaseURL() = %q", baseURL)
+		t.Fatalf("FenceIssuerBaseURL() = %q", baseURL)
 	}
 	descendantURL, err := arboristOwnedDescendantURL("Bearer " + token)
 	if err != nil {
@@ -273,15 +279,19 @@ func TestFenceIssuerURLs(t *testing.T) {
 		t.Fatalf("resource_path = %q", parsed.Query().Get("resource_path"))
 	}
 
-	if _, err := fenceIssuerBaseURL(""); err == nil {
+	if _, err := access.FenceIssuerBaseURL(""); err == nil {
 		t.Fatal("expected empty authorization header to fail")
 	}
-	if _, err := fenceIssuerBaseURL("Bearer not-a-jwt"); err == nil {
+	if _, err := access.FenceIssuerBaseURL("Bearer not-a-jwt"); err == nil {
 		t.Fatal("expected malformed token to fail")
 	}
 	missingIssuer := unsignedJWT(t, jwt.MapClaims{"sub": "someone"})
-	if _, err := fenceIssuerBaseURL("Bearer " + missingIssuer); err == nil {
+	if _, err := access.FenceIssuerBaseURL("Bearer " + missingIssuer); err == nil {
 		t.Fatal("expected token without issuer to fail")
+	}
+	untrusted := unsignedJWT(t, jwt.MapClaims{"iss": "https://attacker.example"})
+	if _, err := access.FenceIssuerBaseURL("Bearer " + untrusted); err == nil {
+		t.Fatal("expected untrusted issuer to fail")
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 
+	appconfig "github.com/calypr/gecko/config"
+	"github.com/calypr/gecko/internal/access"
 	integrationfence "github.com/calypr/gecko/internal/integrations/fence"
 	integrationgithub "github.com/calypr/gecko/internal/integrations/github"
 	"github.com/calypr/gecko/internal/presentation"
@@ -19,15 +22,6 @@ import (
 	"github.com/calypr/gecko/internal/thumbnail"
 )
 
-// @title Gecko API
-// @version 1.0.0
-// @description API for managing configurations and Git-backed projects
-// @host localhost:8080
-// @BasePath /
-// @securityDefinitions.apikey ApiKeyAuth
-// @in header
-// @name Authorization
-// @description JWT token for authentication
 func main() {
 	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
 	var port = flag.Uint("port", 8080, "port on which to expose the API")
@@ -42,6 +36,14 @@ func main() {
 	fenceBaseURL := firstNonEmpty(*fenceBaseURLFlag, os.Getenv("FENCE_BASE_URL"))
 	gitDataDir := firstNonEmpty(*gitDataDirFlag, os.Getenv("GIT_DATA_DIR"))
 
+	if fenceBaseURL != "" {
+		access.SetFenceTrust(access.FenceTrust{AllowedIssuers: []string{fenceBaseURL}})
+	}
+	allowedGitHubHosts := appconfig.GitHubWebHostsForAPIBase(githubAPIBase)
+	appconfig.ValidateProjectRepository = func(_ context.Context, raw string) (string, error) {
+		return appconfig.NormalizeProjectRepositoryURLWithHosts(raw, allowedGitHubHosts)
+	}
+
 	serverBuilder := server.NewServer().WithLogger(logger)
 	if db, err := sqlx.Open("postgres", databaseURL); err != nil {
 		logger.Println("WARNING: Failed to open database connection. Database endpoints will not be available.")
@@ -54,6 +56,7 @@ func main() {
 	}
 	repoService := repo.NewService(repo.ServiceConfig{
 		GitHubAPIBase:        githubAPIBase,
+		AllowedGitHubHosts:   allowedGitHubHosts,
 		FenceBaseURL:         fenceBaseURL,
 		DataDir:              gitDataDir,
 		FenceClient:          integrationfence.NewClient(nil, integrationfence.Config{BaseURL: fenceBaseURL}),

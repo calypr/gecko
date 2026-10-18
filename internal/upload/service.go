@@ -152,6 +152,12 @@ func (service *Service) Finalize(ctx context.Context, authorizationHeader string
 	if err != nil {
 		return nil, nil, err
 	}
+	if session.Status == SessionFinalized {
+		if session.PullRequestURL.Valid && session.CommitSHA.Valid {
+			return session, files, nil
+		}
+		return nil, nil, conflictError("upload session is finalized but missing pull request details", uploadSessionDetails(projectID, sessionID))
+	}
 	if title := strings.TrimSpace(request.PRTitle); title != "" {
 		session.PRTitle = title
 	}
@@ -169,7 +175,32 @@ func (service *Service) Finalize(ctx context.Context, authorizationHeader string
 	finalizeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	org, project, _ := strings.Cut(projectID, "/")
-	commitSHA, prURL, err := service.repo.CreateGitHubUploadPullRequest(
+	commitSHA, prURL, found, err := service.repo.FindGitHubUploadPullRequest(
+		finalizeCtx,
+		authorizationHeader,
+		org,
+		project,
+		identity,
+		session.BaseBranch,
+		session.BranchName,
+	)
+	if err != nil {
+		return nil, nil, uploadRemoteError(projectID, sessionID, err, "failed to find upload pull request")
+	}
+	if found {
+		if commitSHA == "" || prURL == "" {
+			return nil, nil, conflictError("existing upload pull request is missing commit or URL details", uploadSessionDetails(projectID, sessionID))
+		}
+		session.Status = SessionFinalized
+		session.CommitSHA = sql.NullString{String: commitSHA, Valid: true}
+		session.PullRequestURL = sql.NullString{String: prURL, Valid: true}
+		session.UpdatedAt = time.Now().UTC()
+		if err := geckodb.UpsertGitUploadSession(service.db, *session); err != nil {
+			return nil, nil, databaseError(fmt.Sprintf("failed to persist finalized upload session: %s", err), uploadSessionDetails(projectID, sessionID))
+		}
+		return session, files, nil
+	}
+	commitSHA, prURL, err = service.repo.CreateGitHubUploadPullRequest(
 		finalizeCtx,
 		authorizationHeader,
 		org,
@@ -182,22 +213,7 @@ func (service *Service) Finalize(ctx context.Context, authorizationHeader string
 		files,
 	)
 	if err != nil {
-		if statusErr, ok := err.(*domain.HTTPStatusError); ok {
-			return nil, nil, domain.NewTypedError(
-				domain.ErrorKindIntegration,
-				apierror.Type(statusErr.Code),
-				statusErr.StatusCode,
-				statusErr.Message,
-				uploadSessionDetails(projectID, sessionID),
-			)
-		}
-		return nil, nil, domain.NewTypedError(
-			domain.ErrorKindIntegration,
-			apierror.Type("integration_error"),
-			http.StatusBadGateway,
-			fmt.Sprintf("failed to create upload pull request: %s", err),
-			uploadSessionDetails(projectID, sessionID),
-		)
+		return nil, nil, uploadRemoteError(projectID, sessionID, err, "failed to create upload pull request")
 	}
 	session.Status = SessionFinalized
 	session.CommitSHA = sql.NullString{String: commitSHA, Valid: commitSHA != ""}
@@ -207,6 +223,25 @@ func (service *Service) Finalize(ctx context.Context, authorizationHeader string
 		return nil, nil, databaseError(fmt.Sprintf("failed to persist finalized upload session: %s", err), uploadSessionDetails(projectID, sessionID))
 	}
 	return session, files, nil
+}
+
+func uploadRemoteError(projectID string, sessionID string, err error, message string) error {
+	if statusErr, ok := err.(*domain.HTTPStatusError); ok {
+		return domain.NewTypedError(
+			domain.ErrorKindIntegration,
+			apierror.Type(statusErr.Code),
+			statusErr.StatusCode,
+			statusErr.Message,
+			uploadSessionDetails(projectID, sessionID),
+		)
+	}
+	return domain.NewTypedError(
+		domain.ErrorKindIntegration,
+		apierror.Type("integration_error"),
+		http.StatusBadGateway,
+		fmt.Sprintf("%s: %s", message, err),
+		uploadSessionDetails(projectID, sessionID),
+	)
 }
 
 func (service *Service) ensureConnectedMirrorProject(ctx context.Context, projectID string, identity repo.Identity) (*geckodb.GitProjectState, error) {

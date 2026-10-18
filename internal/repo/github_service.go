@@ -68,6 +68,23 @@ func (service *Service) LoadProjectState(ctx context.Context, db *sqlx.DB, proje
 	return state, nil
 }
 
+func (service *Service) githubRepositoryHostAllowed(host string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(host))
+	for _, allowed := range service.config.AllowedGitHubHosts {
+		if strings.EqualFold(strings.TrimSpace(allowed), normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func (service *Service) validateGitHubRepositoryHost(identity Identity) error {
+	if service.githubRepositoryHostAllowed(identity.Host) {
+		return nil
+	}
+	return fmt.Errorf("GitHub repository host %q is not allowed", identity.Host)
+}
+
 func (service *Service) FetchRepositoryMetadata(ctx context.Context, accessToken string, identity Identity) (*domain.GitHubRepositoryMetadata, error) {
 	if service.githubAPI == nil {
 		return nil, fmt.Errorf("github client is not initialized")
@@ -76,6 +93,9 @@ func (service *Service) FetchRepositoryMetadata(ctx context.Context, accessToken
 }
 
 func (service *Service) RefreshProject(ctx context.Context, projectID string, identity Identity, state *geckodb.GitProjectState, accessToken string) (*ProjectRefreshResponse, *geckodb.GitProjectState, error) {
+	if err := service.validateGitHubRepositoryHost(identity); err != nil {
+		return nil, state, err
+	}
 	repoMetadata, err := service.FetchRepositoryMetadata(ctx, accessToken, identity)
 	if err != nil {
 		return nil, state, err
@@ -170,6 +190,9 @@ func (service *Service) ListInstallationRepositories(ctx context.Context, author
 }
 
 func (service *Service) RequestInstallationToken(ctx context.Context, authorizationHeader string, organization string, project string, identity Identity, access string) (string, error) {
+	if err := service.validateGitHubRepositoryHost(identity); err != nil {
+		return "", err
+	}
 	if service.fenceAPI == nil {
 		return "", fmt.Errorf("fence client is not initialized")
 	}

@@ -78,6 +78,13 @@ func (p *ProjectConfig) validate(requireRepository bool) error {
 }
 
 func NormalizeProjectRepositoryURL(raw string) (string, error) {
+	return NormalizeProjectRepositoryURLWithHosts(raw, nil)
+}
+
+// NormalizeProjectRepositoryURLWithHosts normalizes a project repository URL and
+// rejects hosts outside the configured allowlist. An empty allowlist permits
+// github.com only.
+func NormalizeProjectRepositoryURLWithHosts(raw string, allowedHosts []string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("src_repo is required")
@@ -88,22 +95,68 @@ func NormalizeProjectRepositoryURL(raw string) (string, error) {
 		return "", err
 	}
 
-	host = strings.ToLower(strings.TrimSpace(host))
+	host = normalizeRepositoryHost(host)
 	path = strings.Trim(path, "/")
 	path = strings.TrimSuffix(path, ".git")
 	parts := strings.Split(path, "/")
 
-	if host == "ssh.github.com" || host == "altssh.github.com" {
-		host = "github.com"
-		if len(parts) == 3 && parts[0] == "443" {
-			parts = parts[1:]
-		}
+	if host == "github.com" && len(parts) == 3 && parts[0] == "443" {
+		parts = parts[1:]
 	}
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", fmt.Errorf("src_repo must point to a GitHub-style owner/repo path")
 	}
+	if !repositoryHostAllowed(host, allowedHosts) {
+		return "", fmt.Errorf("src_repo host %q is not allowed", host)
+	}
 
 	return host + "/" + parts[0] + "/" + parts[1], nil
+}
+
+// GitHubWebHostsForAPIBase returns the web hosts that correspond to a GitHub
+// API base. The public API maps to github.com. Enterprise API bases map to
+// their own host.
+func GitHubWebHostsForAPIBase(apiBase string) []string {
+	hosts := []string{"github.com"}
+	trimmed := strings.TrimSpace(apiBase)
+	if trimmed == "" {
+		return hosts
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return hosts
+	}
+	host := normalizeRepositoryHost(parsed.Hostname())
+	if host == "" || host == "github.com" || host == "api.github.com" {
+		return hosts
+	}
+	return append(hosts, host)
+}
+
+func repositoryHostAllowed(host string, allowedHosts []string) bool {
+	if len(allowedHosts) == 0 {
+		return host == "github.com"
+	}
+	for _, allowed := range allowedHosts {
+		if normalizeRepositoryHost(allowed) == host {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeRepositoryHost(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.Contains(value, "://") {
+		if parsed, err := url.Parse(value); err == nil {
+			value = parsed.Hostname()
+		}
+	}
+	value = strings.TrimSuffix(value, ".")
+	if value == "ssh.github.com" || value == "altssh.github.com" {
+		return "github.com"
+	}
+	return value
 }
 
 func splitProjectRepositoryURL(raw string) (string, string, error) {
