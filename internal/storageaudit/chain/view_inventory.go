@@ -14,7 +14,7 @@ import (
 )
 
 func (service *Service) attachProjectStorageProbes(ctx context.Context, authorizationHeader string, recordSet *sarecord.RecordSet) (*sarecord.RecordSet, error) {
-	recordsByChecksum, allProjectRecords, err := service.store.AttachStorageProbes(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords)
+	recordsByChecksum, allProjectRecords, err := service.deps.Evidence.AttachStorageProbes(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords)
 	if err != nil {
 		return nil, err
 	}
@@ -25,7 +25,7 @@ func (service *Service) attachProjectStorageProbes(ctx context.Context, authoriz
 }
 
 func (service *Service) attachProjectStorageListValidations(ctx context.Context, authorizationHeader string, recordSet *sarecord.RecordSet) (*sarecord.RecordSet, error) {
-	recordsByChecksum, allProjectRecords, err := service.store.AttachStorageListValidations(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords)
+	recordsByChecksum, allProjectRecords, err := service.deps.Evidence.AttachStorageListValidations(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords)
 	if err != nil {
 		return nil, err
 	}

@@ -16,7 +16,7 @@ import (
 )
 
 func (service *Service) loadProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, sarecord.BucketInventoryMetadata, error) {
-	inventory, err := service.store.ListProjectBucketObjects(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+	inventory, err := service.deps.Buckets.ListProjectBucketObjects(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
 		return nil, nil, sarecord.BucketInventoryMetadata{}, fmt.Errorf("list syfon project bucket objects: %w", err)
 	}
@@ -26,7 +26,7 @@ func (service *Service) loadProjectBucketInventory(ctx context.Context, authoriz
 }
 
 func (service *Service) loadProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, sarecord.BucketInventoryMetadata, error) {
-	inventory, err := service.store.ListProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
+	inventory, err := service.deps.Buckets.ListProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 	if err != nil {
 		return nil, nil, sarecord.BucketInventoryMetadata{}, fmt.Errorf("list syfon project bucket inventory: %w", err)
 	}

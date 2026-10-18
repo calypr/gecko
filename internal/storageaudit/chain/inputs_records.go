@@ -15,7 +15,7 @@ import (
 func (service *Service) loadCachedProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
 	start := time.Now()
 	cacheKey := service.projectChainInputCacheKey(organization, project)
-	summary, err := service.store.GetProjectMetricsSummary(ctx, authorizationHeader, organization, project)
+	summary, err := service.deps.Records.GetProjectMetricsSummary(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, fmt.Errorf("get syfon project metrics summary: %w", err)
 	}
@@ -59,7 +59,7 @@ func (service *Service) loadCachedProjectAuditRecords(ctx context.Context, autho
 			service.chainInputMu.Unlock()
 		}()
 
-		ProjectRecords, err := service.store.ListProjectAuditRecords(context.WithoutCancel(ctx), authorizationHeader, organization, project)
+		ProjectRecords, err := service.deps.Records.ListProjectAuditRecords(context.WithoutCancel(ctx), authorizationHeader, organization, project)
 		if err != nil {
 			inflight.err = fmt.Errorf("list syfon project audit records: %w", err)
 			return nil, inflight.err
@@ -76,7 +76,7 @@ func (service *Service) loadCachedProjectAuditRecords(ctx context.Context, autho
 		log.Printf("syfon_project_record_cache_refreshed org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(copiedRecords), time.Since(start).Milliseconds())
 		return copiedRecords, nil
 	}
-	ProjectRecords, err := service.store.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
+	ProjectRecords, err := service.deps.Records.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project audit records: %w", err)
 	}

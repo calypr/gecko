@@ -47,7 +47,7 @@ func (service *Service) evictProjectChainInputCache(organization string, project
 }
 
 func (service *Service) loadStorageChainInventory(ctx context.Context, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) ([]model.RepoInventoryFile, error) {
-	index, err := service.store.LoadRepoIndex(ctx, ref, mirrorPath, repo, hash)
+	index, err := service.deps.Join.LoadRepoIndex(ctx, ref, mirrorPath, repo, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,7 @@ type storageAuditBaseInputs struct {
 }
 
 func (service *Service) loadStorageAuditBaseInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*storageAuditBaseInputs, error) {
-	state, err := service.store.LoadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
+	state, err := service.deps.Join.LoadJoinState(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, false)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (service *Service) loadStorageAuditBaseInputs(ctx context.Context, authoriz
 }
 
 func (service *Service) loadScopedProjectRecords(ctx context.Context, authorizationHeader string, organization string, project string, base *storageAuditBaseInputs) (*sarecord.RecordSet, error) {
-	allProjectRecords, err := service.store.ListProjectRecordStates(ctx, authorizationHeader, organization, project, base.usageByObjectID)
+	allProjectRecords, err := service.deps.Records.ListProjectRecordStates(ctx, authorizationHeader, organization, project, base.usageByObjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -216,16 +216,16 @@ func (service *Service) loadScopedProjectRecords(ctx context.Context, authorizat
 }
 
 func (service *Service) loadProjectScopeMappings(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error) {
-	return service.store.LoadProjectStorageScopes(ctx, authorizationHeader, organization, project)
+	return service.deps.Scopes.LoadProjectStorageScopes(ctx, authorizationHeader, organization, project)
 }
 
 func (service *Service) loadProjectChainScopeMappings(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error) {
-	scopes, err := service.store.ListProjectScopes(ctx, authorizationHeader, organization, project)
+	scopes, err := service.deps.Scopes.ListProjectScopes(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, fmt.Errorf("list syfon project scopes: %w", err)
 	}
 	if len(scopes) == 0 {
-		scopes, err = service.store.LoadProjectStorageScopes(ctx, authorizationHeader, organization, project)
+		scopes, err = service.deps.Scopes.LoadProjectStorageScopes(ctx, authorizationHeader, organization, project)
 		if err != nil {
 			return nil, err
 		}

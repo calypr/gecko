@@ -35,19 +35,39 @@ type JoinState struct {
 	UsageByObjectID   map[string]gintegrationsyfon.FileUsage
 }
 
-type Store interface {
+type JoinReader interface {
 	LoadJoinState(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, forceRefresh bool) (*JoinState, error)
 	LoadRepoIndex(ctx context.Context, ref string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) (*repoindex.Index, error)
+}
+
+type RecordReader interface {
 	ListProjectRecordStates(ctx context.Context, authorizationHeader string, organization string, project string, usageByObjectID map[string]gintegrationsyfon.FileUsage) (map[string][]record.State, error)
 	GetProjectMetricsSummary(ctx context.Context, authorizationHeader string, organization string, project string) (*gintegrationsyfon.ProjectMetricsSummary, error)
 	ListProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error)
-	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
-	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
+	LoadStorageAuditSyfonRevision(ctx context.Context, authorizationHeader string, organization string, project string) (string, error)
+}
+
+type ScopeReader interface {
 	ListProjectScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
 	LoadProjectStorageScopes(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
+}
+
+type BucketReader interface {
+	ListProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
+	ListProjectBucketInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string) (gintegrationsyfon.ProjectBucketInventory, error)
+}
+
+type EvidenceAttacher interface {
 	AttachStorageProbes(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State) (map[string][]record.State, map[string][]record.State, error)
 	AttachStorageListValidations(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State) (map[string][]record.State, map[string][]record.State, error)
-	LoadStorageAuditSyfonRevision(ctx context.Context, authorizationHeader string, organization string, project string) (string, error)
+}
+
+type Dependencies struct {
+	Join     JoinReader
+	Records  RecordReader
+	Scopes   ScopeReader
+	Buckets  BucketReader
+	Evidence EvidenceAttacher
 }
 
 type chainAuditModel struct {
@@ -86,7 +106,7 @@ type projectAuditRecordValidator struct {
 }
 
 type Service struct {
-	store Store
+	deps Dependencies
 
 	chainInputMu      sync.RWMutex
 	ChainInputCache   map[string]ChainInputCacheEntry
@@ -99,9 +119,9 @@ type Service struct {
 	ProjectBucketCache      storecache.BucketInventoryCache
 }
 
-func New(store Store) *Service {
+func New(deps Dependencies) *Service {
 	return &Service{
-		store:                 store,
+		deps:                  deps,
 		ChainInputCache:       map[string]ChainInputCacheEntry{},
 		projectAuditCache:     map[string]cachedProjectAuditRecordState{},
 		projectAuditWork:      map[string]*inflightProjectAuditRecordState{},

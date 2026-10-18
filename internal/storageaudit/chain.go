@@ -25,7 +25,14 @@ func (service *StorageAnalyticsService) loadProjectChainScopeMappings(ctx contex
 }
 
 func newChainService(service *StorageAnalyticsService) *chain.Service {
-	return chain.New(chainStore{service: service})
+	store := chainStore{service: service}
+	return chain.New(chain.Dependencies{
+		Join:     store,
+		Records:  store,
+		Scopes:   store,
+		Buckets:  store,
+		Evidence: store,
+	})
 }
 
 type chainStore struct {

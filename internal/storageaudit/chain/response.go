@@ -1,8 +1,9 @@
 package chain
 
 import (
-	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 	"strings"
+
+	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 
 	"github.com/calypr/gecko/internal/storageaudit/model"
 )

@@ -77,7 +77,7 @@ func normalizeStorageChainAuditOptions(options model.StorageChainAuditOptions) (
 }
 
 func (service *Service) buildStorageChainAuditWithResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions) (*model.ChainAuditResponse, error) {
-	syfonRevision, err := service.store.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
+	syfonRevision, err := service.deps.Records.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (service *Service) buildStorageChainAuditWithResponseCache(ctx context.Cont
 
 func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions) (*model.ChainAuditResponse, bool, error) {
 	cache := service.ChainAuditResponseCache
-	syfonRevision, err := service.store.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
+	syfonRevision, err := service.deps.Records.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, false, err
 	}
