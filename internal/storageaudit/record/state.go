@@ -24,6 +24,24 @@ func CountStates(input map[string][]State) int {
 	return count
 }
 
+func CloneStateMap(input map[string][]State) map[string][]State {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string][]State, len(input))
+	for checksum, group := range input {
+		states := make([]State, 0, len(group))
+		for _, state := range group {
+			clone := state
+			clone.CanonicalAccessURLs = append([]string(nil), state.CanonicalAccessURLs...)
+			clone.AccessProbes = append([]gintegrationsyfon.BulkStorageProbeResult(nil), state.AccessProbes...)
+			states = append(states, clone)
+		}
+		out[checksum] = states
+	}
+	return out
+}
+
 type RecordSet struct {
 	RecordsByChecksum map[string][]State
 	AllProjectRecords map[string][]State

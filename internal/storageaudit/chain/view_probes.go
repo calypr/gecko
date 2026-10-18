@@ -9,21 +9,6 @@ import (
 	"github.com/calypr/gecko/internal/storageaudit/model"
 )
 
-func cloneRecordStateMap(input map[string][]sarecord.State) map[string][]sarecord.State {
-	out := make(map[string][]sarecord.State, len(input))
-	for checksum, group := range input {
-		states := make([]sarecord.State, 0, len(group))
-		for _, record := range group {
-			clone := record
-			clone.CanonicalAccessURLs = append([]string(nil), record.CanonicalAccessURLs...)
-			clone.AccessProbes = append([]gintegrationsyfon.BulkStorageProbeResult(nil), record.AccessProbes...)
-			states = append(states, clone)
-		}
-		out[checksum] = states
-	}
-	return out
-}
-
 func selectTargetedProbeRecordSet(recordSet *sarecord.RecordSet, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject) *sarecord.RecordSet {
 	if recordSet == nil {
 		return nil
@@ -41,8 +26,8 @@ func selectTargetedProbeRecordSet(recordSet *sarecord.RecordSet, bucketObjectsBy
 		return nil
 	}
 	return &sarecord.RecordSet{
-		RecordsByChecksum: cloneRecordStateMap(selected),
-		AllProjectRecords: cloneRecordStateMap(selected),
+		RecordsByChecksum: sarecord.CloneStateMap(selected),
+		AllProjectRecords: sarecord.CloneStateMap(selected),
 	}
 }
 
@@ -84,8 +69,8 @@ func selectInventoryMissRecordSet(recordSet *sarecord.RecordSet) *sarecord.Recor
 		return nil
 	}
 	return &sarecord.RecordSet{
-		RecordsByChecksum: cloneRecordStateMap(selected),
-		AllProjectRecords: cloneRecordStateMap(selected),
+		RecordsByChecksum: sarecord.CloneStateMap(selected),
+		AllProjectRecords: sarecord.CloneStateMap(selected),
 	}
 }
 
