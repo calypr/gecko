@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"os"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/calypr/gecko/apgen/server/gecko"
 	appconfig "github.com/calypr/gecko/config"
 	"github.com/calypr/gecko/internal/access"
-	projectpkg "github.com/calypr/gecko/internal/project"
 	"github.com/calypr/gecko/internal/presentation"
+	projectpkg "github.com/calypr/gecko/internal/project"
 	"github.com/calypr/gecko/internal/thumbnail"
 )
 
@@ -357,4 +357,3 @@ func readFileBytes(path string) ([]byte, error) {
 	defer func() { _ = file.Close() }()
 	return io.ReadAll(file)
 }
-

@@ -10,8 +10,8 @@ import (
 
 	"github.com/calypr/gecko/apgen/server/gecko"
 	"github.com/calypr/gecko/internal/access"
-	projectpkg "github.com/calypr/gecko/internal/project"
 	"github.com/calypr/gecko/internal/domain"
+	projectpkg "github.com/calypr/gecko/internal/project"
 	"github.com/calypr/gecko/internal/repo"
 )
 

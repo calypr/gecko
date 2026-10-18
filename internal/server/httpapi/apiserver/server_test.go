@@ -9,9 +9,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/calypr/gecko/apgen/server/gecko"
 	"github.com/calypr/gecko/internal/access"
 	geckologging "github.com/calypr/gecko/internal/logging"
-	"github.com/calypr/gecko/apgen/server/gecko"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
@@ -82,10 +82,10 @@ func TestOpenAPIRouterRequiresTokenForGitProjects(t *testing.T) {
 
 func TestUpgradeWildcardPattern(t *testing.T) {
 	cases := map[string]string{
-		"GET /git/projects/{orgTitle}/{projectTitle}/tree/{path}":     "GET /git/projects/{orgTitle}/{projectTitle}/tree/{path...}",
-		"GET /git/projects/{orgTitle}/{projectTitle}/file/{path}":     "GET /git/projects/{orgTitle}/{projectTitle}/file/{path...}",
-		"GET /health":                                                 "GET /health",
-		"GET /git/projects/{orgTitle}/{projectTitle}/tree":            "GET /git/projects/{orgTitle}/{projectTitle}/tree",
+		"GET /git/projects/{orgTitle}/{projectTitle}/tree/{path}": "GET /git/projects/{orgTitle}/{projectTitle}/tree/{path...}",
+		"GET /git/projects/{orgTitle}/{projectTitle}/file/{path}": "GET /git/projects/{orgTitle}/{projectTitle}/file/{path...}",
+		"GET /health": "GET /health",
+		"GET /git/projects/{orgTitle}/{projectTitle}/tree": "GET /git/projects/{orgTitle}/{projectTitle}/tree",
 	}
 	for in, want := range cases {
 		if got := upgradeWildcardPattern(in); got != want {
