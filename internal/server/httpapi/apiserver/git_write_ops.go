@@ -215,7 +215,7 @@ func (s *Server) PostGitProjectPresentationConfig(ctx context.Context, request g
 	return gecko.PostGitProjectPresentationConfig200JSONResponse(body), nil
 }
 
-func (s *Server) savePresentationConfig(ctx context.Context, orgRaw, projectRaw string, body map[string]interface{}) (map[string]interface{}, *opError) {
+func (s *Server) savePresentationConfig(ctx context.Context, orgRaw, projectRaw string, body map[string]interface{}) (map[string]interface{}, error) {
 	organization := strings.TrimSpace(orgRaw)
 	project := strings.TrimSpace(projectRaw)
 	if err := s.projectConfigAuthz(ctx, organization, project, "update"); err != nil {

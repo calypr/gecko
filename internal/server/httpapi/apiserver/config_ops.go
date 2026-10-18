@@ -152,7 +152,7 @@ func (s *Server) ListProjectsAlias(ctx context.Context, request gecko.ListProjec
 	return gecko.ListProjectsAlias200JSONResponse(projects), nil
 }
 
-func (s *Server) listProjectsForCaller(ctx context.Context) ([]gecko.ProjectListResponse, *opError) {
+func (s *Server) listProjectsForCaller(ctx context.Context) ([]gecko.ProjectListResponse, error) {
 	allowedResources, errResponse := access.AllowedReadResources(ctx, AuthorizationFromContext(ctx))
 	if errResponse != nil {
 		s.logError(errResponse)

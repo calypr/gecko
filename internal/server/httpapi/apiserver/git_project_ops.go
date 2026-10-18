@@ -128,7 +128,7 @@ type treeQueryParams struct {
 	limit             string
 }
 
-func (s *Server) buildTreeResponse(ctx context.Context, organization, project, path, ref string, params treeQueryParams) (map[string]interface{}, *opError) {
+func (s *Server) buildTreeResponse(ctx context.Context, organization, project, path, ref string, params treeQueryParams) (map[string]interface{}, error) {
 	if err := s.projectReadAuthz(ctx, organization, project); err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ type manifestQueryParams struct {
 	cursor    string
 }
 
-func (s *Server) buildManifestResponse(ctx context.Context, organization, project, path, ref string, params manifestQueryParams) (map[string]interface{}, *opError) {
+func (s *Server) buildManifestResponse(ctx context.Context, organization, project, path, ref string, params manifestQueryParams) (map[string]interface{}, error) {
 	if err := s.projectReadAuthz(ctx, organization, project); err != nil {
 		return nil, err
 	}

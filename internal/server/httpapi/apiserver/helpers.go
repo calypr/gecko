@@ -21,7 +21,7 @@ func statusResponse(message string) gecko.StatusResponse {
 
 // toMap converts any JSON-encodable value into the map shape the spec uses for
 // open object responses.
-func toMap(value any) (map[string]interface{}, *opError) {
+func toMap(value any) (map[string]interface{}, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return nil, newOpError(http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to encode response: %s", err), nil)
@@ -33,7 +33,7 @@ func toMap(value any) (map[string]interface{}, *opError) {
 	return out, nil
 }
 
-func toConfig(value any) (gecko.Config, *opError) {
+func toConfig(value any) (gecko.Config, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return nil, newOpError(http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to encode response: %s", err), nil)
