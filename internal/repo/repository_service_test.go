@@ -43,6 +43,7 @@ func TestSyncRepositoryMirrorPullsUpdatesAndReadsTree(t *testing.T) {
 		t.Fatalf("open mirror: %v", err)
 	}
 	refName, hash, err := ResolveGitReference(mirrorRepo, "", "")
+	initialHash := hash
 	if err != nil {
 		t.Fatalf("resolve HEAD: %v", err)
 	}
@@ -70,9 +71,12 @@ func TestSyncRepositoryMirrorPullsUpdatesAndReadsTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open updated mirror: %v", err)
 	}
-	refName, hash, err = ResolveGitReference(mirrorRepo, "", "")
+	_, hash, err = ResolveGitReference(mirrorRepo, "", "")
 	if err != nil {
 		t.Fatalf("resolve updated HEAD: %v", err)
+	}
+	if hash == initialHash {
+		t.Fatal("expected mirror HEAD to advance after sync")
 	}
 }
 

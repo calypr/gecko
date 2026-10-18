@@ -2,23 +2,15 @@ package middleware
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	geckologging "github.com/calypr/gecko/internal/logging"
 	"github.com/gofiber/fiber/v3"
 )
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
-}
 
 type fakeJWTAllowedResourceHandler struct {
 	resources []any
@@ -53,19 +45,6 @@ func TestGitProjectAuthAllowsProgramProjectResource(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-}
-
-func buildUnverifiedJWT(t *testing.T, claims map[string]any) string {
-	t.Helper()
-	headerBody, err := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
-	if err != nil {
-		t.Fatalf("marshal header: %v", err)
-	}
-	body, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatalf("marshal claims: %v", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(headerBody) + "." + base64.RawURLEncoding.EncodeToString(body) + ".sig"
 }
 
 func TestGitProjectAuthRejectsLegacyOrganizationResource(t *testing.T) {

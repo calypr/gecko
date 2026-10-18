@@ -148,14 +148,6 @@ func (service *Service) BuildStorageFolder(ctx context.Context, authorizationHea
 	}, nil
 }
 
-func countRecordStates(input map[string][]record.State) int {
-	count := 0
-	for _, group := range input {
-		count += len(group)
-	}
-	return count
-}
-
 func summarizeSubtree(gitSubpath string, inventory []model.RepoInventoryFile, recordsByChecksum map[string][]record.State, usageByObjectID map[string]gintegrationsyfon.FileUsage, directChildCount int) record.Aggregate {
 	agg := record.Aggregate{
 		Path:    record.NormalizeRepoSubpath(gitSubpath),

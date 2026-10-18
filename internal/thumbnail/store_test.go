@@ -7,7 +7,7 @@ import (
 	"image/png"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -74,7 +74,7 @@ func TestValidateThumbnail(t *testing.T) {
 	t.Run("too small", func(t *testing.T) {
 		data := generateImageBytes(t, "png", 50, 150)
 		_, err := ValidateThumbnail(data)
-		if err == nil || err != ErrImageTooSmall && !filepath.HasPrefix(err.Error(), ErrImageTooSmall.Error()) {
+		if err == nil || err != ErrImageTooSmall && !strings.HasPrefix(err.Error(), ErrImageTooSmall.Error()) {
 			t.Fatalf("expected ErrImageTooSmall, got %v", err)
 		}
 	})
@@ -82,14 +82,14 @@ func TestValidateThumbnail(t *testing.T) {
 	t.Run("too large", func(t *testing.T) {
 		data := generateImageBytes(t, "png", 3500, 150)
 		_, err := ValidateThumbnail(data)
-		if err == nil || err != ErrImageTooLarge && !filepath.HasPrefix(err.Error(), ErrImageTooLarge.Error()) {
+		if err == nil || err != ErrImageTooLarge && !strings.HasPrefix(err.Error(), ErrImageTooLarge.Error()) {
 			t.Fatalf("expected ErrImageTooLarge, got %v", err)
 		}
 	})
 
 	t.Run("invalid format text", func(t *testing.T) {
 		_, err := ValidateThumbnail([]byte("not-an-image"))
-		if err == nil || err != ErrInvalidFormat && !filepath.HasPrefix(err.Error(), ErrInvalidFormat.Error()) {
+		if err == nil || err != ErrInvalidFormat && !strings.HasPrefix(err.Error(), ErrInvalidFormat.Error()) {
 			t.Fatalf("expected ErrInvalidFormat, got %v", err)
 		}
 	})

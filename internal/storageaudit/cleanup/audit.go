@@ -1,37 +1,22 @@
 package cleanup
 
 import (
-	"context"
 	"sort"
 
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/storageaudit/model"
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 )
 
-func (service *Service) BuildStorageCleanupAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, selectedRepoPaths []string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, checkStorage bool) (*model.CleanupAuditResponse, *AuditModel, error) {
-	baseInputs, err := service.chain.LoadBaseInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
-	if err != nil {
-		return nil, nil, err
-	}
-	recordSet, err := service.chain.LoadScopedProjectRecords(ctx, authorizationHeader, organization, project, baseInputs)
-	if err != nil {
-		return nil, nil, err
-	}
-	storageView, err := service.chain.LoadStorageAuditStorageView(ctx, authorizationHeader, organization, project, recordSet, checkStorage, checkStorage)
-	if err != nil {
-		return nil, nil, err
-	}
-	auditModel := buildCleanupAuditModel(gitSubpath, baseInputs.Inventory, storageView.RecordsByChecksum, storageView.AllProjectRecords, storageView.BucketObjectsByURL, selectedRepoPaths, checkStorage)
+func BuildStorageCleanupAudit(gitSubpath string, inventory []model.RepoInventoryFile, storageView *sarecord.StorageView, selectedRepoPaths []string, checkStorage bool) (*model.CleanupAuditResponse, *AuditModel) {
+	auditModel := buildCleanupAuditModel(gitSubpath, inventory, storageView.RecordsByChecksum, storageView.AllProjectRecords, storageView.BucketObjectsByURL, selectedRepoPaths, checkStorage)
 	return &model.CleanupAuditResponse{
 		Findings:             auditModel.PublicFindings,
 		Summary:              auditModel.Summary,
 		ExpectedPathCount:    auditModel.ExpectedPathCount,
 		IncludesRepoManifest: auditModel.IncludesRepoManifest,
 		PathPrefix:           auditModel.PathPrefix,
-	}, auditModel, nil
+	}, auditModel
 }
 
 func buildCleanupAuditModel(gitSubpath string, inventory []model.RepoInventoryFile, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, selectedRepoPaths []string, checkStorage bool) *AuditModel {
@@ -85,10 +70,8 @@ func buildCleanupAuditModel(gitSubpath string, inventory []model.RepoInventoryFi
 				findings = append(findings, FindingModel{Public: public, Manual: true})
 				countsByKind["live_duplicate_conflict"]++
 			} else {
-				candidates := make([]sarecord.State, 0, len(sortedMatches)-1)
 				deleteIDs := make([]string, 0, len(sortedMatches)-1)
 				for _, record := range sortedMatches[1:] {
-					candidates = append(candidates, record)
 					deleteIDs = append(deleteIDs, record.ObjectID)
 				}
 				public := sarecord.BuildCleanupFinding("stale_duplicate_record", item.RepoPath, sortedMatches, true, "record", "Delete stale duplicate records")
