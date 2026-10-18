@@ -12,21 +12,27 @@ const (
 	DefaultConfigID = "default"
 )
 
+var knownTypes = []Type{
+	TypeExplorer,
+	TypeNav,
+	TypeFileSummary,
+	TypeProject,
+	TypeProjects,
+}
+
 func KnownTypes() []string {
-	return []string{
-		string(TypeExplorer),
-		string(TypeNav),
-		string(TypeFileSummary),
-		string(TypeProject),
-		string(TypeProjects),
+	types := make([]string, 0, len(knownTypes))
+	for _, t := range knownTypes {
+		types = append(types, string(t))
 	}
+	return types
 }
 
 func IsKnownType(t string) bool {
-	switch Type(t) {
-	case TypeExplorer, TypeNav, TypeFileSummary, TypeProject, TypeProjects:
-		return true
-	default:
-		return false
+	for _, known := range knownTypes {
+		if Type(t) == known {
+			return true
+		}
 	}
+	return false
 }

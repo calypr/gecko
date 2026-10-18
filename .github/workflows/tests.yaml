@@ -5,6 +5,10 @@ on: [ pull_request, workflow_call ]
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
     - name: Checkout repository
@@ -12,7 +16,34 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.26.3'
+        go-version-file: go.mod
+
+    - name: Check formatting
+      run: |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "The following files are not gofmt'd:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Check module files
+      run: go mod tidy -diff
+
+    - name: Vet
+      run: go vet ./...
+
+    - name: Install analyzers
+      run: |
+        go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+        go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Staticcheck
+      run: staticcheck ./...
+
+    - name: Vulnerability scan
+      run: govulncheck ./...
 
     - name: Start PostgreSQL
       run: |
@@ -23,7 +54,7 @@ jobs:
           -p 8081:5432 \
           -e POSTGRES_PASSWORD=your_strong_password \
           -e POSTGRES_USER=postgres \
-          postgres:10.4 > /dev/null
+          postgres:15 > /dev/null
 
         # Wait for PostgreSQL to be ready
         for i in {1..30}; do
@@ -59,7 +90,7 @@ jobs:
 
           DO \$\$
           DECLARE
-              config_tables TEXT[] := ARRAY['explorer', 'nav', 'file_summary', 'apps_page'];
+              config_tables TEXT[] := ARRAY['explorer', 'nav', 'file_summary', 'project', 'projects'];
               table_name TEXT;
           BEGIN
               FOREACH table_name IN ARRAY config_tables
@@ -74,9 +105,11 @@ jobs:
         PGPASSWORD: your_strong_password
 
 
+    - name: Build server with race detector
+      run: go build -race -o bin/gecko .
+
     - name: Run Tests
       run: |
-        make
         ./bin/gecko \
           -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
           -port 8080 \
@@ -97,4 +130,28 @@ jobs:
           fi
           sleep 1
         done
-        go test -v ./...
+        go test -race -count=1 -timeout=10m -covermode=atomic -coverpkg=./... -coverprofile=coverage.out -v ./...
+
+    - name: Coverage summary
+      if: always()
+      run: |
+        if [ -f coverage.out ]; then
+          go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload coverage to Codecov
+      if: always()
+      uses: codecov/codecov-action@v5
+      with:
+        use_oidc: true
+        files: ./coverage.out
+        flags: unittests
+        fail_ci_if_error: true
+
+    - name: Upload coverage artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage
+        path: coverage.out
+        if-no-files-found: ignore

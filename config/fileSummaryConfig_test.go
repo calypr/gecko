@@ -38,46 +38,7 @@ const filesummaryJSON = `{
 // ---------------------------------------------------------------------
 
 func TestFilesummaryConfig_RoundTrip(t *testing.T) {
-	var cfg FilesummaryConfig
-	if err := json.Unmarshal([]byte(filesummaryJSON), &cfg); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-
-	// Use Marshal, not MarshalIndent, for tighter JSON and easier comparison
-	marshaled, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-
-	// Unmarshal both the original and the marshaled JSON into generic maps
-	// to enable a deep comparison that ignores field order (which reflect.DeepEqual
-	// does correctly for map[string]any but is sensitive to whitespace/indentation
-	// if comparing raw strings).
-
-	var originalMap any
-	if err := json.Unmarshal([]byte(filesummaryJSON), &originalMap); err != nil {
-		t.Fatalf("Unmarshal original map failed: %v", err)
-	}
-
-	var marshaledMap any
-	if err := json.Unmarshal(marshaled, &marshaledMap); err != nil {
-		t.Fatalf("Unmarshal marshaled map failed: %v", err)
-	}
-
-	// The DeepEqual check on maps is the "order-insensitive" check
-	if !reflect.DeepEqual(originalMap, marshaledMap) {
-		// Use cmp.Diff on the unmarshaled structs for better debug output
-		// if the map comparison fails (optional, as the string output is often enough)
-		t.Errorf("Round-trip mismatch (Content differs - likely an omitted field or type issue)")
-
-		// Marshal the original struct back out with indentation for a clearer visual comparison
-		wantJSON, _ := json.MarshalIndent(originalMap, "", "  ")
-		gotJSON, _ := json.MarshalIndent(marshaledMap, "", "  ")
-
-		t.Errorf("--- want (Normalized) ---\n%s\n--- got (Normalized) ---\n%s\n", string(wantJSON), string(gotJSON))
-	} else {
-		t.Log("Round-trip successful (order-insensitive, content preserved)")
-	}
+	assertJSONRoundTrip(t, filesummaryJSON, &FilesummaryConfig{})
 }
 
 // ---------------------------------------------------------------------

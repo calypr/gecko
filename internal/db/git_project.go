@@ -120,10 +120,6 @@ func EnsureGitProjectStateTable(db *sqlx.DB) error {
 	return nil
 }
 
-func GitProjectStateByProjectID(db *sqlx.DB, projectID string) (*GitProjectState, error) {
-	return GitProjectStateByProjectIDContext(context.Background(), db, projectID)
-}
-
 func GitProjectStateByProjectIDContext(ctx context.Context, db *sqlx.DB, projectID string) (*GitProjectState, error) {
 	if db == nil {
 		return nil, nil
@@ -137,10 +133,6 @@ func GitProjectStateByProjectIDContext(ctx context.Context, db *sqlx.DB, project
 		return nil, err
 	}
 	return &state, nil
-}
-
-func UpsertGitProjectState(db *sqlx.DB, state GitProjectState) error {
-	return UpsertGitProjectStateContext(context.Background(), db, state)
 }
 
 func UpsertGitProjectStateContext(ctx context.Context, db *sqlx.DB, state GitProjectState) error {
@@ -183,9 +175,12 @@ func upsertGitProjectStateContext(ctx context.Context, namedExecFn func(context.
 	return nil
 }
 
-func ListGitProjectStates(db *sqlx.DB) (map[string]GitProjectState, error) {
+func ListGitProjectStatesContext(ctx context.Context, db *sqlx.DB) (map[string]GitProjectState, error) {
+	if db == nil {
+		return map[string]GitProjectState{}, nil
+	}
 	states := []GitProjectState{}
-	if err := db.Select(&states, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state`); err != nil {
+	if err := db.SelectContext(ctx, &states, `SELECT project_id, repo_host, repo_owner, repo_name, installation_id, installation_target_type, installation_target, mirror_path, sync_state, default_branch, last_refreshed_at, last_error FROM config_schema.git_project_state`); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return map[string]GitProjectState{}, nil
 		}

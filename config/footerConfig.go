@@ -149,27 +149,27 @@ func (r FooterRow) MarshalJSON() ([]byte, error) {
 	switch r.Kind {
 	case "Icon":
 		if r.Icon == nil {
-			return nil, fmt.Errorf("Logo is nil")
+			return nil, fmt.Errorf("logo is nil")
 		}
 		obj = map[string]any{"Icon": r.Icon}
 	case "Text":
 		if r.Text == nil {
-			return nil, fmt.Errorf("Text is nil")
+			return nil, fmt.Errorf("text is nil")
 		}
 		obj = map[string]any{"Text": r.Text}
 	case "Link":
 		if r.Link == nil {
-			return nil, fmt.Errorf("Link is nil")
+			return nil, fmt.Errorf("link is nil")
 		}
 		obj = map[string]any{"Link": r.Link}
 	case "Links":
 		if r.Links == nil {
-			return nil, fmt.Errorf("Links is nil")
+			return nil, fmt.Errorf("links is nil")
 		}
 		obj = map[string]any{"Links": r.Links}
 	case "Section":
 		if r.Section == nil {
-			return nil, fmt.Errorf("Section is nil")
+			return nil, fmt.Errorf("section is nil")
 		}
 		obj = map[string]any{"Section": r.Section}
 	default:

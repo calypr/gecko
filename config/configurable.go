@@ -5,15 +5,17 @@ type Configurable interface {
 }
 
 func (c Config) IsZero() bool {
-	return len(c.ExplorerConfig) == 0
+	return len(c.ExplorerConfig) == 0 &&
+		len(c.SharedFilters.SharedFilter) == 0 &&
+		len(c.FileActions.Extensions) == 0 &&
+		len(c.FileActions.Actions) == 0
 }
 
 func (n NavPageLayoutProps) IsZero() bool {
 	return len(n.HeaderProps.LeftNav) == 0 &&
-		len(n.FooterProps.RightSection.Columns) == 0 &&
 		len(n.FooterProps.BottomLinks) == 0 &&
 		len(n.FooterProps.ColumnLinks) == 0 &&
-		n.FooterProps.RightSection == nil
+		(n.FooterProps.RightSection == nil || len(n.FooterProps.RightSection.Columns) == 0)
 }
 
 func (fs FilesummaryConfig) IsZero() bool {

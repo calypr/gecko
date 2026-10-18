@@ -9,10 +9,6 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func GitOrganizationStateByOrganization(db *sqlx.DB, organization string) (*GitOrganizationState, error) {
-	return GitOrganizationStateByOrganizationContext(context.Background(), db, organization)
-}
-
 func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB, organization string) (*GitOrganizationState, error) {
 	if db == nil {
 		return nil, nil
@@ -28,11 +24,11 @@ func GitOrganizationStateByOrganizationContext(ctx context.Context, db *sqlx.DB,
 	return &state, nil
 }
 
-func UpsertGitOrganizationState(db *sqlx.DB, state GitOrganizationState) error {
+func UpsertGitOrganizationStateContext(ctx context.Context, db *sqlx.DB, state GitOrganizationState) error {
 	if db == nil {
 		return nil
 	}
-	_, err := db.NamedExec(`
+	_, err := db.NamedExecContext(ctx, `
 		INSERT INTO config_schema.git_organization_state (
 			organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error
 		) VALUES (
@@ -56,9 +52,12 @@ func UpsertGitOrganizationState(db *sqlx.DB, state GitOrganizationState) error {
 	return nil
 }
 
-func ListGitOrganizationStates(db *sqlx.DB) (map[string]GitOrganizationState, error) {
+func ListGitOrganizationStatesContext(ctx context.Context, db *sqlx.DB) (map[string]GitOrganizationState, error) {
+	if db == nil {
+		return map[string]GitOrganizationState{}, nil
+	}
 	states := []GitOrganizationState{}
-	if err := db.Select(&states, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state`); err != nil {
+	if err := db.SelectContext(ctx, &states, `SELECT organization, installed, installation_id, installation_target_type, installation_target, html_url, repository_selection, configured_at, last_seen_at, updated_at, last_error FROM config_schema.git_organization_state`); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return map[string]GitOrganizationState{}, nil
 		}

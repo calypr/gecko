@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/calypr/gecko/internal/storagepath"
 )
 
 type FilesystemStore struct {
@@ -19,14 +21,14 @@ func (s *FilesystemStore) projectPresentationDir(organization string) string {
 	return filepath.Join(
 		s.dataDir,
 		ProjectPresentationDirectory,
-		sanitizePathPart(strings.TrimSpace(organization)),
+		storagepath.SanitizePart(strings.TrimSpace(organization)),
 	)
 }
 
 func (s *FilesystemStore) ProjectPresentationPath(organization string, project string) string {
 	return filepath.Join(
 		s.projectPresentationDir(organization),
-		sanitizePathPart(strings.TrimSpace(project))+"_presentation.html",
+		storagepath.SanitizePart(strings.TrimSpace(project))+"_presentation.html",
 	)
 }
 
@@ -62,9 +64,4 @@ func (s *FilesystemStore) Save(organization string, project string, content stri
 		return fmt.Errorf("persist presentation HTML: %w", err)
 	}
 	return nil
-}
-
-func sanitizePathPart(value string) string {
-	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_")
-	return replacer.Replace(value)
 }

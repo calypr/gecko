@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/domain"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -411,12 +412,12 @@ func TestRegisterProjectObjectsUsesDRSRegistrationEndpoint(t *testing.T) {
 func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	t.Helper()
 
-	requests := 0
+	var requests atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		requests++
+		requests.Add(1)
 		var req struct {
 			Items []struct {
 				ID                string `json:"id"`
@@ -468,11 +469,32 @@ func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkProbeStorageObjects returned error: %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("expected 2 bulk probe requests, got %d", requests)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("expected 2 bulk probe requests, got %d", got)
 	}
 	if len(results) != len(items) {
 		t.Fatalf("expected %d results, got %d", len(items), len(results))
+	}
+}
+
+func TestBulkConfirmStorageObjectsRequestsRangedGetConfirmation(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request struct {
+			ConfirmMissing bool `json:"confirm_missing"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !request.ConfirmMissing {
+			t.Fatal("repair confirmation did not request ranged GET proof")
+		}
+		body := `{"items":[{"id":"one","object_url":"s3://bucket/key","exists":false,"status":"not_found","error_kind":"object_not_found","verification_method":"ranged_get","validation_status":"unverifiable"}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	manager := NewManager("http://syfon.example", client)
+	results, err := manager.BulkConfirmStorageObjects(context.Background(), "Bearer token", []BulkStorageProbeItem{{ID: "one", ObjectURL: "s3://bucket/key"}})
+	if err != nil || len(results) != 1 || results[0].VerificationMethod != "ranged_get" {
+		t.Fatalf("confirmed probe = %+v, %v", results, err)
 	}
 }
 
@@ -533,12 +555,12 @@ func TestBulkListStorageObjectsSendsExpectedName(t *testing.T) {
 }
 
 func TestBulkListStorageObjectsDeduplicatesIdenticalRequests(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost || r.URL.Path != "/data/inspect/bulk-list" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		requests++
+		requests.Add(1)
 		var req struct {
 			Items []struct {
 				ID                string `json:"id"`
@@ -583,8 +605,8 @@ func TestBulkListStorageObjectsDeduplicatesIdenticalRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkListStorageObjects returned error: %v", err)
 	}
-	if requests != 1 {
-		t.Fatalf("expected one bulk-list request, got %d", requests)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one bulk-list request, got %d", got)
 	}
 	if len(results) != 2 || results[0].ObjectURL != "s3://bucket/file.bin" || results[1].ObjectURL != "s3://bucket/file.bin" {
 		t.Fatalf("expected deduplicated response to fan out to all original items, got %+v", results)
