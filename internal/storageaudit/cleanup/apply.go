@@ -70,7 +70,7 @@ func (service *Service) canonicalizeStorageCleanupFindings(ctx context.Context, 
 	if !storageCleanupFindingsContainStorageURL(findings) {
 		return append([]model.CleanupApplyFinding(nil), findings...), nil, nil
 	}
-	scopes, err := service.chain.LoadProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
+	scopes, err := service.scopeLoader.LoadProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load project storage scopes for cleanup apply: %w", err)
 	}

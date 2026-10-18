@@ -2,21 +2,16 @@ package storageaudit
 
 import (
 	"context"
-	"sync"
-	"time"
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/storageaudit/browse"
 	"github.com/calypr/gecko/internal/storageaudit/chain"
 	"github.com/calypr/gecko/internal/storageaudit/cleanup"
-	"github.com/calypr/gecko/internal/storageaudit/record"
 	"github.com/calypr/gecko/internal/storageaudit/registration"
-	"github.com/calypr/gecko/internal/storageaudit/storecache"
 )
 
 const cleanupInactiveDays = 30
-const projectJoinCacheTTL = 45 * time.Second
 const projectFileUsageBulkChunkSize = 5000
 
 type storageAnalyticsBackend interface {
@@ -42,29 +37,23 @@ type storageAnalyticsBackend interface {
 }
 
 type StorageAnalyticsService struct {
-	storage               storageAnalyticsBackend
-	projectJoinMu         sync.RWMutex
-	projectJoinCache      map[string]cachedProjectJoinState
-	projectJoinWork       map[string]*inflightProjectJoinState
-	exactProjectJoinCache storecache.ExactJoinCache
-	registrationSvc       *registration.Service
-	browseSvc             *browse.Service
-	chainSvc              *chain.Service
-	cleanupSvc            *cleanup.Service
+	storage         storageAnalyticsBackend
+	join            *projectJoinCache
+	registrationSvc *registration.Service
+	browseSvc       *browse.Service
+	chainSvc        *chain.Service
+	cleanupSvc      *cleanup.Service
 }
 
 func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyticsService {
 	if storage == nil {
 		return nil
 	}
-	service := &StorageAnalyticsService{
-		storage:          storage,
-		projectJoinCache: map[string]cachedProjectJoinState{},
-		projectJoinWork:  map[string]*inflightProjectJoinState{},
-	}
+	service := &StorageAnalyticsService{storage: storage}
 	service.registrationSvc = newRegistrationService(service)
 	service.browseSvc = newBrowseService(service)
 	service.chainSvc = newChainService(service)
+	service.join = newProjectJoinCache(service.chainSvc, service.storage)
 	service.cleanupSvc = newCleanupService(service)
 	return service
 }
@@ -74,18 +63,5 @@ func (service *StorageAnalyticsService) EnableStorageChainAuditResponseCacheFrom
 		return
 	}
 	service.chainSvc.EnableResponseCachesFromEnv()
-	service.exactProjectJoinCache = storecache.NewStorageExactProjectJoinCacheFromEnv()
-}
-
-type cachedProjectJoinState struct {
-	expiresAt         time.Time
-	RecordsByChecksum map[string][]record.State
-	usageByObjectID   map[string]gintegrationsyfon.FileUsage
-}
-
-type inflightProjectJoinState struct {
-	done              chan struct{}
-	RecordsByChecksum map[string][]record.State
-	usageByObjectID   map[string]gintegrationsyfon.FileUsage
-	err               error
+	service.join.enableExactCacheFromEnv()
 }

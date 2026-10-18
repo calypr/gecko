@@ -10,7 +10,20 @@ import (
 )
 
 func (service *StorageAnalyticsService) BuildStorageCleanupAudit(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, selectedRepoPaths []string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, checkStorage bool) (*CleanupAuditResponse, *cleanup.AuditModel, error) {
-	return service.cleanupSvc.BuildStorageCleanupAudit(ctx, authorizationHeader, organization, project, ref, gitSubpath, selectedRepoPaths, mirrorPath, repo, hash, checkStorage)
+	baseInputs, err := service.chainSvc.LoadBaseInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash)
+	if err != nil {
+		return nil, nil, err
+	}
+	recordSet, err := service.chainSvc.LoadScopedProjectRecords(ctx, authorizationHeader, organization, project, baseInputs)
+	if err != nil {
+		return nil, nil, err
+	}
+	storageView, err := service.chainSvc.LoadStorageAuditStorageView(ctx, authorizationHeader, organization, project, recordSet, checkStorage, checkStorage)
+	if err != nil {
+		return nil, nil, err
+	}
+	response, auditModel := cleanup.BuildStorageCleanupAudit(gitSubpath, baseInputs.Inventory, storageView, selectedRepoPaths, checkStorage)
+	return response, auditModel, nil
 }
 
 func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context, authorizationHeader string, organization string, project string, selectedRepoPaths []string, selectedActions []CleanupApplyAction, selectedFindings []CleanupApplyFinding, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool, dryRun bool) (*CleanupApplyResponse, error) {

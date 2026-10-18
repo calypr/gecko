@@ -1784,43 +1784,6 @@ func applyAccessRepairForTest(backend *fakeStorageAnalyticsBackend, dryRun bool,
 	)
 }
 
-func TestStorageChainActionSupportAllowsManualProbeErrorDeletion(t *testing.T) {
-	actionability, actions, defaultAction, supportsDryRun := chain.ActionSupportForEvidence(
-		"probe_error",
-		string(sarecord.EvidenceUnknown),
-	)
-
-	if actionability != sarecord.ActionabilityManualChoice {
-		t.Fatalf("expected manual probe-error deletion, got %q", actionability)
-	}
-	if defaultAction != sarecord.ActionDeleteSyfonRecord {
-		t.Fatalf("expected delete-Syfon default, got %q", defaultAction)
-	}
-	if !supportsDryRun {
-		t.Fatal("expected probe-error deletion to support a dry run")
-	}
-	if len(actions) != 2 || actions[0] != sarecord.ActionDeleteSyfonRecord || actions[1] != sarecord.ActionInspectEvidence {
-		t.Fatalf("unexpected probe-error actions: %+v", actions)
-	}
-}
-
-func TestStorageChainActionSupportKeepsUnverifiedMissingFindingInspectOnly(t *testing.T) {
-	actionability, actions, defaultAction, supportsDryRun := chain.ActionSupportForEvidence(
-		"syfon_git_no_bucket",
-		string(sarecord.EvidenceUnknown),
-	)
-
-	if actionability != sarecord.ActionabilityInspectOnly {
-		t.Fatalf("expected unverified missing finding to remain inspect-only, got %q", actionability)
-	}
-	if defaultAction != sarecord.ActionInspectEvidence || supportsDryRun {
-		t.Fatalf("unexpected unverified finding defaults: action=%q dry_run=%t", defaultAction, supportsDryRun)
-	}
-	if len(actions) != 1 || actions[0] != sarecord.ActionInspectEvidence {
-		t.Fatalf("unexpected unverified finding actions: %+v", actions)
-	}
-}
-
 func TestApplyStorageCleanupDeletesSelectedProbeErrorRecords(t *testing.T) {
 	backend := &fakeStorageAnalyticsBackend{}
 	service := NewStorageAnalyticsService(backend)

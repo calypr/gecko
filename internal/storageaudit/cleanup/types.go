@@ -3,8 +3,8 @@ package cleanup
 import (
 	"context"
 
+	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
-	"github.com/calypr/gecko/internal/storageaudit/chain"
 	"github.com/calypr/gecko/internal/storageaudit/model"
 )
 
@@ -20,13 +20,17 @@ type Store interface {
 	EvictProjectChainInputCache(organization string, project string)
 }
 
-type Service struct {
-	store Store
-	chain *chain.Service
+type ScopeLoader interface {
+	LoadProjectChainScopeMappings(ctx context.Context, authorizationHeader string, organization string, project string) ([]domain.StorageBucketScope, error)
 }
 
-func New(store Store, chainService *chain.Service) *Service {
-	return &Service{store: store, chain: chainService}
+type Service struct {
+	store       Store
+	scopeLoader ScopeLoader
+}
+
+func New(store Store, scopeLoader ScopeLoader) *Service {
+	return &Service{store: store, scopeLoader: scopeLoader}
 }
 
 type ApplyPlan struct {

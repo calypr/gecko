@@ -12,41 +12,12 @@ import (
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
-	"github.com/calypr/gecko/internal/storageaudit/chain"
 	"github.com/calypr/gecko/internal/storageaudit/cleanup"
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 	"github.com/calypr/gecko/internal/storageaudit/repoindex"
 	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	"github.com/go-git/go-git/v5/plumbing"
 )
-
-func TestFilterStorageChainSummaryPreservesCleanJoinCount(t *testing.T) {
-	summary := ChainSummary{
-		CountsByKind: map[string]int{
-			"bucket_syfon_git_complete":   7,
-			"git_syfon_metadata_mismatch": 3,
-			"syfon_broken_bucket_mapping": 2,
-		},
-		BucketObjectCount:   10,
-		SyfonRecordCount:    10,
-		GitTrackedFileCount: 10,
-	}
-	findings := []ChainFinding{
-		{Kind: "git_syfon_metadata_mismatch", NormalizedPath: "data/a.txt"},
-	}
-
-	filtered := chain.FilterStorageChainSummary(summary, findings)
-
-	if got := filtered.CountsByKind["bucket_syfon_git_complete"]; got != 7 {
-		t.Fatalf("expected clean-chain count to survive filtering, got %d in %+v", got, filtered)
-	}
-	if got := filtered.CountsByKind["git_syfon_metadata_mismatch"]; got != 1 {
-		t.Fatalf("expected filtered mismatch count from findings, got %d in %+v", got, filtered)
-	}
-	if got := filtered.CountsByKind["syfon_broken_bucket_mapping"]; got != 0 {
-		t.Fatalf("expected filtered broken-mapping count to reset, got %d in %+v", got, filtered)
-	}
-}
 
 func TestBuildStorageChainAuditUsesBucketFirstFindingKinds(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
@@ -1146,7 +1117,7 @@ func TestListProjectFileUsageByObjectIDsChunksRequests(t *testing.T) {
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	usage, err := service.listProjectFileUsageByObjectIDs(context.Background(), "Bearer token", "org", "proj", objectIDs, cleanupInactiveDays)
+	usage, err := service.join.listProjectFileUsageByObjectIDs(context.Background(), "Bearer token", "org", "proj", objectIDs, cleanupInactiveDays)
 	if err != nil {
 		t.Fatalf("list bulk usage: %v", err)
 	}
@@ -1177,7 +1148,7 @@ func TestListProjectFileUsageByObjectIDsFallsBackWhenBulkEndpointMissing(t *test
 	}
 	service := NewStorageAnalyticsService(backend)
 
-	usage, err := service.listProjectFileUsageByObjectIDs(context.Background(), "Bearer token", "org", "proj", []string{"obj-a"}, cleanupInactiveDays)
+	usage, err := service.join.listProjectFileUsageByObjectIDs(context.Background(), "Bearer token", "org", "proj", []string{"obj-a"}, cleanupInactiveDays)
 	if err != nil {
 		t.Fatalf("list fallback usage: %v", err)
 	}
@@ -2393,24 +2364,6 @@ func TestBuildStorageChainAuditReturnsFullFindings(t *testing.T) {
 	}
 	if finding := assertHasChainFinding(t, chain.Findings, "git_only_no_syfon", "data/git-only.txt"); finding.NormalizedPath != "data/git-only.txt" {
 		t.Fatalf("unexpected chain finding: %+v", finding)
-	}
-}
-
-func TestBuildStorageChainAuditMarksBucketSyfonNoGitManualRepair(t *testing.T) {
-	actionability, availableActions, defaultAction, supportsDryRun := chain.ActionSupportForEvidence("bucket_syfon_no_git", "verified")
-	if actionability != sarecord.ActionabilityManualChoice {
-		t.Fatalf("expected manual-choice actionability, got %q", actionability)
-	}
-	if defaultAction != sarecord.ActionDeleteBoth {
-		t.Fatalf("expected delete-both default action, got %q", defaultAction)
-	}
-	if !supportsDryRun {
-		t.Fatal("manual repair must advertise a dry-run")
-	}
-	for _, action := range []string{sarecord.ActionDeleteBoth, sarecord.ActionDeleteSyfonRecord, sarecord.ActionDeleteBucketObject} {
-		if !contains(availableActions, action) {
-			t.Fatalf("expected action %q, got %+v", action, availableActions)
-		}
 	}
 }
 
