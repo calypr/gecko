@@ -46,11 +46,8 @@ func ResourcePathOrganization(resource string) (string, bool) {
 	if len(parts) < 3 {
 		return "", false
 	}
-	switch parts[1] {
-	case "programs":
-		if parts[2] != "" {
-			return parts[2], true
-		}
+	if parts[1] == "programs" && parts[2] != "" {
+		return parts[2], true
 	}
 	return "", false
 }

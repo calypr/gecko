@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 )
 
@@ -132,41 +131,7 @@ const exampleConfig = `{
 // ---------------------------------------------------------------------
 
 func TestNavPageLayout_RoundTrip(t *testing.T) {
-	var cfg NavPageLayoutProps
-	if err := json.Unmarshal([]byte(exampleConfig), &cfg); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-
-	// Marshal the struct back into JSON (without indentation)
-	marshaled, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal failed: %v", err)
-	}
-
-	// Unmarshal both the original and the marshaled JSON into generic maps
-	// to perform an order-insensitive DeepEqual comparison.
-	var originalMap any
-	if err := json.Unmarshal([]byte(exampleConfig), &originalMap); err != nil {
-		t.Fatalf("Unmarshal original map failed: %v", err)
-	}
-
-	var marshaledMap any
-	if err := json.Unmarshal(marshaled, &marshaledMap); err != nil {
-		t.Fatalf("Unmarshal marshaled map failed: %v", err)
-	}
-
-	// Use DeepEqual on maps to ignore key ordering and whitespace/indentation differences
-	if !reflect.DeepEqual(originalMap, marshaledMap) {
-		t.Errorf("Round-trip mismatch (Content differs - likely an omitted field or type issue)")
-
-		// Remarshal with indentation for clear visual debugging output
-		wantJSON, _ := json.MarshalIndent(originalMap, "", "  ")
-		gotJSON, _ := json.MarshalIndent(marshaledMap, "", "  ")
-
-		t.Errorf("--- want (Normalized) ---\n%s\n--- got (Normalized) ---\n%s\n", string(wantJSON), string(gotJSON))
-	} else {
-		t.Log("Round-trip successful (order-insensitive, content preserved)")
-	}
+	assertJSONRoundTrip(t, exampleConfig, &NavPageLayoutProps{})
 }
 
 // ---------------------------------------------------------------------

@@ -89,7 +89,7 @@ func (handler *Handler) handleConfigListGET(ctx fiber.Ctx) error {
 			if item.Config != nil {
 				cfg = *item.Config
 			}
-			summary, _ := handler.buildProjectSummaryResponse(item.ID, cfg)
+			summary := handler.buildProjectSummaryResponse(item.ID, cfg)
 			responses = append(responses, ProjectListResponse{
 				ResourcePath: access.ProgramProjectResourcePath(item.Organization, item.Name),
 				ConfigData:   cfg,

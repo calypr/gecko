@@ -561,7 +561,7 @@ func TestGitProjectEditConnectRequiresConnectedOrganization(t *testing.T) {
 }
 
 func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
-	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer fenceServer.Close()
@@ -623,7 +623,7 @@ func TestGitProjectEditConnectClearsRepositoryBinding(t *testing.T) {
 }
 
 func TestGitProjectUpdateRejectsSetupOnlyProjectUntilGitHubConnectCompletes(t *testing.T) {
-	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	fenceServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer fenceServer.Close()

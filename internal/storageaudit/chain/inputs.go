@@ -3,11 +3,12 @@ package chain
 import (
 	"context"
 	"fmt"
-	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 	"log"
 	"sort"
 	"strings"
 	"time"
+
+	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
@@ -94,9 +95,9 @@ func projectAuditRecordWorkKey(cacheKey string, validator projectAuditRecordVali
 	return fmt.Sprintf("%s::records::%d::%s::%s", cacheKey, validator.RecordCount, validator.RecordLatestUpdatedTime, validator.RecordRevision)
 }
 
-func buildProjectAuditRecordSet(ProjectRecords []gintegrationsyfon.ProjectRecord) *sarecord.RecordSet {
+func buildProjectAuditRecordSet(projectRecords []gintegrationsyfon.ProjectRecord) *sarecord.RecordSet {
 	recordsByChecksum := make(map[string][]sarecord.State)
-	for _, record := range ProjectRecords {
+	for _, record := range projectRecords {
 		normalizedChecksum := sarecord.NormalizeAnalyticsChecksum(record.Checksum)
 		if normalizedChecksum == "" {
 			continue
@@ -193,13 +194,14 @@ func (service *Service) loadCachedProjectBucketValidationInventory(ctx context.C
 	if cache := service.ProjectBucketCache; cache != nil {
 		redisKey := storecache.ProjectBucketInventoryCacheKey(organization, project, bucketPathPrefix)
 		cached, ok, err := cache.Get(ctx, redisKey)
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Printf("syfon_project_bucket_inventory_cache_error org=%s project=%s path_prefix=%q source=%s operation=get error=%q", organization, project, bucketPathPrefix, cache.Source(), err.Error())
-		} else if ok && !forceRefresh && time.Since(cached.CachedAt) < storecache.ProjectBucketInventoryRefreshInterval {
+		case ok && !forceRefresh && time.Since(cached.CachedAt) < storecache.ProjectBucketInventoryRefreshInterval:
 			objects, lookup := buildBucketObjectLookup(cached.Objects)
 			log.Printf("syfon_project_bucket_inventory_cache_hit org=%s project=%s path_prefix=%q source=%s object_count=%d age_seconds=%d", organization, project, bucketPathPrefix, cache.Source(), len(objects), int64(time.Since(cached.CachedAt).Seconds()))
 			return objects, lookup, sarecord.BucketInventoryMetadata{Complete: cached.Complete, Warning: cached.Warning, Observed: cached.Observed, Source: cache.Source()}, nil
-		} else if ok {
+		case ok:
 			stale = cached
 			hasStale = true
 		}

@@ -163,15 +163,21 @@ func WrapError(err error, target *Target, gitSubpath string) error {
 	errorType := apierror.Type("integration_error")
 	errorKind := domain.ErrorKindIntegration
 	errorMessage := strings.ToLower(err.Error())
-	if strings.Contains(errorMessage, "storage children cursor") {
+	switch {
+	case strings.Contains(errorMessage, "storage children cursor"):
 		statusCode = http.StatusBadRequest
 		errorType = apierror.Type("invalid_request")
 		errorKind = domain.ErrorKindValidation
-	} else if strings.Contains(errorMessage, "cleanup apply") || strings.Contains(errorMessage, "cleanup finding") || strings.Contains(errorMessage, "cleanup action") || strings.Contains(errorMessage, "unsupported cleanup") || strings.Contains(errorMessage, "selected cleanup paths") || strings.Contains(errorMessage, "git-only syfon registration") {
+	case strings.Contains(errorMessage, "cleanup apply"),
+		strings.Contains(errorMessage, "cleanup finding"),
+		strings.Contains(errorMessage, "cleanup action"),
+		strings.Contains(errorMessage, "unsupported cleanup"),
+		strings.Contains(errorMessage, "selected cleanup paths"),
+		strings.Contains(errorMessage, "git-only syfon registration"):
 		statusCode = http.StatusBadRequest
 		errorType = apierror.Type("invalid_request")
 		errorKind = domain.ErrorKindValidation
-	} else if strings.Contains(errorMessage, "git tree path") {
+	case strings.Contains(errorMessage, "git tree path"):
 		statusCode = http.StatusNotFound
 		errorType = apierror.TypeNotFound
 		errorKind = domain.ErrorKindNotFound

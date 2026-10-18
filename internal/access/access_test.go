@@ -87,7 +87,7 @@ func TestFenceUserAccessHandlerGetResourceAccessUsesProjectAccessFallback(t *tes
 		t.Fatalf("marshal response body: %v", err)
 	}
 	client := &http.Client{
-		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},

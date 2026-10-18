@@ -122,8 +122,7 @@ func ResolveRecordStorage(record State, bucketObjectsByURL map[string]gintegrati
 		if StorageProbeValidationMismatchIsSignificant(record, probe) {
 			resolution.HasValidationMismatch = true
 		}
-		switch strings.TrimSpace(probe.ErrorKind) {
-		case "credential_missing":
+		if strings.TrimSpace(probe.ErrorKind) == "credential_missing" {
 			resolution.HasBrokenMappingProbe = true
 			if rawAccessProbe {
 				resolution.HasBrokenRawAccessProbe = true

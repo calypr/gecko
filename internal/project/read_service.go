@@ -240,10 +240,8 @@ func (service *ReadService) OpenMirror(ctx context.Context, authorizationHeader 
 				return nil, refreshErr
 			}
 			log.Printf("WARNING: failed to warm git mirror for %s: %v", resolved.ID, refreshErr)
-		} else {
-			if refreshed != nil {
-				state = refreshed
-			}
+		} else if refreshed != nil {
+			state = refreshed
 		}
 	}
 	mirror, err := repo.OpenRepository(state.MirrorPath)

@@ -15,10 +15,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-func (handler *Handler) buildProjectSummaryResponse(projectID string, cfg appconfig.ProjectConfig) (ProjectSummaryResponse, bool) {
+func (handler *Handler) buildProjectSummaryResponse(projectID string, cfg appconfig.ProjectConfig) ProjectSummaryResponse {
 	projectOrganization, projectName, found := strings.Cut(projectID, "/")
 	if !found {
-		return ProjectSummaryResponse{}, false
+		return ProjectSummaryResponse{}
 	}
 
 	organization := strings.TrimSpace(projectOrganization)
@@ -49,7 +49,7 @@ func (handler *Handler) buildProjectSummaryResponse(projectID string, cfg appcon
 		}
 	}
 
-	return summary, true
+	return summary
 }
 
 func (handler *Handler) handleProjectConfigGET(ctx fiber.Ctx) error {
@@ -68,7 +68,7 @@ func (handler *Handler) handleProjectSummaryGET(ctx fiber.Ctx) error {
 		if item.Config != nil {
 			cfg = *item.Config
 		}
-		summary, _ := handler.buildProjectSummaryResponse(item.ID, cfg)
+		summary := handler.buildProjectSummaryResponse(item.ID, cfg)
 		summaries = append(summaries, summary)
 	}
 

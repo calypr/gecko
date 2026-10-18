@@ -85,7 +85,7 @@ func TestBuildStorageChainAuditUsesBucketFirstFindingKinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	findings := loadAllChainFindings(t, service, "org", "proj", chain)
+	findings := loadAllChainFindings(t, chain)
 	assertHasChainFinding(t, findings, "bucket_only_object", "s3://bucket/loose")
 	assertHasChainFinding(t, findings, "bucket_syfon_no_git", "s3://bucket/no-git")
 	assertHasChainFinding(t, findings, "syfon_git_no_bucket", "data/missing.txt")
@@ -131,7 +131,7 @@ func TestBuildStorageChainAuditUsesProjectAuditSourcesAndTargetsProbes(t *testin
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	findings := loadAllChainFindings(t, service, "org", "proj", chain)
+	findings := loadAllChainFindings(t, chain)
 	assertHasChainFinding(t, findings, "syfon_git_no_bucket", "data/missing.txt")
 	if backend.listProjectAuditRecordsCalls != 1 {
 		t.Fatalf("expected one project audit record call, got %d", backend.listProjectAuditRecordsCalls)
@@ -1269,7 +1269,7 @@ func TestBuildStorageChainAuditSurfacesMetadataMismatchAndEvidence(t *testing.T)
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	findings := loadAllChainFindings(t, service, "org", "proj", chain)
+	findings := loadAllChainFindings(t, chain)
 	finding := assertHasChainFinding(t, findings, "git_syfon_metadata_mismatch", "data/a.txt")
 	if finding.Evidence == nil ||
 		len(finding.Evidence.BucketObjectURLs) != 1 ||
@@ -1462,7 +1462,7 @@ func TestBuildStorageChainAuditUsesScopedProjectRecordsForGitJoin(t *testing.T) 
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	for _, finding := range loadAllChainFindings(t, service, "org", "proj", chain) {
+	for _, finding := range loadAllChainFindings(t, chain) {
 		if finding.Kind == "git_only_no_syfon" && finding.NormalizedPath == "data/a.txt" {
 			t.Fatalf("did not expect scoped Syfon record to be reclassified as git-only when bulk checksum lookup is empty: %+v", finding)
 		}
@@ -1537,7 +1537,7 @@ func TestBuildStorageChainAuditCanonicalizesScopedLegacyAccessURLs(t *testing.T)
 	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
 		t.Fatalf("expected mapped bucket match to preserve clean-chain count, got %+v", chain.Summary)
 	}
-	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	findings := loadAllChainFindings(t, chain)
 	for _, finding := range findings {
 		if finding.NormalizedPath == "data/slide.ome.tiff" {
 			t.Fatalf("did not expect stale raw URL to produce a chain finding once mapped object exists: %+v", finding)
@@ -1595,7 +1595,7 @@ func TestBuildStorageChainAuditClassifiesSameBucketPathChecksumConflictAsMetadat
 	if err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	findings := loadAllChainFindings(t, chain)
 	mismatch := assertHasChainFinding(t, findings, "git_syfon_metadata_mismatch", repoPath)
 	if mismatch.Actionability != sarecord.ActionabilityInspectOnly || mismatch.DefaultAction != sarecord.ActionInspectEvidence || !contains(mismatch.AvailableActions, sarecord.ActionInspectEvidence) {
 		t.Fatalf("expected checksum conflict to be inspect-only, got %+v", mismatch)
@@ -1900,7 +1900,7 @@ func TestBuildStorageChainAuditCanonicalizesStaleRecordBucketUsingAuditProjectSc
 	if got := chain.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
 		t.Fatalf("expected current project bucket object to complete the chain, got summary %+v", chain.Summary)
 	}
-	findings := loadAllChainFindings(t, service, "gdc_mirror", "gdc_mirror", chain)
+	findings := loadAllChainFindings(t, chain)
 	for _, finding := range findings {
 		if strings.Contains(finding.BucketObjectURL, "EllrottLab") || strings.Contains(finding.NormalizedPath, "EllrottLab") {
 			t.Fatalf("did not expect stale EllrottLab bucket to appear in findings: %+v", finding)
@@ -2085,7 +2085,7 @@ func TestBuildStorageChainAuditDoesNotInferMappingMismatchFromRelocatedBasename(
 	if got := chain.Summary.CountsByKind["syfon_git_no_bucket"]; got != 1 {
 		t.Fatalf("expected exact mapped-key miss to remain a missing-object finding, got %+v", chain.Summary)
 	}
-	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	findings := loadAllChainFindings(t, chain)
 	assertHasChainFinding(t, findings, "syfon_git_no_bucket", "CONFIG/cbds-BForePC.json")
 }
 
@@ -2171,7 +2171,7 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	if chain.Summary.BucketInventoryComplete || !strings.Contains(chain.Summary.BucketInventoryWarning, "terminal replay") || chain.Summary.BucketInventoryObserved != "2026-09-03T21:20:22Z" || chain.Summary.BucketInventorySource != "live" {
 		t.Fatalf("expected degraded live inventory metadata, got %+v", chain.Summary)
 	}
-	findings := loadAllChainFindings(t, service, "HTAN_INT", "BForePC", chain)
+	findings := loadAllChainFindings(t, chain)
 	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", repoPath)
 	if finding.Actionability != sarecord.ActionabilityManualChoice || finding.DefaultAction != sarecord.ActionInspectEvidence || !contains(finding.AvailableActions, sarecord.ActionRemoveBrokenAccessURLs) {
 		t.Fatalf("expected broken access URL removal action, got %+v", finding)

@@ -2,10 +2,11 @@ package git
 
 import (
 	"context"
-	"github.com/calypr/gecko/internal/server/httpapi/core"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/calypr/gecko/internal/server/httpapi/core"
 
 	"github.com/calypr/gecko/apierror"
 	"github.com/calypr/gecko/internal/access"
@@ -28,42 +29,31 @@ func (handler *Handler) calyprProjectRequestContext(ctx fiber.Ctx) (string, stri
 }
 
 func (handler *Handler) handleCalyprProjectSetupPUT(ctx fiber.Ctx) error {
-	organization, project, authorizationHeader, errResponse := handler.calyprProjectRequestContext(ctx)
-	if errResponse != nil {
-		errResponse.WriteLog(handler.Logger)
-		return errResponse.Write(ctx)
-	}
-
-	var request projectpkg.CalyprProjectSetupRequest
-	if errResponse := httputil.ParseJSONBody(ctx.Body(), &request, map[string]any{"organization": organization, "project": project}); errResponse != nil {
-		errResponse.WriteLog(handler.Logger)
-		return errResponse.Write(ctx)
-	}
-
-	setupCtx, cancel := context.WithTimeout(ctx.Context(), 20*time.Second)
-	defer cancel()
-	response, err := handler.ProjectSetup.InitializeProject(setupCtx, authorizationHeader, organization, project, request)
-	if err != nil {
-		return core.WriteAppError(ctx, err)
-	}
-	return httputil.JSON(response, http.StatusOK).Write(ctx)
+	return handleCalyprProjectRequest(handler, ctx, projectpkg.CalyprProjectSetupRequest{}, handler.ProjectSetup.InitializeProject)
 }
 
 func (handler *Handler) handleCalyprProjectStoragePUT(ctx fiber.Ctx) error {
+	return handleCalyprProjectRequest(handler, ctx, projectpkg.CalyprProjectStorageRequest{}, handler.ProjectSetup.PopulateStorage)
+}
+
+func handleCalyprProjectRequest[T any, R any](
+	handler *Handler,
+	ctx fiber.Ctx,
+	request T,
+	call func(context.Context, string, string, string, T) (R, error),
+) error {
 	organization, project, authorizationHeader, errResponse := handler.calyprProjectRequestContext(ctx)
 	if errResponse != nil {
 		errResponse.WriteLog(handler.Logger)
 		return errResponse.Write(ctx)
 	}
-	var request projectpkg.CalyprProjectStorageRequest
 	if errResponse := httputil.ParseJSONBody(ctx.Body(), &request, map[string]any{"organization": organization, "project": project}); errResponse != nil {
 		errResponse.WriteLog(handler.Logger)
 		return errResponse.Write(ctx)
 	}
-
 	setupCtx, cancel := context.WithTimeout(ctx.Context(), 20*time.Second)
 	defer cancel()
-	response, err := handler.ProjectSetup.PopulateStorage(setupCtx, authorizationHeader, organization, project, request)
+	response, err := call(setupCtx, authorizationHeader, organization, project, request)
 	if err != nil {
 		return core.WriteAppError(ctx, err)
 	}

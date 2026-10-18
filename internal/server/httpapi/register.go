@@ -26,10 +26,8 @@ func Register(app *fiber.App, deps Dependencies, authzHandler access.ResourceAcc
 	configapi.Register(app, deps.Config, authzHandler)
 	gitapi.Register(app, deps.Git, authzHandler)
 
-	app.Use(func(ctx fiber.Ctx) error {
-		// Terminal fallback: routes have already run, so the request is a 404.
-		// Do not mutate ctx.Path() here — earlier routers have matched and
-		// rewriting the path would only confuse logs and downstream hooks.
-		return httputil.NotFound(ctx)
-	})
+	// Terminal fallback: routes have already run, so the request is a 404.
+	// Do not mutate ctx.Path() here — earlier routers have matched and
+	// rewriting the path would only confuse logs and downstream hooks.
+	app.Use(httputil.NotFound)
 }

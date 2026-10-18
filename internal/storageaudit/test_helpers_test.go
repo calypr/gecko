@@ -147,21 +147,18 @@ func assertHasDiffFinding(t *testing.T, findings []ProjectDiffFinding, kind stri
 	return ProjectDiffFinding{}
 }
 
-func assertHasCleanupFinding(t *testing.T, findings []CleanupFinding, kind string, path string) CleanupFinding {
+func assertHasCleanupFinding(t *testing.T, findings []CleanupFinding, kind string, path string) {
 	t.Helper()
 	for _, finding := range findings {
 		if finding.Kind == kind && finding.NormalizedPath == path {
-			return finding
+			return
 		}
 	}
 	t.Fatalf("missing cleanup finding kind=%s path=%s in %+v", kind, path, findings)
-	return CleanupFinding{}
 }
 
-func loadAllChainFindings(t *testing.T, service *StorageAnalyticsService, organization string, project string, chain *ChainAuditResponse) []ChainFinding {
+func loadAllChainFindings(t *testing.T, chain *ChainAuditResponse) []ChainFinding {
 	t.Helper()
-	_, _ = service, organization
-	_ = project
 	if chain == nil {
 		t.Fatalf("expected chain audit response, got %+v", chain)
 	}

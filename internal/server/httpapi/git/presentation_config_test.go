@@ -83,7 +83,9 @@ func runPresentationConfigRequest(t *testing.T, app *fiber.App, req *http.Reques
 	return resp
 }
 
-func expectProjectLookup(mock sqlmock.Sqlmock, organization string, project string) {
+func expectProjectLookup(mock sqlmock.Sqlmock) {
+	const organization = "org-a"
+	const project = "proj-a"
 	projectCfg := appconfig.ProjectConfig{
 		Title:        project,
 		ContactEmail: "owner@example.org",
@@ -110,7 +112,7 @@ func decodePresentationResponse(t *testing.T, body io.Reader) appconfig.Presenta
 func TestGitProjectPresentationConfigGETNoConfigFallsBackToEmpty(t *testing.T) {
 	handler, mock, cleanup := newPresentationConfigTestServer(t)
 	defer cleanup()
-	expectProjectLookup(mock, "org-a", "proj-a")
+	expectProjectLookup(mock)
 
 	app := newPresentationConfigApp(handler, fakePresentationAccessHandler{resources: []any{"/programs/org-a/projects/proj-a"}})
 	req := httptest.NewRequest(http.MethodGet, "/git/projects/org-a/proj-a/presentationConfig", nil)
@@ -133,7 +135,7 @@ func TestGitProjectPresentationConfigGETNoConfigFallsBackToEmpty(t *testing.T) {
 func TestGitProjectPresentationConfigPUTPersistsRawHTML(t *testing.T) {
 	handler, mock, cleanup := newPresentationConfigTestServer(t)
 	defer cleanup()
-	expectProjectLookup(mock, "org-a", "proj-a")
+	expectProjectLookup(mock)
 
 	requestPayload := appconfig.PresentationConfig{
 		PresentationConfig: `<div onclick="bad()"><script>alert(1)</script><p>Hello</p></div>`,
@@ -170,7 +172,7 @@ func TestGitProjectPresentationConfigPUTPersistsRawHTML(t *testing.T) {
 func TestGitProjectPresentationConfigPOSTUsesSameWritePath(t *testing.T) {
 	handler, mock, cleanup := newPresentationConfigTestServer(t)
 	defer cleanup()
-	expectProjectLookup(mock, "org-a", "proj-a")
+	expectProjectLookup(mock)
 
 	requestPayload := appconfig.PresentationConfig{PresentationConfig: `<p>Hello</p>`}
 	requestBody, _ := json.Marshal(requestPayload)
@@ -196,7 +198,7 @@ func TestGitProjectPresentationConfigPOSTUsesSameWritePath(t *testing.T) {
 func TestGitProjectPresentationConfigPUTRejectsUnknownFields(t *testing.T) {
 	handler, mock, cleanup := newPresentationConfigTestServer(t)
 	defer cleanup()
-	expectProjectLookup(mock, "org-a", "proj-a")
+	expectProjectLookup(mock)
 
 	requestBody := []byte(`{"presentationConfig":"<p>Hello</p>","extra":"nope"}`)
 	app := newPresentationConfigApp(handler, fakePresentationAccessHandler{resources: []any{"/programs/org-a/projects/proj-a"}})

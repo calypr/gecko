@@ -832,271 +832,180 @@ func TestApplyStorageCleanupMatchesCanonicalizedLegacyAccessURLToFreshRawMethod(
 	}
 }
 
-func TestApplyStorageCleanupDoesNotMapUnrelatedBucketAccessURL(t *testing.T) {
+func TestApplyStorageCleanupKeepsValidPhysicalBucketAccessURL(t *testing.T) {
 	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
 	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
-	const unrelatedURL = "s3://other-bucket/OHSU/file.bin"
 	const physicalURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
 
-	backend := &fakeStorageAnalyticsBackend{
-		projectRecords: []gintegrationsyfon.ProjectRecord{{
-			ObjectID: objectID,
-			Checksum: checksum,
-			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
-				AccessID: "valid-physical",
-				URL:      physicalURL,
-			}},
-		}},
-		projectScopes: []domain.StorageBucketScope{{
-			Bucket:       "bforepc",
-			Organization: "org",
-			ProjectID:    "proj",
-			Path:         "s3://bforepc/bforepc-prod",
-		}},
+	tests := []struct {
+		name     string
+		staleURL string
+		accessID string
+		reason   string
+	}{
+		{
+			name:     "unrelated bucket",
+			staleURL: "s3://other-bucket/OHSU/file.bin",
+			accessID: "stale-unrelated",
+			reason:   "unrelated bucket evidence",
+		},
+		{
+			name:     "unprefixed physical",
+			staleURL: "s3://bforepc/OHSU/file.bin",
+			accessID: "stale-unprefixed-physical",
+			reason:   "unprefixed physical evidence",
+		},
 	}
-	service := NewStorageAnalyticsService(backend)
-	brokenExists := false
-	result, err := service.ApplyStorageCleanup(
-		context.Background(), "Bearer token", "org", "proj", nil, nil,
-		[]CleanupApplyFinding{{
-			Kind:             "broken_access_url_error",
-			NormalizedPath:   "data/file.bin",
-			ObjectIDs:        []string{objectID},
-			AccessURLs:       []string{unrelatedURL},
-			AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
-			DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
-			Records: []CleanupRecordAudit{{
-				ObjectID:   objectID,
-				Checksum:   checksum,
-				AccessURLs: []string{unrelatedURL},
-				AccessMethods: []CleanupAccessMethod{{
-					AccessID: "stale-unrelated",
-					URL:      unrelatedURL,
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{
+				projectRecords: []gintegrationsyfon.ProjectRecord{{
+					ObjectID: objectID,
+					Checksum: checksum,
+					AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+						AccessID: "valid-physical",
+						URL:      physicalURL,
+					}},
 				}},
-				AccessProbes: []CleanupAccessProbe{{
-					URL:    unrelatedURL,
-					Status: "error",
-					Exists: &brokenExists,
+				projectScopes: []domain.StorageBucketScope{{
+					Bucket:       "bforepc",
+					Organization: "org",
+					ProjectID:    "proj",
+					Path:         "s3://bforepc/bforepc-prod",
 				}},
-			}},
-		}}, false, false, false, false, false,
-	)
-	if err != nil {
-		t.Fatalf("apply cleanup: %v", err)
-	}
-	if _, ok := backend.updatedAccessMethods[objectID]; ok {
-		t.Fatalf("valid physical method must not be removed for unrelated bucket evidence: %+v", backend.updatedAccessMethods)
-	}
-	if len(backend.deletedIDs) != 0 {
-		t.Fatalf("valid physical record must not be deleted for unrelated bucket evidence: %v", backend.deletedIDs)
-	}
-	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
-		t.Fatalf("expected idempotent skip for unrelated bucket evidence, got %+v", result.SkippedPaths)
+			}
+			service := NewStorageAnalyticsService(backend)
+			brokenExists := false
+			result, err := service.ApplyStorageCleanup(
+				context.Background(), "Bearer token", "org", "proj", nil, nil,
+				[]CleanupApplyFinding{{
+					Kind:             "broken_access_url_error",
+					NormalizedPath:   "data/file.bin",
+					ObjectIDs:        []string{objectID},
+					AccessURLs:       []string{test.staleURL},
+					AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
+					DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
+					Records: []CleanupRecordAudit{{
+						ObjectID:   objectID,
+						Checksum:   checksum,
+						AccessURLs: []string{test.staleURL},
+						AccessMethods: []CleanupAccessMethod{{
+							AccessID: test.accessID,
+							URL:      test.staleURL,
+						}},
+						AccessProbes: []CleanupAccessProbe{{
+							URL:    test.staleURL,
+							Status: "error",
+							Exists: &brokenExists,
+						}},
+					}},
+				}}, false, false, false, false, false,
+			)
+			if err != nil {
+				t.Fatalf("apply cleanup: %v", err)
+			}
+			if _, ok := backend.updatedAccessMethods[objectID]; ok {
+				t.Fatalf("valid physical method must not be removed for %s: %+v", test.reason, backend.updatedAccessMethods)
+			}
+			if len(backend.deletedIDs) != 0 {
+				t.Fatalf("valid physical record must not be deleted for %s: %v", test.reason, backend.deletedIDs)
+			}
+			if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+				t.Fatalf("expected idempotent skip for %s, got %+v", test.reason, result.SkippedPaths)
+			}
+		})
 	}
 }
 
-func TestApplyStorageCleanupDoesNotPrefixPhysicalBucketAccessURL(t *testing.T) {
-	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
-	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
-	const unprefixedURL = "s3://bforepc/OHSU/file.bin"
-	const prefixedURL = "s3://bforepc/bforepc-prod/OHSU/file.bin"
-
-	backend := &fakeStorageAnalyticsBackend{
-		projectRecords: []gintegrationsyfon.ProjectRecord{{
-			ObjectID: objectID,
-			Checksum: checksum,
-			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
-				AccessID: "valid-prefixed-physical",
-				URL:      prefixedURL,
-			}},
-		}},
-		projectScopes: []domain.StorageBucketScope{{
-			Bucket:       "bforepc",
-			Organization: "org",
-			ProjectID:    "proj",
-			Path:         "s3://bforepc/bforepc-prod",
-		}},
-	}
-	service := NewStorageAnalyticsService(backend)
-	brokenExists := false
-	result, err := service.ApplyStorageCleanup(
-		context.Background(), "Bearer token", "org", "proj", nil, nil,
-		[]CleanupApplyFinding{{
-			Kind:             "broken_access_url_error",
-			NormalizedPath:   "data/file.bin",
-			ObjectIDs:        []string{objectID},
-			AccessURLs:       []string{unprefixedURL},
-			AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
-			DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
-			Records: []CleanupRecordAudit{{
-				ObjectID:   objectID,
-				Checksum:   checksum,
-				AccessURLs: []string{unprefixedURL},
-				AccessMethods: []CleanupAccessMethod{{
-					AccessID: "stale-unprefixed-physical",
-					URL:      unprefixedURL,
-				}},
-				AccessProbes: []CleanupAccessProbe{{
-					URL:    unprefixedURL,
-					Status: "error",
-					Exists: &brokenExists,
-				}},
-			}},
-		}}, false, false, false, false, false,
-	)
-	if err != nil {
-		t.Fatalf("apply cleanup: %v", err)
-	}
-	if _, ok := backend.updatedAccessMethods[objectID]; ok {
-		t.Fatalf("prefixed physical method must not be removed for unprefixed physical evidence: %+v", backend.updatedAccessMethods)
-	}
-	if len(backend.deletedIDs) != 0 {
-		t.Fatalf("valid prefixed physical record must not be deleted: %v", backend.deletedIDs)
-	}
-	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
-		t.Fatalf("expected idempotent skip for unprefixed physical evidence, got %+v", result.SkippedPaths)
-	}
-}
-
-func TestApplyStorageCleanupPhysicalBucketWinsAcrossScopes(t *testing.T) {
+func TestApplyStorageCleanupKeepsPhysicalBucketAccessURLAcrossScopes(t *testing.T) {
 	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
 	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
 	const legacyURL = "s3://legacy/OHSU/file.bin"
-	const incorrectlyMappedURL = "s3://bforepc/legacy/OHSU/file.bin"
 
-	backend := &fakeStorageAnalyticsBackend{
-		projectRecords: []gintegrationsyfon.ProjectRecord{{
-			ObjectID: objectID,
-			Checksum: checksum,
-			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
-				AccessID: "valid-other-scope-physical",
-				URL:      incorrectlyMappedURL,
-			}},
-		}},
-		projectScopes: []domain.StorageBucketScope{
-			{
-				Bucket:       "bforepc",
-				Organization: "org",
-				ProjectID:    "proj",
-				Path:         "s3://bforepc/legacy",
+	tests := []struct {
+		name           string
+		physicalURL    string
+		scopes         []domain.StorageBucketScope
+		updatedMessage string
+		deletedMessage string
+		skipMessage    string
+	}{
+		{
+			name:        "other scope",
+			physicalURL: "s3://bforepc/legacy/OHSU/file.bin",
+			scopes: []domain.StorageBucketScope{
+				{Bucket: "bforepc", Organization: "org", ProjectID: "proj", Path: "s3://bforepc/legacy"},
+				{Bucket: "legacy", Organization: "org", ProjectID: "proj", Path: "s3://legacy"},
 			},
-			{
-				Bucket:       "legacy",
-				Organization: "org",
-				ProjectID:    "proj",
-				Path:         "s3://legacy",
+			updatedMessage: "physical target in another scope must not be removed by legacy mapping",
+			deletedMessage: "valid physical record must not be deleted across scopes",
+			skipMessage:    "across scope collision",
+		},
+		{
+			name:        "ambiguous prefix",
+			physicalURL: "s3://bucket-a/legacy/OHSU/file.bin",
+			scopes: []domain.StorageBucketScope{
+				{Bucket: "bucket-a", Organization: "org", ProjectID: "proj", Path: "s3://bucket-a/legacy"},
+				{Bucket: "bucket-b", Organization: "org", ProjectID: "proj", Path: "s3://bucket-b/legacy"},
 			},
+			updatedMessage: "ambiguous legacy prefix must not remove a method from bucket-a",
+			deletedMessage: "ambiguous legacy prefix must not delete a physical record",
+			skipMessage:    "for ambiguous legacy prefix",
 		},
 	}
-	service := NewStorageAnalyticsService(backend)
-	brokenExists := false
-	result, err := service.ApplyStorageCleanup(
-		context.Background(), "Bearer token", "org", "proj", nil, nil,
-		[]CleanupApplyFinding{{
-			Kind:             "broken_access_url_error",
-			NormalizedPath:   "data/file.bin",
-			ObjectIDs:        []string{objectID},
-			AccessURLs:       []string{legacyURL},
-			AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
-			DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
-			Records: []CleanupRecordAudit{{
-				ObjectID:   objectID,
-				Checksum:   checksum,
-				AccessURLs: []string{legacyURL},
-				AccessMethods: []CleanupAccessMethod{{
-					AccessID: "stale-legacy",
-					URL:      legacyURL,
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{
+				projectRecords: []gintegrationsyfon.ProjectRecord{{
+					ObjectID: objectID,
+					Checksum: checksum,
+					AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
+						AccessID: "valid-physical",
+						URL:      test.physicalURL,
+					}},
 				}},
-				AccessProbes: []CleanupAccessProbe{{
-					URL:    legacyURL,
-					Status: "error",
-					Exists: &brokenExists,
-				}},
-			}},
-		}}, false, false, false, false, false,
-	)
-	if err != nil {
-		t.Fatalf("apply cleanup: %v", err)
-	}
-	if _, ok := backend.updatedAccessMethods[objectID]; ok {
-		t.Fatalf("physical target in another scope must not be removed by legacy mapping: %+v", backend.updatedAccessMethods)
-	}
-	if len(backend.deletedIDs) != 0 {
-		t.Fatalf("valid physical record must not be deleted across scopes: %v", backend.deletedIDs)
-	}
-	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
-		t.Fatalf("expected idempotent skip across scope collision, got %+v", result.SkippedPaths)
-	}
-}
-
-func TestApplyStorageCleanupRejectsAmbiguousLegacyPrefix(t *testing.T) {
-	const checksum = "d64811e3625fff5c0846eb000e54d03d71d87aec4e8646d80808622468590cf"
-	const objectID = "7a3852ae-5dc8-5721-8e24-437203fa63a6"
-	const legacyURL = "s3://legacy/OHSU/file.bin"
-	const physicalURL = "s3://bucket-a/legacy/OHSU/file.bin"
-
-	backend := &fakeStorageAnalyticsBackend{
-		projectRecords: []gintegrationsyfon.ProjectRecord{{
-			ObjectID: objectID,
-			Checksum: checksum,
-			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{{
-				AccessID: "valid-physical",
-				URL:      physicalURL,
-			}},
-		}},
-		projectScopes: []domain.StorageBucketScope{
-			{
-				Bucket:       "bucket-a",
-				Organization: "org",
-				ProjectID:    "proj",
-				Path:         "s3://bucket-a/legacy",
-			},
-			{
-				Bucket:       "bucket-b",
-				Organization: "org",
-				ProjectID:    "proj",
-				Path:         "s3://bucket-b/legacy",
-			},
-		},
-	}
-	service := NewStorageAnalyticsService(backend)
-	brokenExists := false
-	result, err := service.ApplyStorageCleanup(
-		context.Background(), "Bearer token", "org", "proj", nil, nil,
-		[]CleanupApplyFinding{{
-			Kind:             "broken_access_url_error",
-			NormalizedPath:   "data/file.bin",
-			ObjectIDs:        []string{objectID},
-			AccessURLs:       []string{legacyURL},
-			AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
-			DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
-			Records: []CleanupRecordAudit{{
-				ObjectID:   objectID,
-				Checksum:   checksum,
-				AccessURLs: []string{legacyURL},
-				AccessMethods: []CleanupAccessMethod{{
-					AccessID: "stale-legacy",
-					URL:      legacyURL,
-				}},
-				AccessProbes: []CleanupAccessProbe{{
-					URL:    legacyURL,
-					Status: "error",
-					Exists: &brokenExists,
-				}},
-			}},
-		}}, false, false, false, false, false,
-	)
-	if err != nil {
-		t.Fatalf("apply cleanup: %v", err)
-	}
-	if _, ok := backend.updatedAccessMethods[objectID]; ok {
-		t.Fatalf("ambiguous legacy prefix must not remove a method from bucket-a: %+v", backend.updatedAccessMethods)
-	}
-	if len(backend.deletedIDs) != 0 {
-		t.Fatalf("ambiguous legacy prefix must not delete a physical record: %v", backend.deletedIDs)
-	}
-	if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
-		t.Fatalf("expected idempotent skip for ambiguous legacy prefix, got %+v", result.SkippedPaths)
+				projectScopes: test.scopes,
+			}
+			service := NewStorageAnalyticsService(backend)
+			brokenExists := false
+			result, err := service.ApplyStorageCleanup(
+				context.Background(), "Bearer token", "org", "proj", nil, nil,
+				[]CleanupApplyFinding{{
+					Kind:             "broken_access_url_error",
+					NormalizedPath:   "data/file.bin",
+					ObjectIDs:        []string{objectID},
+					AccessURLs:       []string{legacyURL},
+					AvailableActions: []string{sarecord.ActionRemoveBrokenAccessURLs},
+					DefaultAction:    sarecord.ActionRemoveBrokenAccessURLs,
+					Records: []CleanupRecordAudit{{
+						ObjectID:   objectID,
+						Checksum:   checksum,
+						AccessURLs: []string{legacyURL},
+						AccessMethods: []CleanupAccessMethod{{
+							AccessID: "stale-legacy",
+							URL:      legacyURL,
+						}},
+						AccessProbes: []CleanupAccessProbe{{
+							URL:    legacyURL,
+							Status: "error",
+							Exists: &brokenExists,
+						}},
+					}},
+				}}, false, false, false, false, false,
+			)
+			if err != nil {
+				t.Fatalf("apply cleanup: %v", err)
+			}
+			if _, ok := backend.updatedAccessMethods[objectID]; ok {
+				t.Fatalf("%s: %+v", test.updatedMessage, backend.updatedAccessMethods)
+			}
+			if len(backend.deletedIDs) != 0 {
+				t.Fatalf("%s: %v", test.deletedMessage, backend.deletedIDs)
+			}
+			if len(result.SkippedPaths) != 1 || result.SkippedPaths[0] != "data/file.bin" {
+				t.Fatalf("expected idempotent skip %s, got %+v", test.skipMessage, result.SkippedPaths)
+			}
+		})
 	}
 }
 

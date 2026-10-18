@@ -233,7 +233,7 @@ func inventoryMissingProbe(record sarecord.State, objectURL string, expectedName
 	}
 }
 
-func (service *Service) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *sarecord.RecordSet, inventory []model.RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, BucketMetadata sarecord.BucketInventoryMetadata, bucketMode string, validationMode string, timings *model.StorageChainAuditTimings) (*sarecord.StorageView, error) {
+func (service *Service) buildStorageChainView(ctx context.Context, authorizationHeader string, organization string, project string, recordSet *sarecord.RecordSet, inventory []model.RepoInventoryFile, scopes []domain.StorageBucketScope, bucketObjects []gintegrationsyfon.ProjectBucketObject, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, bucketInventoryErr error, bucketMetadata sarecord.BucketInventoryMetadata, bucketMode string, validationMode string, timings *model.StorageChainAuditTimings) (*sarecord.StorageView, error) {
 	recordSet = applyScopeCanonicalization(recordSet, scopes, organization, project)
 	view := &sarecord.StorageView{
 		Scopes:                   append([]domain.StorageBucketScope(nil), scopes...),
@@ -242,11 +242,11 @@ func (service *Service) buildStorageChainView(ctx context.Context, authorization
 		BucketObjects:            []gintegrationsyfon.ProjectBucketObject{},
 		BucketObjectsByURL:       map[string]gintegrationsyfon.ProjectBucketObject{},
 		BucketInventoryAvailable: true,
-		BucketInventoryComplete:  BucketMetadata.Complete,
-		BucketInventoryWarning:   BucketMetadata.Warning,
-		BucketInventoryObserved:  BucketMetadata.Observed,
-		BucketInventorySource:    BucketMetadata.Source,
-		BucketInventoryStale:     BucketMetadata.Stale,
+		BucketInventoryComplete:  bucketMetadata.Complete,
+		BucketInventoryWarning:   bucketMetadata.Warning,
+		BucketInventoryObserved:  bucketMetadata.Observed,
+		BucketInventorySource:    bucketMetadata.Source,
+		BucketInventoryStale:     bucketMetadata.Stale,
 	}
 	if bucketMode == model.StorageChainBucketModeValidate {
 		if bucketInventoryErr != nil {
@@ -280,7 +280,7 @@ func (service *Service) buildStorageChainView(ctx context.Context, authorization
 
 			candidateStart := time.Now()
 			candidates := selectInventoryMissRecordSet(probedRecordSet)
-			if BucketMetadata.Stale {
+			if bucketMetadata.Stale {
 				candidates = recordSet
 			}
 			timings.Record("exact_list_candidate_selection", time.Since(candidateStart))
