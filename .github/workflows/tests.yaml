@@ -5,6 +5,7 @@ on: [ pull_request, workflow_call ]
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - name: Checkout repository
@@ -14,8 +15,32 @@ jobs:
       with:
         go-version-file: go.mod
 
+    - name: Check formatting
+      run: |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "The following files are not gofmt'd:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Check module files
+      run: go mod tidy -diff
+
     - name: Vet
       run: go vet ./...
+
+    - name: Install analyzers
+      run: |
+        go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
+        go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+        echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+    - name: Staticcheck
+      run: staticcheck ./...
+
+    - name: Vulnerability scan
+      run: govulncheck ./...
 
     - name: Start PostgreSQL
       run: |
@@ -77,9 +102,11 @@ jobs:
         PGPASSWORD: your_strong_password
 
 
+    - name: Build server with race detector
+      run: go build -race -o bin/gecko .
+
     - name: Run Tests
       run: |
-        make
         ./bin/gecko \
           -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
           -port 8080 \
@@ -100,4 +127,19 @@ jobs:
           fi
           sleep 1
         done
-        go test -v ./...
+        go test -race -count=1 -timeout=10m -covermode=atomic -coverpkg=./... -coverprofile=coverage.out -v ./...
+
+    - name: Coverage summary
+      if: always()
+      run: |
+        if [ -f coverage.out ]; then
+          go tool cover -func=coverage.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload coverage
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage
+        path: coverage.out
+        if-no-files-found: ignore

@@ -3,3 +3,4 @@
 /bin/
 .gocache/
 /.qwen/tmp/
+coverage.out
