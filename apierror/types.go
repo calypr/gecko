@@ -1,5 +1,7 @@
 package apierror
 
+import "net/http"
+
 type Type string
 
 const (
@@ -15,17 +17,10 @@ const (
 	TypeValidationFailed             Type = "validation_failed"
 	TypeMissingAuthorization         Type = "missing_authorization"
 	TypeInvalidAuthorizationResponse Type = "invalid_authorization_response"
-	TypeInvalidJWTHandler            Type = "invalid_jwt_handler"
 	TypeInvalidProjectID             Type = "invalid_project_id"
-	TypeMissingProjectID             Type = "missing_project_id"
-	TypeProjectIDMismatch            Type = "project_id_mismatch"
-	TypeInvalidDirectory             Type = "invalid_directory"
 	TypeDatabaseError                Type = "database_error"
 	TypeDatabaseUnavailable          Type = "database_unavailable"
-	TypeGraphQueryFailed             Type = "graph_query_failed"
-	TypeInvalidQueryParameter        Type = "invalid_query_parameter"
 	TypeAuthorizationServiceError    Type = "authorization_service_error"
-	TypeAppCardNotFound              Type = "app_card_not_found"
 )
 
 type Error struct {
@@ -33,4 +28,19 @@ type Error struct {
 	Message string         `json:"message"`
 	Code    int            `json:"code"`
 	Details map[string]any `json:"details,omitempty"`
+}
+
+func TypeForStatus(code int) Type {
+	switch code {
+	case http.StatusUnauthorized:
+		return TypeUnauthorized
+	case http.StatusForbidden:
+		return TypeForbidden
+	case http.StatusNotFound:
+		return TypeNotFound
+	case http.StatusMethodNotAllowed:
+		return TypeMethodNotAllowed
+	default:
+		return TypeAuthorizationServiceError
+	}
 }

@@ -2,17 +2,17 @@ package main
 
 import (
 	"bytes"
-	"log"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func makeRequest(method, url string, payload []byte) *http.Request {
+func makeRequest(t *testing.T, method, url string, payload []byte) *http.Request {
+	t.Helper()
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(payload))
 	if err != nil {
-		log.Fatal("makeRequest Err: ", err)
+		t.Fatalf("makeRequest Err: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return req
@@ -20,12 +20,14 @@ func makeRequest(method, url string, payload []byte) *http.Request {
 
 func TestHealthCheck(t *testing.T) {
 	baseURL := requireIntegrationServer(t)
-	resp, err := http.DefaultClient.Do(makeRequest("GET", baseURL+"/health", nil))
+	resp, err := http.DefaultClient.Do(makeRequest(t, "GET", baseURL+"/health", nil))
 	assert.NoError(t, err)
 	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		buf := new(bytes.Buffer)
-		buf.ReadFrom(resp.Body)
+		if _, err := buf.ReadFrom(resp.Body); err != nil {
+			t.Fatalf("read body: %v", err)
+		}
 		body := buf.String()
 		assert.Contains(t, body, "Healthy")
 	}

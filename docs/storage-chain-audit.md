@@ -1,25 +1,30 @@
 # Gecko storage-chain audit: implementation guide
 
-The storage-chain audit is a read-only cross-check of Git LFS pointers, Syfon project records, project bucket scope mappings, and Syfon bucket inventory. The handler is registered as `POST /api/v1/projects/:project_id/repair/storage-chain/audit` in [`internal/server/http/git/register.go`](../internal/server/http/git/register.go#L54). Repair endpoints are separate.
+The storage-chain audit is a read-only cross-check of Git LFS pointers, Syfon project records, project bucket scope mappings, and Syfon bucket inventory. The handler is registered as `POST /git/projects/:orgTitle/:projectTitle/repair/storage-chain/audit` in [`internal/server/httpapi/git_register.go`](../internal/server/httpapi/git_register.go). Repair endpoints are separate.
 
 ## Code map
 
 | Responsibility | Owner |
 | --- | --- |
-| HTTP request parsing, defaults, and error mapping | [`handleGitProjectStorageChainAuditPOST`](../internal/server/http/git/storage_analytics.go#L214-L326) |
-| Option normalization and cache selection | [`BuildStorageChainAuditWithOptions`](../internal/git/storage_analytics.go#L481-L539) |
-| Root audit-response cache and refresh coalescing | [`buildStorageChainAuditWithResponseCache`](../internal/git/storage_analytics.go#L541-L607), [`coalesceStorageChainAuditRefresh`](../internal/git/storage_chain_audit_cache.go#L49-L76) |
-| Fresh audit assembly | [`buildStorageChainAuditFresh`](../internal/git/storage_analytics.go#L646-L723) |
-| Parallel Git, record, scope, and bucket input loading | [`loadStorageChainInputs`](../internal/git/storage_analytics_pipeline.go#L75-L180) |
-| Syfon record metrics validator and cache | [`loadCachedProjectAuditRecords`](../internal/git/storage_analytics_pipeline.go#L361-L431) |
-| Durable bucket inventory cache and stale fallback | [`loadCachedProjectBucketValidationInventory`](../internal/git/storage_analytics_pipeline.go#L519-L566) |
-| Validation-mode decision tree | [`buildStorageChainView`](../internal/git/storage_analytics_pipeline.go#L907-L996) |
-| Finding model | [`buildStorageChainAuditModel`](../internal/git/storage_analytics_pipeline.go#L1265-L1277) |
-| Modes, defaults, and timing implementation | [`storage_analytics_timing.go`](../internal/git/storage_analytics_timing.go#L11-L172) |
+| HTTP request parsing, defaults, and error mapping | [`handleGitProjectStorageChainAuditPOST`](../internal/server/httpapi/git_storage_analytics.go) |
+| Option normalization and cache selection | [`BuildStorageChainAuditWithOptions`](../internal/storageaudit/chain/audit.go) |
+| Root audit-response cache and refresh coalescing | [`buildStorageChainAuditWithResponseCache`](../internal/storageaudit/chain/audit.go), [`coalesceStorageChainAuditRefresh`](../internal/storageaudit/chain/audit.go) |
+| Fresh audit assembly | [`buildStorageChainAuditFresh`](../internal/storageaudit/chain/audit.go) |
+| Parallel Git, record, scope, and bucket input loading | [`loadStorageChainInputs`](../internal/storageaudit/chain/audit.go) |
+| Syfon record metrics validator and cache | [`loadCachedProjectAuditRecords`](../internal/storageaudit/chain/audit.go) |
+| Durable bucket inventory cache and stale fallback | [`loadCachedProjectBucketValidationInventory`](../internal/storageaudit/chain/audit.go) |
+| Validation-mode decision tree | [`buildStorageChainView`](../internal/storageaudit/chain/audit.go) |
+| Finding model | [`buildStorageChainAuditModel`](../internal/storageaudit/chain/audit.go) |
+| Git tree inventory index, sidecar persistence, and directory aggregates | [`internal/storageaudit/repoindex`](../internal/storageaudit/repoindex/index.go) |
+| Storage summary, folder browsing, child pagination, and project-diff audit | [`internal/storageaudit/browse`](../internal/storageaudit/browse/build.go) |
+| Modes, defaults, and timing implementation | [`internal/storageaudit/model`](../internal/storageaudit/model/storage_analytics_timing.go) |
+| Public request and response types | [`internal/storageaudit/model`](../internal/storageaudit/model) |
+| Shared record state, evidence, URL resolution, and finding classification | [`internal/storageaudit/record`](../internal/storageaudit/record) |
+| Repair policy and actionability rules | [`internal/storageaudit/record`](../internal/storageaudit/record/policy.go) |
 
 ## Request contract
 
-The handler resolves auth, project context, Git mirror, ref, and commit, then maps the request to `StorageChainAuditOptions` at [`storage_analytics.go`](../internal/server/http/git/storage_analytics.go#L230-L306).
+The handler resolves auth, project context, Git mirror, ref, and commit, then maps the request to `StorageChainAuditOptions` in [`git_storage_analytics.go`](../internal/server/httpapi/git_storage_analytics.go).
 
 | Field | Meaning | Default |
 | --- | --- | --- |
@@ -31,7 +36,7 @@ The handler resolves auth, project context, Git mirror, ref, and commit, then ma
 | `finding_kind`, `finding_limit` | Response projection only; cache stores the complete model | All / service default |
 | `refresh`, `force_audit_refresh`, `force_bucket_inventory_refresh` | Each sets `ForceAuditRefresh` | `false` |
 
-`bucket_path_prefix` is valid only with `bucket_inventory_mode=items` ([handler check](../internal/server/http/git/storage_analytics.go#L275-L280)).
+`bucket_path_prefix` is valid only with `bucket_inventory_mode=items` ([handler check](../internal/server/httpapi/git_storage_analytics.go)).
 
 ## Request-to-response sequence
 
@@ -80,7 +85,7 @@ The middle arrows are conditional. A fresh response cache skips all input work. 
 | Scope and item cache | Short in-process project cache | Normal in-process reuse only |
 | Validation inventory cache | org/project/validation prefix | Fresh for 10 minutes; previous good value is retained for 24 hours |
 
-The response cache is eligible only for root Git subpath with no bucket path prefix ([eligibility](../internal/git/storage_analytics.go#L504-L510)). Concurrent root refreshes join one in-flight build, preventing overlapping requests from replacing a completed response ([coalescing](../internal/git/storage_chain_audit_cache.go#L49-L76)).
+The response cache is eligible only for root Git subpath with no bucket path prefix ([eligibility](../internal/storageaudit/chain/audit.go)). Concurrent root refreshes join one in-flight build, preventing overlapping requests from replacing a completed response ([coalescing](../internal/storageaudit/chain/audit.go)).
 
 ### Validation inventory cache sequence
 
@@ -104,15 +109,15 @@ sequenceDiagram
     Note over Audit: With no cached value, propagate the Syfon error.
 ```
 
-Only non-empty successful inventories replace the cache ([store guard](../internal/git/storage_analytics_pipeline.go#L553-L560)). Syfon terminal-page disagreement is an error, never a partial successful response. Gecko returns stale inventory only when a previous good value exists ([fallback](../internal/git/storage_analytics_pipeline.go#L544-L551)). A cold-cache inventory error remains an HTTP error.
+Only non-empty successful inventories replace the cache ([store guard](../internal/storageaudit/chain/audit.go)). Syfon terminal-page disagreement is an error, never a partial successful response. Gecko returns stale inventory only when a previous good value exists ([fallback](../internal/storageaudit/chain/audit.go)). A cold-cache inventory error remains an HTTP error.
 
 ## Fresh audit execution
 
-1. `loadStorageChainInputs` starts Git inventory, Syfon records, Syfon scopes, and bucket data concurrently ([lines 100-156](../internal/git/storage_analytics_pipeline.go#L100-L156)).
-2. Git, record, and scope errors fail the request. Bucket errors are carried as `bucketInventoryErr`, so validation mode decides whether they are fatal ([lines 158-179](../internal/git/storage_analytics_pipeline.go#L158-L179)).
+1. `loadStorageChainInputs` starts Git inventory, Syfon records, Syfon scopes, and bucket data concurrently ([input loading](../internal/storageaudit/chain/audit.go)).
+2. Git, record, and scope errors fail the request. Bucket errors are carried as `bucketInventoryErr`, so validation mode decides whether they are fatal ([input loading](../internal/storageaudit/chain/audit.go)).
 3. `buildStorageChainView` canonicalizes Syfon record URLs through bucket scopes and attaches list or bulk-probe evidence.
 4. `buildStorageChainAuditModel` indexes canonical bucket URLs, Git checksums, and Syfon records, then runs bucket-origin, Syfon-origin, and Git-origin finding passes.
-5. Gecko filters and limits only after constructing the complete model. `Groups` use all filtered rows, while `Findings` can be truncated ([response shaping](../internal/git/storage_analytics.go#L703-L722)).
+5. Gecko filters and limits only after constructing the complete model. `Groups` use all filtered rows, while `Findings` can be truncated ([response shaping](../internal/storageaudit/chain/audit.go)).
 
 ### Validation modes
 
@@ -124,11 +129,11 @@ Only non-empty successful inventories replace the cache ([store guard](../intern
 | `items` + `list` or `inventory` | Yes, using requested prefix | None | Explicit bucket items |
 | `items` + `metadata` | Yes | Probe only records needing confirmation | Listed items plus probe evidence |
 
-The branch is at [`buildStorageChainView`](../internal/git/storage_analytics_pipeline.go#L917-L995). Gecko enables bucket-origin findings only when it has trustworthy list inventory ([decision](../internal/git/storage_analytics.go#L679-L683)).
+The branch is at [`buildStorageChainView`](../internal/storageaudit/chain/audit.go). Gecko enables bucket-origin findings only when it has trustworthy list inventory ([decision](../internal/storageaudit/chain/audit.go)).
 
 ## Findings and error semantics
 
-The summary keys are initialized in [`newChainSummary`](../internal/git/storage_analytics_pipeline.go#L193-L210).
+The summary keys are initialized in [`newChainSummary`](../internal/storageaudit/chain/audit.go).
 
 | Finding kind | Meaning |
 | --- | --- |
@@ -152,12 +157,12 @@ For Weka failures, a Syfon traversal error without cached inventory fails the au
 | `syfon_project_bucket_inventory_cache_error` | Cache backend failed; Gecko continues direct behavior |
 | `storage_chain_audit_request_error` | Handler is returning a mapped audit error |
 
-Stage timings use `storage_chain_audit_stage_start` and `storage_chain_audit_stage_done`; memory snapshots include Git file, Syfon record, and bucket object counts ([timing implementation](../internal/git/storage_analytics_timing.go#L46-L93)).
+Stage timings use `storage_chain_audit_stage_start` and `storage_chain_audit_stage_done`; memory snapshots include Git file, Syfon record, and bucket object counts ([timing implementation](../internal/storageaudit/model/storage_analytics_timing.go)).
 
 Run focused coverage from the Gecko repository:
 
 ```bash
-GOCACHE=/private/tmp/gecko-gocache go test ./internal/git -run 'TestBuildStorageChainAuditForceRefreshBypassesResponseCache|TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails|TestProjectBucketInventoryCacheRetention' -count=1
+GOCACHE=/private/tmp/gecko-gocache go test ./internal/storageaudit -run 'TestBuildStorageChainAuditForceRefreshBypassesResponseCache|TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails|TestProjectBucketInventoryCacheRetention' -count=1
 ```
 
-The relevant tests are [`internal/git/storage_analytics_test.go`](../internal/git/storage_analytics_test.go#L2356-L2451) and [`internal/git/storage_chain_audit_cache_test.go`](../internal/git/storage_chain_audit_cache_test.go).
+The relevant tests are [`internal/storageaudit/chain_test.go`](../internal/storageaudit/chain_test.go) and [`internal/storageaudit/storecache/cache_test.go`](../internal/storageaudit/storecache/cache_test.go).

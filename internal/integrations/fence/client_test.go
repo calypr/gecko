@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/calypr/gecko/internal/git/domain"
+	"github.com/calypr/gecko/internal/domain"
 )
 
 func TestRequestOrganizationInstallationStatusForwardsAuthorizationAndParsesStatus(t *testing.T) {
