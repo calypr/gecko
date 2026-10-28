@@ -2,6 +2,8 @@ package storageaudit
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/storageaudit/cleanup"
@@ -28,6 +30,37 @@ func (service *StorageAnalyticsService) BuildStorageCleanupAudit(ctx context.Con
 
 func (service *StorageAnalyticsService) ApplyStorageCleanup(ctx context.Context, authorizationHeader string, organization string, project string, selectedRepoPaths []string, selectedActions []CleanupApplyAction, selectedFindings []CleanupApplyFinding, deleteRepoOrphans bool, deleteStaleDuplicates bool, deleteBucketOnlyObjects bool, repairBrokenBucketMappings bool, dryRun bool) (*CleanupApplyResponse, error) {
 	return service.cleanupSvc.ApplyStorageCleanup(ctx, authorizationHeader, organization, project, selectedRepoPaths, selectedActions, selectedFindings, deleteRepoOrphans, deleteStaleDuplicates, deleteBucketOnlyObjects, repairBrokenBucketMappings, dryRun)
+}
+
+// ApplyStorageCleanupWithRevisions checks the audit's optional revision
+// preconditions before entering cleanup planning or mutation.
+func (service *StorageAnalyticsService) ApplyStorageCleanupWithRevisions(ctx context.Context, authorizationHeader string, organization string, project string, currentGitRevision string, request CleanupApplyRequest) (*CleanupApplyResponse, error) {
+	if expected := strings.TrimSpace(request.ExpectedGitRevision); expected != "" && expected != strings.TrimSpace(currentGitRevision) {
+		return nil, fmt.Errorf("cleanup audit is stale because the Git revision changed; refresh audit before applying cleanup")
+	}
+	if expected := strings.TrimSpace(request.ExpectedSyfonRevision); expected != "" {
+		current, err := service.loadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
+		if err != nil {
+			return nil, err
+		}
+		if expected != current {
+			return nil, fmt.Errorf("cleanup audit is stale because the Syfon revision changed; refresh audit before applying cleanup")
+		}
+	}
+	return service.ApplyStorageCleanup(
+		ctx,
+		authorizationHeader,
+		organization,
+		project,
+		request.SelectedRepoPaths,
+		request.Actions,
+		request.Findings,
+		request.DeleteRepoOrphans,
+		request.DeleteStaleDuplicates,
+		request.DeleteBucketOnlyObjects,
+		request.RepairBrokenBucketMappings,
+		request.DryRun,
+	)
 }
 
 func newCleanupService(service *StorageAnalyticsService) *cleanup.Service {
@@ -60,14 +93,6 @@ func (store cleanupStore) DeleteProjectBucketObjects(ctx context.Context, author
 
 func (store cleanupStore) BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error) {
 	return store.service.storage.BulkGetProjectRecordsByChecksum(ctx, authorizationHeader, organization, project, checksums)
-}
-
-func (store cleanupStore) EvictProjectJoinCache(organization string, project string) {
-	store.service.evictProjectJoinCache(organization, project)
-}
-
-func (store cleanupStore) EvictProjectAuditRecordCache(organization string, project string) {
-	store.service.evictProjectAuditRecordCache(organization, project)
 }
 
 func (store cleanupStore) EvictProjectChainInputCache(organization string, project string) {

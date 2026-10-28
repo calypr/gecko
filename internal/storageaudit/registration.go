@@ -44,14 +44,6 @@ func (store registrationStore) RegisterProjectObjects(ctx context.Context, autho
 	return store.service.storage.RegisterProjectObjects(ctx, authorizationHeader, candidates)
 }
 
-func (store registrationStore) EvictProjectJoinCache(organization string, project string) {
-	store.service.evictProjectJoinCache(organization, project)
-}
-
-func (store registrationStore) EvictProjectAuditRecordCache(organization string, project string) {
-	store.service.evictProjectAuditRecordCache(organization, project)
-}
-
 func newRegistrationService(service *StorageAnalyticsService) *registration.Service {
 	return registration.New(registrationStore{service: service})
 }

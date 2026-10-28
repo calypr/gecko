@@ -20,6 +20,8 @@ type CleanupAccessProbe struct {
 	NameMatch            *bool    `json:"name_match,omitempty"`
 	SHA256Match          *bool    `json:"sha256_match,omitempty"`
 	ValidationMismatches []string `json:"validation_mismatches,omitempty"`
+	ObservedAt           string   `json:"observed_at,omitempty"`
+	CacheHit             bool     `json:"cache_hit,omitempty"`
 }
 
 type CleanupAccessMethod struct {
@@ -103,6 +105,8 @@ type CleanupAuditResponse struct {
 }
 
 type CleanupApplyRequest struct {
+	ExpectedGitRevision        string                `json:"expected_git_revision,omitempty"`
+	ExpectedSyfonRevision      string                `json:"expected_syfon_revision,omitempty"`
 	GitSubpath                 string                `json:"git_subpath,omitempty"`
 	Ref                        string                `json:"ref,omitempty"`
 	DeleteRepoOrphans          bool                  `json:"delete_repo_orphans,omitempty"`

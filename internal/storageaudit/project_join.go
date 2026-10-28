@@ -10,8 +10,10 @@ import (
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
+	"github.com/calypr/gecko/internal/storageaudit/chain"
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 	"github.com/calypr/gecko/internal/storageaudit/repoindex"
+	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -30,15 +32,6 @@ func (service *StorageAnalyticsService) loadJoinState(ctx context.Context, autho
 		return nil, nil, nil, nil, err
 	}
 	return index, inventory, recordsByChecksum, usageByObjectID, nil
-}
-
-func (service *StorageAnalyticsService) evictProjectJoinCache(organization string, project string) {
-	service.join.evict(organization, project)
-}
-
-func (service *StorageAnalyticsService) evictProjectAuditRecordCache(organization string, project string) {
-	cacheKey := service.chainSvc.ProjectChainInputCacheKey(organization, project)
-	service.chainSvc.EvictProjectAuditRecords(cacheKey)
 }
 
 func (service *StorageAnalyticsService) listProjectRecordStates(ctx context.Context, authorizationHeader string, organization string, project string, usageByObjectID map[string]gintegrationsyfon.FileUsage) (map[string][]sarecord.State, error) {
@@ -106,14 +99,14 @@ func (service *StorageAnalyticsService) loadProjectStorageScopes(ctx context.Con
 }
 
 func (service *StorageAnalyticsService) attachStorageProbes(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State) (map[string][]sarecord.State, map[string][]sarecord.State, error) {
-	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, false)
+	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, false, nil)
 }
 
 func (service *StorageAnalyticsService) attachStorageListValidations(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State) (map[string][]sarecord.State, map[string][]sarecord.State, error) {
-	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, true)
+	return service.attachStorageValidationResults(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, true, nil)
 }
 
-func (service *StorageAnalyticsService) attachStorageValidationResults(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State, useListValidation bool) (map[string][]sarecord.State, map[string][]sarecord.State, error) {
+func (service *StorageAnalyticsService) attachStorageValidationResults(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State, useListValidation bool, auditOptions *chain.AuditEvidenceOptions) (map[string][]sarecord.State, map[string][]sarecord.State, error) {
 	started := time.Now()
 	items := make([]gintegrationsyfon.BulkStorageProbeItem, 0)
 	itemKeys := map[string]string{}
@@ -183,30 +176,72 @@ func (service *StorageAnalyticsService) attachStorageValidationResults(ctx conte
 		time.Since(started).Milliseconds(),
 	)
 
-	resultsByKey := map[string]gintegrationsyfon.BulkStorageProbeResult{}
-	if len(items) > 0 {
-		var (
-			results []gintegrationsyfon.BulkStorageProbeResult
-			err     error
-		)
-		if useListValidation {
-			results, err = service.storage.BulkListStorageObjects(ctx, authorizationHeader, items)
-		} else {
-			results, err = service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, items)
-		}
+	resultState := &storageObservationResultMap{results: map[string]gintegrationsyfon.BulkStorageProbeResult{}}
+	missItems := items
+	keysByID := map[string]storageObservationKeys{}
+	version := storecache.StorageObservationVersion{}
+	cacheEnabled := auditOptions != nil && service.observations != nil
+	progressBackend, hasProgressBackend := service.storage.(storageValidationProgressBackend)
+	if auditOptions != nil && hasProgressBackend && service.observations == nil {
+		return nil, nil, fmt.Errorf("storage observation cache is required for audit progress")
+	}
+	if cacheEnabled {
+		var cachedResults map[string]gintegrationsyfon.BulkStorageProbeResult
+		var err error
+		missItems, cachedResults, keysByID, version, err = service.prepareStorageObservationInputs(ctx, items, operation, *auditOptions)
 		if err != nil {
-			if useListValidation {
-				log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
-				return nil, nil, fmt.Errorf("list-validate syfon storage objects: %w", err)
-			}
 			log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
-			return nil, nil, fmt.Errorf("probe syfon storage objects: %w", err)
+			return nil, nil, err
 		}
-		for _, result := range results {
-			result.Operation = operation
-			resultsByKey[strings.TrimSpace(result.ID)] = result
+		resultState.add(cachedResults)
+	}
+	if len(items) > 0 {
+		checkpoint := func(batchItems []gintegrationsyfon.BulkStorageProbeItem, batchResults []gintegrationsyfon.BulkStorageProbeResult) error {
+			processed, err := service.checkpointStorageObservationBatch(ctx, batchItems, batchResults, operation, *auditOptions, keysByID, version)
+			resultState.add(processed)
+			return err
+		}
+		if len(missItems) == 0 {
+			log.Printf("INFO: storage_chain_validation_cache_hit mode=%s request_count=%d", mode, len(items))
+		} else {
+			var (
+				results []gintegrationsyfon.BulkStorageProbeResult
+				err     error
+			)
+			if cacheEnabled && hasProgressBackend {
+				if useListValidation {
+					results, err = progressBackend.BulkListStorageObjectsWithProgress(ctx, authorizationHeader, missItems, checkpoint)
+				} else {
+					results, err = progressBackend.BulkProbeStorageObjectsWithProgress(ctx, authorizationHeader, missItems, checkpoint)
+				}
+			} else if useListValidation {
+				results, err = service.storage.BulkListStorageObjects(ctx, authorizationHeader, missItems)
+			} else {
+				results, err = service.storage.BulkProbeStorageObjects(ctx, authorizationHeader, missItems)
+			}
+			if err != nil {
+				if useListValidation {
+					log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
+					return nil, nil, fmt.Errorf("list-validate syfon storage objects: %w", err)
+				}
+				log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d duration_ms=%d error=%q", mode, len(items), time.Since(started).Milliseconds(), err.Error())
+				return nil, nil, fmt.Errorf("probe syfon storage objects: %w", err)
+			}
+			if cacheEnabled && !hasProgressBackend {
+				if err := checkpoint(missItems, results); err != nil {
+					return nil, nil, err
+				}
+			} else if !cacheEnabled {
+				resultMap := make(map[string]gintegrationsyfon.BulkStorageProbeResult, len(results))
+				for _, result := range results {
+					result.Operation = operation
+					resultMap[strings.TrimSpace(result.ID)] = result
+				}
+				resultState.add(resultMap)
+			}
 		}
 	}
+	resultsByKey := resultState.snapshot()
 	log.Printf("INFO: storage_chain_validation_request_done mode=%s request_count=%d result_count=%d duration_ms=%d", mode, len(items), len(resultsByKey), time.Since(started).Milliseconds())
 
 	attach := func(input map[string][]sarecord.State) map[string][]sarecord.State {

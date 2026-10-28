@@ -7,81 +7,61 @@ import (
 	"strings"
 	"time"
 
-	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
-
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
+	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
+	"github.com/calypr/gecko/internal/storageaudit/sharedwork"
 )
 
-func (service *Service) loadCachedProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
+func (service *Service) loadProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
+	records, _, err := service.loadProjectAuditRecordsWithRevision(ctx, authorizationHeader, organization, project, false, true)
+	return records, err
+}
+
+func (service *Service) loadProjectAuditRecordsWithRevision(ctx context.Context, authorizationHeader string, organization string, project string, forceRefresh bool, share bool) ([]gintegrationsyfon.ProjectRecord, string, error) {
 	start := time.Now()
 	cacheKey := service.projectChainInputCacheKey(organization, project)
 	summary, err := service.deps.Records.GetProjectMetricsSummary(ctx, authorizationHeader, organization, project)
 	if err != nil {
-		return nil, fmt.Errorf("get syfon project metrics summary: %w", err)
+		return nil, "", fmt.Errorf("get syfon project metrics summary: %w", err)
 	}
+	validator := projectAuditRecordValidator{}
 	if summary != nil {
-		validator := projectAuditRecordValidatorFromSummary(*summary)
-		service.chainInputMu.RLock()
-		cached, ok := service.projectAuditCache[cacheKey]
-		service.chainInputMu.RUnlock()
-		if ok && cached.validator == validator && time.Since(cached.cachedAt) < chainProjectRecordCacheMaxAge {
-			log.Printf("syfon_project_record_cache_hit org=%s project=%s record_count=%d age_ms=%d duration_ms=%d", organization, project, len(cached.records), time.Since(cached.cachedAt).Milliseconds(), time.Since(start).Milliseconds())
-			return cached.records, nil
-		}
-
-		workKey := projectAuditRecordWorkKey(cacheKey, validator)
-		service.chainInputMu.Lock()
-		if cached, ok := service.projectAuditCache[cacheKey]; ok && cached.validator == validator && time.Since(cached.cachedAt) < chainProjectRecordCacheMaxAge {
-			service.chainInputMu.Unlock()
-			log.Printf("syfon_project_record_cache_hit org=%s project=%s record_count=%d age_ms=%d duration_ms=%d", organization, project, len(cached.records), time.Since(cached.cachedAt).Milliseconds(), time.Since(start).Milliseconds())
-			return cached.records, nil
-		}
-		if inflight, ok := service.projectAuditWork[workKey]; ok {
-			service.chainInputMu.Unlock()
-			<-inflight.done
-			if inflight.err != nil {
-				return nil, inflight.err
-			}
-			log.Printf("syfon_project_record_cache_wait org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(inflight.records), time.Since(start).Milliseconds())
-			return inflight.records, nil
-		}
-		inflight := &inflightProjectAuditRecordState{
-			done:      make(chan struct{}),
-			validator: validator,
-		}
-		service.projectAuditWork[workKey] = inflight
-		service.chainInputMu.Unlock()
-		log.Printf("syfon_project_record_cache_refresh org=%s project=%s validator_count=%d validator_latest=%q validator_revision=%q", organization, project, validator.RecordCount, validator.RecordLatestUpdatedTime, validator.RecordRevision)
-		defer func() {
-			service.chainInputMu.Lock()
-			delete(service.projectAuditWork, workKey)
-			close(inflight.done)
-			service.chainInputMu.Unlock()
-		}()
-
-		ProjectRecords, err := service.deps.Records.ListProjectAuditRecords(context.WithoutCancel(ctx), authorizationHeader, organization, project)
+		validator = projectAuditRecordValidatorFromSummary(*summary)
+	}
+	syfonRevision := syfonRevisionFromProjectAuditValidator(validator)
+	if !share {
+		projectRecords, err := service.deps.Records.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
 		if err != nil {
-			inflight.err = fmt.Errorf("list syfon project audit records: %w", err)
-			return nil, inflight.err
+			return nil, "", fmt.Errorf("list syfon project audit records: %w", err)
 		}
-		copiedRecords := append([]gintegrationsyfon.ProjectRecord(nil), ProjectRecords...)
-		service.chainInputMu.Lock()
-		service.projectAuditCache[cacheKey] = cachedProjectAuditRecordState{
-			records:   copiedRecords,
-			validator: validator,
-			cachedAt:  time.Now(),
-		}
-		service.chainInputMu.Unlock()
-		inflight.records = copiedRecords
-		log.Printf("syfon_project_record_cache_refreshed org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(copiedRecords), time.Since(start).Milliseconds())
-		return copiedRecords, nil
+		return append([]gintegrationsyfon.ProjectRecord(nil), projectRecords...), syfonRevision, nil
 	}
-	ProjectRecords, err := service.deps.Records.ListProjectAuditRecords(ctx, authorizationHeader, organization, project)
+	workKey := projectAuditRecordWorkKey(cacheKey, validator)
+	projectRecords, joined, err := service.projectAuditWork.Do(ctx, cacheKey, sharedwork.Demand{
+		AuthorizationScope: sharedwork.AuthorizationScope(authorizationHeader),
+		SemanticKey:        workKey,
+		ForceAudit:         forceRefresh,
+	}, func(workCtx context.Context) ([]gintegrationsyfon.ProjectRecord, error) {
+		log.Printf("syfon_project_record_refresh org=%s project=%s validator_count=%d validator_latest=%q validator_revision=%q force_refresh=%t", organization, project, validator.RecordCount, validator.RecordLatestUpdatedTime, validator.RecordRevision, forceRefresh)
+		projectRecords, err := service.deps.Records.ListProjectAuditRecords(workCtx, authorizationHeader, organization, project)
+		if err != nil {
+			return nil, fmt.Errorf("list syfon project audit records: %w", err)
+		}
+		return append([]gintegrationsyfon.ProjectRecord(nil), projectRecords...), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("list syfon project audit records: %w", err)
+		return nil, "", err
 	}
-	log.Printf("syfon_project_record_cache_uncached org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(ProjectRecords), time.Since(start).Milliseconds())
-	return ProjectRecords, nil
+	if joined {
+		log.Printf("syfon_project_record_refresh_join org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(projectRecords), time.Since(start).Milliseconds())
+	} else if summary == nil {
+		log.Printf("syfon_project_record_load org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(projectRecords), time.Since(start).Milliseconds())
+	} else if forceRefresh {
+		log.Printf("syfon_project_record_forced_refresh org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(projectRecords), time.Since(start).Milliseconds())
+	} else {
+		log.Printf("syfon_project_record_loaded org=%s project=%s record_count=%d duration_ms=%d", organization, project, len(projectRecords), time.Since(start).Milliseconds())
+	}
+	return append([]gintegrationsyfon.ProjectRecord(nil), projectRecords...), syfonRevision, nil
 }
 
 func projectAuditRecordWorkKey(cacheKey string, validator projectAuditRecordValidator) string {
@@ -114,10 +94,14 @@ func projectAuditRecordValidatorFromSummary(summary gintegrationsyfon.ProjectMet
 	}
 }
 
-func (service *Service) loadCachedProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string) (*sarecord.RecordSet, error) {
-	projectRecords, err := service.loadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
+func syfonRevisionFromProjectAuditValidator(validator projectAuditRecordValidator) string {
+	return fmt.Sprintf("%d:%s:%s", validator.RecordCount, validator.RecordLatestUpdatedTime, validator.RecordRevision)
+}
+
+func (service *Service) loadProjectAuditRecordSet(ctx context.Context, authorizationHeader string, organization string, project string, forceRefresh bool, share bool) (*sarecord.RecordSet, string, error) {
+	projectRecords, syfonRevision, err := service.loadProjectAuditRecordsWithRevision(ctx, authorizationHeader, organization, project, forceRefresh, share)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return buildProjectAuditRecordSet(projectRecords), nil
+	return buildProjectAuditRecordSet(projectRecords), syfonRevision, nil
 }

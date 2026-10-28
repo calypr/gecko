@@ -2,6 +2,9 @@ package storageaudit
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
@@ -9,10 +12,14 @@ import (
 	"github.com/calypr/gecko/internal/storageaudit/chain"
 	"github.com/calypr/gecko/internal/storageaudit/cleanup"
 	"github.com/calypr/gecko/internal/storageaudit/registration"
+	"github.com/calypr/gecko/internal/storageaudit/sharedwork"
+	"github.com/calypr/gecko/internal/storageaudit/storecache"
 )
 
 const cleanupInactiveDays = 30
 const projectFileUsageBulkChunkSize = 5000
+
+const StorageChainAuditWorkBudget = 15 * time.Minute
 
 type storageAnalyticsBackend interface {
 	ListBuckets(ctx context.Context, authorizationHeader string) (map[string]domain.StorageBucket, error)
@@ -43,13 +50,25 @@ type StorageAnalyticsService struct {
 	browseSvc       *browse.Service
 	chainSvc        *chain.Service
 	cleanupSvc      *cleanup.Service
+	observations    storecache.StorageObservationCache
+	auditWork       *sharedwork.Group[chain.StorageChainAuditRefreshResult]
 }
 
+type StorageAuditCaches struct {
+	Response        storecache.ResponseCache
+	ExactJoin       storecache.ExactJoinCache
+	BucketInventory storecache.BucketInventoryCache
+	Observations    storecache.StorageObservationCache
+	Coordinator     storecache.ProjectAuditCoordinator
+}
+
+// NewStorageAnalyticsService creates the domain service without cache wiring.
+// Production HTTP construction must call EnableStorageChainAuditResponseCacheFromEnv before serving.
 func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyticsService {
 	if storage == nil {
 		return nil
 	}
-	service := &StorageAnalyticsService{storage: storage}
+	service := &StorageAnalyticsService{storage: storage, auditWork: sharedwork.New[chain.StorageChainAuditRefreshResult](StorageChainAuditWorkBudget)}
 	service.registrationSvc = newRegistrationService(service)
 	service.browseSvc = newBrowseService(service)
 	service.chainSvc = newChainService(service)
@@ -58,10 +77,87 @@ func NewStorageAnalyticsService(storage storageAnalyticsBackend) *StorageAnalyti
 	return service
 }
 
-func (service *StorageAnalyticsService) EnableStorageChainAuditResponseCacheFromEnv() {
-	if service == nil {
-		return
+// NewStorageAnalyticsServiceWithCaches injects all cache dependencies, primarily for tests.
+func NewStorageAnalyticsServiceWithCaches(storage storageAnalyticsBackend, caches StorageAuditCaches) (*StorageAnalyticsService, error) {
+	if caches.Response == nil || caches.ExactJoin == nil || caches.BucketInventory == nil || caches.Observations == nil || caches.Coordinator == nil {
+		return nil, fmt.Errorf("storage audit response, exact-join, bucket-inventory, observation caches, and project coordinator are required")
 	}
-	service.chainSvc.EnableResponseCachesFromEnv()
-	service.join.enableExactCacheFromEnv()
+	service := NewStorageAnalyticsService(storage)
+	if service == nil {
+		return nil, fmt.Errorf("storage analytics service requires a storage backend")
+	}
+	service.setStorageAuditCaches(caches)
+	return service, nil
+}
+
+func (service *StorageAnalyticsService) EnableStorageChainAuditResponseCacheFromEnv() error {
+	if service == nil {
+		return fmt.Errorf("initialize storage audit caches: storage analytics service is nil")
+	}
+	responseCache, err := storecache.NewStorageChainAuditResponseCacheFromEnv()
+	if err != nil {
+		return err
+	}
+	exactJoinCache, err := storecache.NewStorageExactProjectJoinCacheFromEnv()
+	if err != nil {
+		closeCache(responseCache)
+		return err
+	}
+	bucketInventoryCache, err := storecache.NewProjectBucketInventoryCacheFromEnv()
+	if err != nil {
+		closeCache(responseCache)
+		closeCache(exactJoinCache)
+		return err
+	}
+	observationCache, err := storecache.NewStorageObservationCacheFromEnv()
+	if err != nil {
+		closeCache(responseCache)
+		closeCache(exactJoinCache)
+		closeCache(bucketInventoryCache)
+		return err
+	}
+	coordinator, err := storecache.NewRedisProjectAuditCoordinatorFromEnv()
+	if err != nil {
+		closeCache(responseCache)
+		closeCache(exactJoinCache)
+		closeCache(bucketInventoryCache)
+		closeCache(observationCache)
+		return err
+	}
+	service.setStorageAuditCaches(StorageAuditCaches{
+		Response:        responseCache,
+		ExactJoin:       exactJoinCache,
+		BucketInventory: bucketInventoryCache,
+		Observations:    observationCache,
+		Coordinator:     coordinator,
+	})
+	return nil
+}
+
+func (service *StorageAnalyticsService) setStorageAuditCaches(caches StorageAuditCaches) {
+	service.chainSvc.ChainAuditResponseCache = caches.Response
+	service.chainSvc.ProjectBucketCache = caches.BucketInventory
+	service.join.exact = caches.ExactJoin
+	service.observations = caches.Observations
+	service.chainSvc.ProjectAuditCoordinator = caches.Coordinator
+}
+
+func (service *StorageAnalyticsService) Shutdown(ctx context.Context) error {
+	if service == nil {
+		return nil
+	}
+	var shutdownErr error
+	if service.chainSvc != nil {
+		shutdownErr = errors.Join(shutdownErr, service.chainSvc.Shutdown(ctx))
+	}
+	if service.join != nil && service.join.work != nil {
+		shutdownErr = errors.Join(shutdownErr, service.join.work.Shutdown(ctx))
+	}
+	return shutdownErr
+}
+
+func closeCache(cache any) {
+	if closer, ok := cache.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }

@@ -14,6 +14,7 @@ import (
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/storageaudit/model"
 	"github.com/calypr/gecko/internal/storageaudit/repoindex"
+	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
@@ -22,28 +23,11 @@ func (service *Service) projectChainInputCacheKey(organization string, project s
 	return strings.TrimSpace(organization) + "/" + strings.TrimSpace(project)
 }
 
-func (service *Service) updateChainInputCache(cacheKey string, update func(*ChainInputCacheEntry)) {
-	service.chainInputMu.Lock()
-	defer service.chainInputMu.Unlock()
-	state := service.ChainInputCache[cacheKey]
-	if time.Now().After(state.ExpiresAt) {
-		state = ChainInputCacheEntry{}
-	}
-	state.ExpiresAt = time.Now().Add(chainInputCacheTTL)
-	update(&state)
-	service.ChainInputCache[cacheKey] = state
-}
-
 func (service *Service) evictProjectChainInputCache(organization string, project string) {
 	baseKey := service.projectChainInputCacheKey(organization, project)
-	prefix := baseKey + "::"
 	service.chainInputMu.Lock()
 	defer service.chainInputMu.Unlock()
-	for key := range service.ChainInputCache {
-		if key == baseKey || strings.HasPrefix(key, prefix) {
-			delete(service.ChainInputCache, key)
-		}
-	}
+	delete(service.projectScopeCache, baseKey)
 }
 
 func (service *Service) loadStorageChainInventory(ctx context.Context, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash) ([]model.RepoInventoryFile, error) {
@@ -57,6 +41,7 @@ func (service *Service) loadStorageChainInventory(ctx context.Context, ref strin
 type storageChainInputs struct {
 	inventory          []model.RepoInventoryFile
 	recordSet          *sarecord.RecordSet
+	syfonRevision      string
 	scopes             []domain.StorageBucketScope
 	BucketSummary      *gintegrationsyfon.ProjectBucketSummary
 	BucketObjects      []gintegrationsyfon.ProjectBucketObject
@@ -65,14 +50,15 @@ type storageChainInputs struct {
 	BucketMetadata     sarecord.BucketInventoryMetadata
 }
 
-func (service *Service) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, validationMode string, bucketPathPrefix string, forceBucketRefresh bool, timings *model.StorageChainAuditTimings) (*storageChainInputs, error) {
+func (service *Service) loadStorageChainInputs(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, bucketMode string, validationMode string, bucketPathPrefix string, forceInputRefresh bool, forceBucketRefresh bool, timings *model.StorageChainAuditTimings, lease storecache.ProjectAuditLease) (*storageChainInputs, error) {
 	type inventoryResult struct {
 		inventory []model.RepoInventoryFile
 		err       error
 	}
 	type recordResult struct {
-		recordSet *sarecord.RecordSet
-		err       error
+		recordSet     *sarecord.RecordSet
+		syfonRevision string
+		err           error
 	}
 	type scopeResult struct {
 		scopes []domain.StorageBucketScope
@@ -103,7 +89,7 @@ func (service *Service) loadStorageChainInputs(ctx context.Context, authorizatio
 	go func() {
 		start := time.Now()
 		timings.StageStart("syfon_project_records")
-		recordSet, err := service.loadCachedProjectAuditRecordSet(ctx, authorizationHeader, organization, project)
+		recordSet, syfonRevision, err := service.loadProjectAuditRecordSet(ctx, authorizationHeader, organization, project, forceInputRefresh, lease == nil)
 		timings.Record("syfon_project_records", time.Since(start))
 		recordCount := 0
 		if recordSet != nil {
@@ -111,18 +97,18 @@ func (service *Service) loadStorageChainInputs(ctx context.Context, authorizatio
 		}
 		timings.RecordMemory("syfon_project_records", "syfon_records", recordCount)
 		logStorageChainInputResult("syfon_project_records", recordCount, err)
-		recordCh <- recordResult{recordSet: recordSet, err: err}
+		recordCh <- recordResult{recordSet: recordSet, syfonRevision: syfonRevision, err: err}
 	}()
 	go func() {
 		start := time.Now()
 		timings.StageStart("syfon_project_scopes")
-		scopes, err := service.loadCachedProjectChainScopeMappings(ctx, authorizationHeader, organization, project)
+		scopes, err := service.loadCachedProjectChainScopeMappings(ctx, authorizationHeader, organization, project, forceInputRefresh)
 		timings.Record("syfon_project_scopes", time.Since(start))
 		logStorageChainInputResult("syfon_project_scopes", len(scopes), err)
 		scopeCh <- scopeResult{scopes: scopes, err: err}
 	}()
 	go func() {
-		if bucketMode == model.StorageChainBucketModeValidate && validationMode != model.StorageChainValidationModeList {
+		if bucketMode == model.StorageChainBucketModeValidate && validationMode != model.StorageChainValidationModeList && !forceBucketRefresh {
 			timings.Record("syfon_bucket_inventory_skipped", 0)
 			bucketCh <- bucketResult{
 				BucketObjects:      []gintegrationsyfon.ProjectBucketObject{},
@@ -141,9 +127,9 @@ func (service *Service) loadStorageChainInputs(ctx context.Context, authorizatio
 			// Full bucket LIST calls are expensive on some providers. Reuse the
 			// project inventory during the cooldown unless the caller explicitly
 			// requests a new bucket traversal.
-			bucketObjects, bucketObjectsByURL, metadata, err = service.loadCachedProjectBucketValidationInventory(ctx, authorizationHeader, organization, project, "", forceBucketRefresh)
+			bucketObjects, bucketObjectsByURL, metadata, err = service.loadCachedProjectBucketValidationInventoryWithLease(ctx, authorizationHeader, organization, project, "", forceBucketRefresh, lease)
 		} else {
-			bucketObjects, bucketObjectsByURL, metadata, err = service.loadCachedProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix, forceBucketRefresh)
+			bucketObjects, bucketObjectsByURL, metadata, err = service.loadProjectBucketInventory(ctx, authorizationHeader, organization, project, bucketPathPrefix)
 		}
 		timings.Record("syfon_bucket_inventory", time.Since(start))
 		timings.RecordMemory("syfon_bucket_inventory", "bucket_objects", len(bucketObjects), "bucket_lookup", len(bucketObjectsByURL))
@@ -164,9 +150,16 @@ func (service *Service) loadStorageChainInputs(ctx context.Context, authorizatio
 	if scopes.err != nil {
 		return nil, scopes.err
 	}
+	if storecache.IsCacheOperationError(bucketResultValue.err) {
+		return nil, bucketResultValue.err
+	}
+	if forceInputRefresh && bucketResultValue.err != nil {
+		return nil, bucketResultValue.err
+	}
 	return &storageChainInputs{
 		inventory:          inventory.inventory,
 		recordSet:          recordSet.recordSet,
+		syfonRevision:      recordSet.syfonRevision,
 		scopes:             scopes.scopes,
 		BucketSummary:      bucketResultValue.BucketSummary,
 		BucketObjects:      bucketResultValue.BucketObjects,

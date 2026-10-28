@@ -35,6 +35,30 @@ func (service *Service) attachProjectStorageListValidations(ctx context.Context,
 	}, nil
 }
 
+func (service *Service) attachProjectStorageProbesForAudit(ctx context.Context, authorizationHeader string, recordSet *sarecord.RecordSet, options AuditEvidenceOptions) (*sarecord.RecordSet, error) {
+	attacher, ok := service.deps.Evidence.(AuditEvidenceAttacher)
+	if !ok {
+		return service.attachProjectStorageProbes(ctx, authorizationHeader, recordSet)
+	}
+	recordsByChecksum, allProjectRecords, err := attacher.AttachStorageProbesForAudit(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords, options)
+	if err != nil {
+		return nil, err
+	}
+	return &sarecord.RecordSet{RecordsByChecksum: recordsByChecksum, AllProjectRecords: allProjectRecords}, nil
+}
+
+func (service *Service) attachProjectStorageListValidationsForAudit(ctx context.Context, authorizationHeader string, recordSet *sarecord.RecordSet, options AuditEvidenceOptions) (*sarecord.RecordSet, error) {
+	attacher, ok := service.deps.Evidence.(AuditEvidenceAttacher)
+	if !ok {
+		return service.attachProjectStorageListValidations(ctx, authorizationHeader, recordSet)
+	}
+	recordsByChecksum, allProjectRecords, err := attacher.AttachStorageListValidationsForAudit(ctx, authorizationHeader, recordSet.RecordsByChecksum, recordSet.AllProjectRecords, options)
+	if err != nil {
+		return nil, err
+	}
+	return &sarecord.RecordSet{RecordsByChecksum: recordsByChecksum, AllProjectRecords: allProjectRecords}, nil
+}
+
 func attachProjectStorageInventoryValidations(recordSet *sarecord.RecordSet, inventory []model.RepoInventoryFile, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string) (*sarecord.RecordSet, error) {
 	if recordSet == nil {
 		return nil, nil

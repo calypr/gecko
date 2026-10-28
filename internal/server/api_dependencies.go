@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -17,7 +18,7 @@ import (
 // newAPIServer builds the strict OpenAPI server implementation from the
 // application services, so the generated router enforces the same behavior and
 // authorization the HTTP surface always had.
-func (server *Server) newAPIServer() *apiserver.Server {
+func (server *Server) newAPIServer() (*apiserver.Server, error) {
 	s := &apiserver.Server{
 		Logger:            server.Logger,
 		DB:                server.db,
@@ -27,7 +28,7 @@ func (server *Server) newAPIServer() *apiserver.Server {
 		Authz:             access.NewFenceUserAccessHandler(nil),
 	}
 	if server.repoService == nil {
-		return s
+		return s, nil
 	}
 
 	storageManager := gintegrationsyfon.NewManager(strings.TrimSpace(os.Getenv("SYFON_DATA_API_BASE_URL")), nil)
@@ -42,8 +43,10 @@ func (server *Server) newAPIServer() *apiserver.Server {
 	}
 	if storageManager != nil {
 		s.StorageAnalytics = storageaudit.NewStorageAnalyticsService(storageManager)
-		s.StorageAnalytics.EnableStorageChainAuditResponseCacheFromEnv()
+		if err := s.StorageAnalytics.EnableStorageChainAuditResponseCacheFromEnv(); err != nil {
+			return nil, fmt.Errorf("initialize storage analytics caches: %w", err)
+		}
 		s.Analytics = gitanalytics.NewService(s.ProjectRead, s.StorageAnalytics)
 	}
-	return s
+	return s, nil
 }

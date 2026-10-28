@@ -27,11 +27,12 @@ func (service *StorageAnalyticsService) loadProjectChainScopeMappings(ctx contex
 func newChainService(service *StorageAnalyticsService) *chain.Service {
 	store := chainStore{service: service}
 	return chain.New(chain.Dependencies{
-		Join:     store,
-		Records:  store,
-		Scopes:   store,
-		Buckets:  store,
-		Evidence: store,
+		Join:      store,
+		Records:   store,
+		Scopes:    store,
+		Buckets:   store,
+		Evidence:  store,
+		AuditWork: service.auditWork,
 	})
 }
 
@@ -90,6 +91,14 @@ func (store chainStore) AttachStorageProbes(ctx context.Context, authorizationHe
 
 func (store chainStore) AttachStorageListValidations(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State) (map[string][]record.State, map[string][]record.State, error) {
 	return store.service.attachStorageListValidations(ctx, authorizationHeader, recordsByChecksum, allProjectRecords)
+}
+
+func (store chainStore) AttachStorageProbesForAudit(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State, options chain.AuditEvidenceOptions) (map[string][]record.State, map[string][]record.State, error) {
+	return store.service.attachStorageProbesForAudit(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, options)
+}
+
+func (store chainStore) AttachStorageListValidationsForAudit(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State, options chain.AuditEvidenceOptions) (map[string][]record.State, map[string][]record.State, error) {
+	return store.service.attachStorageListValidationsForAudit(ctx, authorizationHeader, recordsByChecksum, allProjectRecords, options)
 }
 
 func (store chainStore) LoadStorageAuditSyfonRevision(ctx context.Context, authorizationHeader string, organization string, project string) (string, error) {

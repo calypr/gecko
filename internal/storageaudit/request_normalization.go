@@ -145,21 +145,23 @@ func NormalizeStorageChainAuditRequest(request ChainAuditRequest) (NormalizedCha
 	if bucketPathPrefix != "" && bucketMode != StorageChainBucketModeItems {
 		return NormalizedChainAuditRequest{}, fmt.Errorf("bucket_path_prefix requires bucket_inventory_mode=items")
 	}
-	forceBucketRefresh := request.ForceBucketInventoryRefresh
-	forceAuditRefresh := request.Refresh || request.ForceAuditRefresh || forceBucketRefresh
+	forceBucketRefresh := request.ForceBucketInventoryRefresh || request.ForceStorageRevalidation
+	forceStorageRevalidation := request.ForceStorageRevalidation
+	forceAuditRefresh := request.Refresh || request.ForceAuditRefresh || request.ForceBucketInventoryRefresh || forceStorageRevalidation
 	return NormalizedChainAuditRequest{
 		GitSubpath:       normalizeSubpath(request.GitSubpath),
 		BucketPathPrefix: bucketPathPrefix,
 		FindingKind:      strings.TrimSpace(request.FindingKind),
 		Options: StorageChainAuditOptions{
-			ProbeMode:           probeMode,
-			ValidationMode:      validationMode,
-			BucketInventoryMode: bucketMode,
-			BucketPathPrefix:    bucketPathPrefix,
-			FindingKind:         strings.TrimSpace(request.FindingKind),
-			FindingLimit:        request.FindingLimit,
-			ForceAuditRefresh:   forceAuditRefresh,
-			ForceBucketRefresh:  forceBucketRefresh,
+			ProbeMode:                probeMode,
+			ValidationMode:           validationMode,
+			BucketInventoryMode:      bucketMode,
+			BucketPathPrefix:         bucketPathPrefix,
+			FindingKind:              strings.TrimSpace(request.FindingKind),
+			FindingLimit:             request.FindingLimit,
+			ForceAuditRefresh:        forceAuditRefresh,
+			ForceBucketRefresh:       forceBucketRefresh,
+			ForceStorageRevalidation: forceStorageRevalidation,
 		},
 	}, nil
 }

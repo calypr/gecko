@@ -15,11 +15,19 @@ func (manager *Manager) BulkProbeStorageObjects(ctx context.Context, authorizati
 	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false, false)
 }
 
+func (manager *Manager) BulkProbeStorageObjectsWithProgress(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem, onBatch func([]BulkStorageProbeItem, []BulkStorageProbeResult) error) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequestWithProgress(ctx, authorizationHeader, "/data/inspect/bulk", items, false, false, onBatch)
+}
+
 func (manager *Manager) BulkConfirmStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
 	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk", items, false, true)
 }
 
 func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool, confirmMissing bool) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequestWithProgress(ctx, authorizationHeader, requestPath, items, includeExpectedName, confirmMissing, nil)
+}
+
+func (manager *Manager) bulkStorageObjectRequestWithProgress(ctx context.Context, authorizationHeader string, requestPath string, items []BulkStorageProbeItem, includeExpectedName bool, confirmMissing bool, onBatch func([]BulkStorageProbeItem, []BulkStorageProbeResult) error) ([]BulkStorageProbeResult, error) {
 	if len(items) == 0 {
 		return []BulkStorageProbeResult{}, nil
 	}
@@ -43,21 +51,56 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, bulkStorageProbeConcurrency)
 	var firstErr error
+	var launchErr error
 	for start := 0; start < len(items); start += bulkStorageProbeBatchSize {
+		if err := ctx.Err(); err != nil {
+			launchErr = err
+			break
+		}
 		end := start + bulkStorageProbeBatchSize
 		if end > len(items) {
 			end = len(items)
 		}
 		batchStart := start
 		batch := append([]BulkStorageProbeItem(nil), items[start:end]...)
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			launchErr = ctx.Err()
+			break
+		}
+		if launchErr != nil {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			<-sem
+			launchErr = err
+			break
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
 			batchStarted := time.Now()
 			results, err := manager.probeStorageObjectBatch(ctx, authorizationHeader, requestPath, batch, includeExpectedName, confirmMissing)
 			batchMs := time.Since(batchStarted).Milliseconds()
+			if err == nil && onBatch != nil {
+				if err = validateBulkStorageObservationBatch(batch, results); err == nil {
+					observedAt := time.Now().UTC().Format(time.RFC3339Nano)
+					for index := range results {
+						results[index].ObservedAt = observedAt
+					}
+					err = onBatch(append([]BulkStorageProbeItem(nil), batch...), append([]BulkStorageProbeResult(nil), results...))
+				}
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -78,6 +121,10 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 		log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d error=%q", requestPath, len(items), len(resultsByID), batchCount, time.Since(started).Milliseconds(), firstErr.Error())
 		return nil, firstErr
 	}
+	if launchErr != nil {
+		log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d results=%d batches=%d duration_ms=%d error=%q", requestPath, len(items), len(resultsByID), batchCount, time.Since(started).Milliseconds(), launchErr.Error())
+		return nil, launchErr
+	}
 	out := make([]BulkStorageProbeResult, 0, len(requestItems))
 	for _, item := range requestItems {
 		resultKey := resultKeyByOriginalID[strings.TrimSpace(item.ID)]
@@ -88,6 +135,50 @@ func (manager *Manager) bulkStorageObjectRequest(ctx context.Context, authorizat
 	}
 	log.Printf("INFO: syfon_bulk_storage_request_done path=%s items=%d unique_items=%d results=%d batches=%d duration_ms=%d", requestPath, len(requestItems), len(items), len(out), batchCount, time.Since(started).Milliseconds())
 	return out, nil
+}
+
+func validateBulkStorageObservationBatch(items []BulkStorageProbeItem, results []BulkStorageProbeResult) error {
+	expectedByID := make(map[string]string, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			return fmt.Errorf("bulk storage observation request contains an empty item ID")
+		}
+		expectedByID[id] = canonicalStorageProbeURL(item.ObjectURL)
+	}
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		id := strings.TrimSpace(result.ID)
+		expectedURL, ok := expectedByID[id]
+		if !ok {
+			return fmt.Errorf("bulk storage observation returned unrequested item ID %q", id)
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("bulk storage observation returned duplicate item ID %q", id)
+		}
+		seen[id] = struct{}{}
+		actualURL := canonicalStorageProbeURL(result.ObjectURL)
+		if actualURL == "" && strings.TrimSpace(result.Bucket) != "" && strings.TrimSpace(result.Key) != "" {
+			actualURL = canonicalStorageProbeURL("s3://" + strings.TrimSpace(result.Bucket) + "/" + strings.Trim(strings.TrimSpace(result.Key), "/"))
+		}
+		if expectedURL == "" || actualURL != expectedURL {
+			return fmt.Errorf("bulk storage observation for item %q returned URL %q, expected %q", id, actualURL, expectedURL)
+		}
+	}
+	return nil
+}
+
+func canonicalStorageProbeURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "s3://") {
+		return ""
+	}
+	rest := strings.TrimLeft(trimmed[len("s3://"):], "/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.Trim(strings.TrimSpace(parts[1]), "/") == "" {
+		return ""
+	}
+	return "s3://" + strings.TrimSpace(parts[0]) + "/" + strings.Trim(strings.TrimSpace(parts[1]), "/")
 }
 
 func dedupeBulkStorageProbeItems(items []BulkStorageProbeItem, includeExpectedName bool) ([]BulkStorageProbeItem, map[string]string) {
@@ -215,6 +306,10 @@ func (manager *Manager) probeStorageObjectBatch(ctx context.Context, authorizati
 
 func (manager *Manager) BulkListStorageObjects(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem) ([]BulkStorageProbeResult, error) {
 	return manager.bulkStorageObjectRequest(ctx, authorizationHeader, "/data/inspect/bulk-list", items, true, false)
+}
+
+func (manager *Manager) BulkListStorageObjectsWithProgress(ctx context.Context, authorizationHeader string, items []BulkStorageProbeItem, onBatch func([]BulkStorageProbeItem, []BulkStorageProbeResult) error) ([]BulkStorageProbeResult, error) {
+	return manager.bulkStorageObjectRequestWithProgress(ctx, authorizationHeader, "/data/inspect/bulk-list", items, true, false, onBatch)
 }
 
 func (manager *Manager) ListProjectBucketSummary(ctx context.Context, authorizationHeader string, organization string, project string, mode string) (*ProjectBucketSummary, error) {

@@ -11,6 +11,7 @@ func CloneCachedResponse(value CachedResponse) CachedResponse {
 		CachedAt:              value.CachedAt,
 		RefreshDurationMillis: value.RefreshDurationMillis,
 		Response:              CloneResponse(value.Response),
+		Inventory:             append([]model.RepoInventoryFile(nil), value.Inventory...),
 	}
 }
 

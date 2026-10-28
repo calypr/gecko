@@ -83,8 +83,6 @@ func (service *Service) executeStorageCleanupApplyPlan(ctx context.Context, auth
 		deletedBucketObjectURLs = sarecord.UniqueStrings(deletedBucketObjectURLs)
 	}
 	if len(plan.UpdateAccessMethods) > 0 || len(toDelete) > 0 || len(toDeleteBucketObjects) > 0 {
-		service.store.EvictProjectJoinCache(organization, project)
-		service.store.EvictProjectAuditRecordCache(organization, project)
 		service.store.EvictProjectChainInputCache(organization, project)
 	}
 	for _, objectID := range toDelete {

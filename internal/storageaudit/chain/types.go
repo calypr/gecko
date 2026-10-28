@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -10,14 +11,14 @@ import (
 	"github.com/calypr/gecko/internal/storageaudit/model"
 	"github.com/calypr/gecko/internal/storageaudit/record"
 	"github.com/calypr/gecko/internal/storageaudit/repoindex"
+	"github.com/calypr/gecko/internal/storageaudit/sharedwork"
 	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
 const (
-	chainInputCacheTTL               = 45 * time.Second
-	chainProjectRecordCacheMaxAge    = 30 * time.Minute
+	projectScopeCacheTTL             = 45 * time.Second
 	storageChainValidationDebugLimit = 20
 )
 
@@ -62,12 +63,36 @@ type EvidenceAttacher interface {
 	AttachStorageListValidations(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State) (map[string][]record.State, map[string][]record.State, error)
 }
 
+type AuditEvidenceOptions struct {
+	Organization             string
+	Project                  string
+	Scopes                   []domain.StorageBucketScope
+	BucketObjects            []gintegrationsyfon.ProjectBucketObject
+	BucketObjectsByURL       map[string]gintegrationsyfon.ProjectBucketObject
+	BucketInventoryComplete  bool
+	BucketInventoryStale     bool
+	BucketPathPrefix         string
+	ForceStorageRevalidation bool
+}
+
+type AuditEvidenceAttacher interface {
+	AttachStorageProbesForAudit(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State, options AuditEvidenceOptions) (map[string][]record.State, map[string][]record.State, error)
+	AttachStorageListValidationsForAudit(ctx context.Context, authorizationHeader string, recordsByChecksum map[string][]record.State, allProjectRecords map[string][]record.State, options AuditEvidenceOptions) (map[string][]record.State, map[string][]record.State, error)
+}
+
 type Dependencies struct {
-	Join     JoinReader
-	Records  RecordReader
-	Scopes   ScopeReader
-	Buckets  BucketReader
-	Evidence EvidenceAttacher
+	Join      JoinReader
+	Records   RecordReader
+	Scopes    ScopeReader
+	Buckets   BucketReader
+	Evidence  EvidenceAttacher
+	AuditWork *sharedwork.Group[StorageChainAuditRefreshResult]
+}
+
+type StorageChainAuditRefreshResult struct {
+	Response    storecache.CachedResponse
+	CacheHit    bool
+	CacheSource string
 }
 
 type chainAuditModel struct {
@@ -76,27 +101,9 @@ type chainAuditModel struct {
 	PathPrefix string
 }
 
-type ChainInputCacheEntry struct {
-	ExpiresAt          time.Time
-	ProjectRecords     []gintegrationsyfon.ProjectRecord
-	ProjectScopes      []domain.StorageBucketScope
-	BucketSummary      *gintegrationsyfon.ProjectBucketSummary
-	BucketObjects      []gintegrationsyfon.ProjectBucketObject
-	BucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject
-	BucketMetadata     record.BucketInventoryMetadata
-}
-
-type cachedProjectAuditRecordState struct {
-	records   []gintegrationsyfon.ProjectRecord
-	validator projectAuditRecordValidator
-	cachedAt  time.Time
-}
-
-type inflightProjectAuditRecordState struct {
-	done      chan struct{}
-	records   []gintegrationsyfon.ProjectRecord
-	validator projectAuditRecordValidator
-	err       error
+type cachedProjectScopeState struct {
+	expiresAt time.Time
+	scopes    []domain.StorageBucketScope
 }
 
 type projectAuditRecordValidator struct {
@@ -109,35 +116,33 @@ type Service struct {
 	deps Dependencies
 
 	chainInputMu      sync.RWMutex
-	ChainInputCache   map[string]ChainInputCacheEntry
-	projectAuditCache map[string]cachedProjectAuditRecordState
-	projectAuditWork  map[string]*inflightProjectAuditRecordState
+	projectScopeCache map[string]cachedProjectScopeState
+	projectAuditWork  *sharedwork.Group[[]gintegrationsyfon.ProjectRecord]
 
-	ChainAuditRefreshMu     sync.Mutex
-	ChainAuditRefreshWork   map[string]*InflightResponseRefresh
+	auditWork               *sharedwork.Group[StorageChainAuditRefreshResult]
+	ProjectAuditCoordinator storecache.ProjectAuditCoordinator
 	ChainAuditResponseCache storecache.ResponseCache
 	ProjectBucketCache      storecache.BucketInventoryCache
 }
 
 func New(deps Dependencies) *Service {
+	auditWork := deps.AuditWork
+	if auditWork == nil {
+		auditWork = sharedwork.New[StorageChainAuditRefreshResult](sharedwork.DefaultBudget)
+	}
 	return &Service{
-		deps:                  deps,
-		ChainInputCache:       map[string]ChainInputCacheEntry{},
-		projectAuditCache:     map[string]cachedProjectAuditRecordState{},
-		projectAuditWork:      map[string]*inflightProjectAuditRecordState{},
-		ChainAuditRefreshWork: map[string]*InflightResponseRefresh{},
+		deps:              deps,
+		projectScopeCache: map[string]cachedProjectScopeState{},
+		projectAuditWork:  sharedwork.New[[]gintegrationsyfon.ProjectRecord](sharedwork.DefaultBudget),
+		auditWork:         auditWork,
 	}
 }
 
-func (service *Service) EvictProjectAuditRecords(cacheKey string) {
-	service.chainInputMu.Lock()
-	delete(service.projectAuditCache, cacheKey)
-	service.chainInputMu.Unlock()
-}
-
-func (service *Service) EnableResponseCachesFromEnv() {
-	service.ChainAuditResponseCache = storecache.NewStorageChainAuditResponseCacheFromEnv()
-	service.ProjectBucketCache = storecache.NewProjectBucketInventoryCacheFromEnv()
+func (service *Service) Shutdown(ctx context.Context) error {
+	if service == nil {
+		return nil
+	}
+	return errors.Join(service.auditWork.Shutdown(ctx), service.projectAuditWork.Shutdown(ctx))
 }
 
 func (service *Service) LoadCachedProjectBucketValidationInventory(ctx context.Context, authorizationHeader string, organization string, project string, bucketPathPrefix string, forceRefresh bool) ([]gintegrationsyfon.ProjectBucketObject, map[string]gintegrationsyfon.ProjectBucketObject, record.BucketInventoryMetadata, error) {
@@ -182,18 +187,6 @@ func (service *Service) LoadStorageChainInventory(ctx context.Context, ref strin
 	return service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
 }
 
-func (service *Service) LoadCachedProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
-	return service.loadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
-}
-
-func (service *Service) ProjectChainInputCacheKey(organization string, project string) string {
-	return service.projectChainInputCacheKey(organization, project)
-}
-
-func (service *Service) ExpireChainInputCacheEntry(key string) {
-	service.chainInputMu.Lock()
-	entry := service.ChainInputCache[key]
-	entry.ExpiresAt = time.Now().Add(-time.Second)
-	service.ChainInputCache[key] = entry
-	service.chainInputMu.Unlock()
+func (service *Service) LoadProjectAuditRecords(ctx context.Context, authorizationHeader string, organization string, project string) ([]gintegrationsyfon.ProjectRecord, error) {
+	return service.loadProjectAuditRecords(ctx, authorizationHeader, organization, project)
 }

@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/jmoiron/sqlx"
 
 	appconfig "github.com/calypr/gecko/config"
@@ -71,11 +75,42 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize gecko server: %v", err)
 	}
-	app := geckoServer.MakeRouter()
 	addr := fmt.Sprintf(":%d", *port)
 	logger.Println("gecko serving at", addr)
-	if err := app.Listen(addr, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
-		log.Fatal("Server failed to start:", err)
+
+	serviceContext, cancelService := context.WithCancel(context.Background())
+	defer cancelService()
+	httpServer, err := geckoServer.MakeHTTPServer(addr, serviceContext)
+	if err != nil {
+		log.Fatalf("Failed to initialize gecko HTTP server: %v", err)
+	}
+	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal("Server failed to start:", err)
+		}
+	case <-shutdownSignal.Done():
+		logger.Println("shutting down gecko")
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelShutdown()
+		cancelService()
+		if err := geckoServer.Shutdown(shutdownContext); err != nil {
+			logger.Printf("failed to stop storage audit work cleanly: %v", err)
+		}
+		if err := httpServer.Shutdown(shutdownContext); err != nil {
+			logger.Printf("failed to shut down HTTP server cleanly: %v", err)
+			_ = httpServer.Close()
+		}
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Printf("HTTP server stopped with error: %v", err)
+		}
 	}
 }
 

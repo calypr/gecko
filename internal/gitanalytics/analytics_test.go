@@ -23,6 +23,17 @@ func TestWrapErrorClassifiesCleanupApplyValidation(t *testing.T) {
 	}
 }
 
+func TestWrapErrorClassifiesStaleCleanupAuditAsConflict(t *testing.T) {
+	err := WrapError(fmt.Errorf("cleanup audit is stale because the Git revision changed; refresh audit before applying cleanup"), &Target{ProjectID: "org/proj", RefName: "main"}, "data")
+	var appErr *domain.Error
+	if !errors.As(err, &appErr) {
+		t.Fatalf("expected domain error, got %v", err)
+	}
+	if appErr.StatusCode != http.StatusConflict || string(appErr.Type) != "conflict" {
+		t.Fatalf("unexpected stale audit error mapping: %+v", appErr)
+	}
+}
+
 func TestWrapErrorPreservesDomainErrors(t *testing.T) {
 	original := domain.NewTypedError(domain.ErrorKindNotFound, "not_found", http.StatusNotFound, "missing", nil)
 	if err := WrapError(original, nil, ""); err != original {

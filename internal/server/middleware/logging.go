@@ -1,45 +1,104 @@
 package middleware
 
 import (
+	"io"
+	"net"
+	"net/http"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/uc-cdis/arborist/arborist"
 )
 
-func RequestLogger(logger arborist.Logger) fiber.Handler {
-	return func(ctx fiber.Ctx) error {
+func RequestLogger(logger arborist.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		err := ctx.Next()
-		latency := time.Since(start)
+		response := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(response, r)
 
-		routePattern := "<unmatched>"
-		if route := ctx.Route(); route != nil && route.Path != "" {
-			routePattern = route.Path
+		status := response.status
+		if status == 0 {
+			status = http.StatusOK
 		}
-
+		route := r.Pattern
+		if route == "" {
+			route = r.URL.Path
+		}
 		logger.Info(
 			"%s %s - Status: %d - Latency: %s - Host: %s - IP: %s - Path: %s - Query: %s - Route: %s - Params: %v - RequestID: %s",
-			ctx.Method(),
-			ctx.OriginalURL(),
-			ctx.Response().StatusCode(),
-			latency,
-			ctx.Hostname(),
-			ctx.IP(),
-			ctx.Path(),
-			string(ctx.Request().URI().QueryString()),
-			routePattern,
-			routeParams(ctx),
-			ctx.Get("X-Request-Id"),
+			r.Method,
+			r.URL.RequestURI(),
+			status,
+			time.Since(start),
+			r.Host,
+			clientIP(r.RemoteAddr),
+			r.URL.Path,
+			r.URL.RawQuery,
+			route,
+			pathParams(r),
+			r.Header.Get("X-Request-Id"),
 		)
-		return err
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *statusWriter) ReadFrom(source io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(source)
+	}
+	return io.Copy(writerOnly{Writer: w}, source)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *statusWriter) Flush() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
-func routeParams(ctx fiber.Ctx) map[string]string {
+type writerOnly struct {
+	io.Writer
+}
+
+func clientIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
+func pathParams(r *http.Request) map[string]string {
 	params := make(map[string]string)
-	for _, name := range []string{"configType", "configId", "orgTitle", "projectTitle", "projectId", "collection", "id"} {
-		if value := ctx.Params(name); value != "" {
+	for _, name := range []string{"configType", "configId", "orgTitle", "projectTitle", "projectId", "collection", "id", "path"} {
+		if value := r.PathValue(name); value != "" {
 			params[name] = value
 		}
 	}

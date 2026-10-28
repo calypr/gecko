@@ -12,6 +12,7 @@ type ChainAuditRequest struct {
 	FindingLimit                int    `json:"finding_limit,omitempty"`
 	ForceAuditRefresh           bool   `json:"force_audit_refresh,omitempty"`
 	ForceBucketInventoryRefresh bool   `json:"force_bucket_inventory_refresh,omitempty"`
+	ForceStorageRevalidation    bool   `json:"force_storage_revalidation,omitempty"`
 }
 
 type ChainFinding struct {

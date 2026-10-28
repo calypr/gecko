@@ -8,6 +8,21 @@ import (
 	"github.com/calypr/gecko/internal/storageaudit/model"
 )
 
+func filterStorageChainInventory(inventory []model.RepoInventoryFile, gitSubpath string) []model.RepoInventoryFile {
+	pathPrefix := sarecord.NormalizeRepoSubpath(gitSubpath)
+	if pathPrefix == "" {
+		return append([]model.RepoInventoryFile(nil), inventory...)
+	}
+	filtered := make([]model.RepoInventoryFile, 0)
+	for _, file := range inventory {
+		path := sarecord.NormalizeRepoSubpath(file.RepoPath)
+		if path == pathPrefix || strings.HasPrefix(path, pathPrefix+"/") {
+			filtered = append(filtered, file)
+		}
+	}
+	return filtered
+}
+
 func projectStorageChainAuditResponseForSubpath(base model.ChainAuditResponse, gitSubpath string, inventory []model.RepoInventoryFile, findingKind string, findingLimit int) *model.ChainAuditResponse {
 	pathPrefix := sarecord.NormalizeRepoSubpath(gitSubpath)
 	filteredFindings := make([]model.ChainFinding, 0, len(base.Findings))

@@ -51,7 +51,7 @@ func buildStorageChainIndex(inventory []model.RepoInventoryFile, allProjectRecor
 	}
 }
 
-func buildStorageChainAuditModel(gitSubpath string, inventory []model.RepoInventoryFile, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string, includeBucketOrigin bool) *chainAuditModel {
+func buildStorageChainAuditModel(gitSubpath string, inventory []model.RepoInventoryFile, recordsByChecksum map[string][]sarecord.State, allProjectRecords map[string][]sarecord.State, bucketObjectsByURL map[string]gintegrationsyfon.ProjectBucketObject, scopes []domain.StorageBucketScope, organization string, project string, includeBucketOrigin bool, countCompleteFromSyfon bool) *chainAuditModel {
 	index := buildStorageChainIndex(inventory, allProjectRecords, bucketObjectsByURL, scopes, organization, project)
 	acc := chainAuditAccumulator{
 		findings: make([]model.ChainFinding, 0),
@@ -60,7 +60,7 @@ func buildStorageChainAuditModel(gitSubpath string, inventory []model.RepoInvent
 	if includeBucketOrigin {
 		buildBucketOriginChainFindings(index, &acc)
 	}
-	buildSyfonOriginChainFindings(index, &acc, !includeBucketOrigin)
+	buildSyfonOriginChainFindings(index, &acc, countCompleteFromSyfon)
 	buildGitOriginChainFindings(index, recordsByChecksum, allProjectRecords, scopes, organization, project, &acc)
 	return finalizeChainFindings(gitSubpath, acc)
 }

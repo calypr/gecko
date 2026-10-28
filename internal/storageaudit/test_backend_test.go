@@ -166,6 +166,7 @@ type fakeStorageAnalyticsBackend struct {
 	mu                                   sync.Mutex
 	projectRecords                       []gintegrationsyfon.ProjectRecord
 	projectMetricsSummary                *gintegrationsyfon.ProjectMetricsSummary
+	getProjectMetricsSummaryErr          error
 	bulkRecords                          map[string][]gintegrationsyfon.ProjectRecord
 	buckets                              map[string]domain.StorageBucket
 	bucketScopes                         map[string][]domain.StorageBucketScope
@@ -255,6 +256,9 @@ func (fake *fakeStorageAnalyticsBackend) GetProjectMetricsSummary(ctx context.Co
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.getProjectMetricsSummaryCalls++
+	if fake.getProjectMetricsSummaryErr != nil {
+		return nil, fake.getProjectMetricsSummaryErr
+	}
 	if fake.projectMetricsSummary != nil {
 		summary := *fake.projectMetricsSummary
 		return &summary, nil

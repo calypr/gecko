@@ -15,8 +15,6 @@ type Store interface {
 	BulkDeleteObjects(ctx context.Context, authorizationHeader string, objectIDs []string, deleteStorageData bool) error
 	DeleteProjectBucketObjects(ctx context.Context, authorizationHeader string, organization string, project string, objectURLs []string) ([]gintegrationsyfon.ProjectBucketDeleteResult, error)
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
-	EvictProjectJoinCache(organization string, project string)
-	EvictProjectAuditRecordCache(organization string, project string)
 	EvictProjectChainInputCache(organization string, project string)
 }
 

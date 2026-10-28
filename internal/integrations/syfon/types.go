@@ -58,6 +58,8 @@ type BulkStorageProbeResult struct {
 	NameMatch            *bool
 	SHA256Match          *bool
 	ValidationMismatches []string
+	ObservedAt           string
+	CacheHit             bool
 }
 
 type ProjectBucketSummary struct {

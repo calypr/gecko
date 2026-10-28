@@ -22,8 +22,6 @@ type Store interface {
 	BulkGetProjectRecordsByChecksum(ctx context.Context, authorizationHeader string, organization string, project string, checksums []string) (map[string][]gintegrationsyfon.ProjectRecord, error)
 	BulkProbeStorageObjects(ctx context.Context, authorizationHeader string, items []gintegrationsyfon.BulkStorageProbeItem) ([]gintegrationsyfon.BulkStorageProbeResult, error)
 	RegisterProjectObjects(ctx context.Context, authorizationHeader string, candidates []gintegrationsyfon.ProjectObjectRegistration) ([]gintegrationsyfon.ProjectObjectRegistrationResult, error)
-	EvictProjectJoinCache(organization string, project string)
-	EvictProjectAuditRecordCache(organization string, project string)
 }
 
 type Service struct {
@@ -197,8 +195,6 @@ func (service *Service) RegisterGitOnlySyfonRecords(ctx context.Context, authori
 				results[resultIndex].Reason = "Syfon record created after Git pointer and bucket object verification"
 			}
 		}
-		service.store.EvictProjectJoinCache(organization, project)
-		service.store.EvictProjectAuditRecordCache(organization, project)
 	}
 	return &model.GitOnlySyfonRegistrationResponse{GitRevision: hash.String(), Results: results}, nil
 }

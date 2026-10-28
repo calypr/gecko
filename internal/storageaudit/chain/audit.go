@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 
 	"github.com/calypr/gecko/internal/storageaudit/model"
+	"github.com/calypr/gecko/internal/storageaudit/sharedwork"
 	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -20,30 +22,21 @@ func (service *Service) BuildStorageChainAuditWithOptions(ctx context.Context, a
 	if err != nil {
 		return nil, err
 	}
-	if service.ChainAuditResponseCache != nil && storageChainAuditResponseCacheAllowed(gitSubpath, normalized) {
+	normalized.ForceAuditRefresh = normalized.ForceAuditRefresh || normalized.ForceBucketRefresh || normalized.ForceStorageRevalidation
+	normalized.ForceBucketRefresh = normalized.ForceBucketRefresh || normalized.ForceStorageRevalidation
+	if service.ChainAuditResponseCache != nil {
 		return service.buildStorageChainAuditWithResponseCache(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
 	}
-	if service.ChainAuditResponseCache != nil && storageChainAuditRootResponseProjectionAllowed(gitSubpath, normalized) {
-		response, ok, err := service.projectStorageChainAuditFromRootResponseCache(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
-		if err != nil {
+	response, _, err := service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized, nil)
+	if err != nil {
+		return nil, err
+	}
+	if normalized.ForceAuditRefresh {
+		if err := storageChainAuditSnapshotFailure(*response, normalized); err != nil {
 			return nil, err
 		}
-		if ok {
-			return response, nil
-		}
 	}
-	if service.ChainAuditResponseCache != nil && normalized.Timings != nil {
-		normalized.Timings.Record("audit_response_cache_bypass_non_root", 0)
-	}
-	return service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, normalized)
-}
-
-func storageChainAuditResponseCacheAllowed(gitSubpath string, options model.StorageChainAuditOptions) bool {
-	return sarecord.NormalizeRepoSubpath(gitSubpath) == "" && sarecord.NormalizeRepoSubpath(options.BucketPathPrefix) == ""
-}
-
-func storageChainAuditRootResponseProjectionAllowed(gitSubpath string, options model.StorageChainAuditOptions) bool {
-	return sarecord.NormalizeRepoSubpath(gitSubpath) != "" && sarecord.NormalizeRepoSubpath(options.BucketPathPrefix) == "" && !options.ForceAuditRefresh
+	return response, nil
 }
 
 func normalizeStorageChainAuditOptions(options model.StorageChainAuditOptions) (model.StorageChainAuditOptions, error) {
@@ -77,57 +70,110 @@ func normalizeStorageChainAuditOptions(options model.StorageChainAuditOptions) (
 }
 
 func (service *Service) buildStorageChainAuditWithResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions) (*model.ChainAuditResponse, error) {
-	syfonRevision, err := service.deps.Records.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
-	if err != nil {
-		return nil, err
-	}
-	cacheKey := storecache.StorageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, options.BucketPathPrefix, hash.String(), syfonRevision)
 	cache := service.ChainAuditResponseCache
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options)
 	if !options.ForceAuditRefresh {
 		start := time.Now()
-		cached, ok, err := cache.Get(ctx, cacheKey)
+		exact, hasExact, err := cache.Get(ctx, cacheKey)
 		options.Timings.Record("audit_response_cache_lookup", time.Since(start))
 		if err != nil {
 			logStorageChainAuditCacheError(options.Timings, cache.Source(), "get", err)
+			return nil, fmt.Errorf("load storage chain audit snapshot from %s cache: %w", cache.Source(), err)
 		}
-		if ok {
-			response := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
-			applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cached.RefreshDurationMillis, cache.Source(), "")
-			options.Timings.Record("audit_response_cache_hit", 0)
-			options.Timings.RecordMemory(
-				"audit_response_cache_hit",
-				"total_findings", response.Summary.TotalFindings,
-				"returned_findings", response.Summary.ReturnedFindings,
-				"finding_limit", options.FindingLimit,
-			)
-			return response, nil
+		if storageChainAuditRootResponseProjectionAllowed(gitSubpath, options) {
+			exactCachedAt := time.Time{}
+			if hasExact {
+				exactCachedAt = exact.CachedAt
+			}
+			projectedResponse, projected, err := service.projectStorageChainAuditFromRootResponseCache(ctx, organization, project, ref, gitSubpath, exactCachedAt, options)
+			if err != nil {
+				return nil, err
+			}
+			if projected {
+				return cachedStorageChainAuditResponse(projectedResponse, true, cache.Source()+":root", options), nil
+			}
+		}
+		if hasExact {
+			return cachedStorageChainAuditResponse(exact, true, cache.Source(), options), nil
 		}
 		options.Timings.Record("audit_response_cache_miss", 0)
 	} else {
 		options.Timings.Record("audit_response_cache_force_refresh", 0)
 	}
 
-	cached, joinedRefresh, err := service.coalesceStorageChainAuditRefresh(ctx, cacheKey, options.ForceBucketRefresh, func() (storecache.CachedResponse, error) {
-		buildOptions := options
+	workOptions := options
+	if options.Timings != nil {
+		workOptions.Timings = &model.StorageChainAuditTimings{Logf: options.Timings.Logf, DebugPrefix: options.Timings.DebugPrefix}
+	}
+	refreshResult, joinedRefresh, err := service.coalesceStorageChainAuditRefresh(ctx, organization, project, authorizationHeader, cacheKey, options.ForceAuditRefresh, options.ForceBucketRefresh, options.ForceStorageRevalidation, func(workCtx context.Context) (result StorageChainAuditRefreshResult, retErr error) {
+		if service.ProjectAuditCoordinator == nil {
+			return StorageChainAuditRefreshResult{}, fmt.Errorf("storage chain audit project coordinator is required")
+		}
+		lease, err := service.ProjectAuditCoordinator.AcquireProject(workCtx, organization, project)
+		if err != nil {
+			return StorageChainAuditRefreshResult{}, fmt.Errorf("acquire storage chain audit project lease: %w", err)
+		}
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(workCtx), 5*time.Second)
+			defer cancel()
+			if err := lease.Release(releaseCtx); err != nil {
+				log.Printf("storage_chain_audit_project_lease_release_error org=%s project=%s error=%q", organization, project, err.Error())
+				if retErr == nil {
+					retErr = fmt.Errorf("release storage chain audit project lease: %w", err)
+				}
+			}
+		}()
+		workCtx = lease.Context()
+		if !workOptions.ForceAuditRefresh {
+			cached, ok, err := cache.Get(workCtx, cacheKey)
+			if err != nil {
+				logStorageChainAuditCacheError(workOptions.Timings, cache.Source(), "get_after_wait", err)
+				return StorageChainAuditRefreshResult{}, fmt.Errorf("load storage chain audit snapshot from %s cache: %w", cache.Source(), err)
+			}
+			if ok {
+				return StorageChainAuditRefreshResult{Response: cached, CacheHit: true}, nil
+			}
+			if storageChainAuditRootResponseProjectionAllowed(gitSubpath, workOptions) {
+				rootOptions := workOptions
+				rootOptions.FindingKind = ""
+				rootOptions.FindingLimit = -1
+				projected, ok, err := service.projectStorageChainAuditFromRootResponseCache(workCtx, organization, project, ref, gitSubpath, time.Time{}, rootOptions)
+				if err != nil {
+					return StorageChainAuditRefreshResult{}, err
+				}
+				if ok {
+					return StorageChainAuditRefreshResult{Response: projected, CacheHit: true, CacheSource: cache.Source() + ":root"}, nil
+				}
+			}
+		}
+		buildOptions := workOptions
 		buildOptions.FindingKind = ""
 		buildOptions.FindingLimit = -1
 		refreshStart := time.Now()
-		response, err := service.buildStorageChainAuditFresh(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, buildOptions)
+		response, inventory, err := service.buildStorageChainAuditFresh(workCtx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, buildOptions, lease)
 		if err != nil {
-			return storecache.CachedResponse{}, err
+			return StorageChainAuditRefreshResult{}, err
 		}
-		response.Summary.SyfonRevision = syfonRevision
+		if buildOptions.ForceAuditRefresh {
+			if err := storageChainAuditSnapshotFailure(*response, buildOptions); err != nil {
+				return StorageChainAuditRefreshResult{}, err
+			}
+		}
 		value := storecache.CachedResponse{
 			CachedAt:              time.Now(),
 			RefreshDurationMillis: time.Since(refreshStart).Milliseconds(),
 			Response:              *response,
+			Inventory:             append([]model.RepoInventoryFile(nil), inventory...),
 		}
-		cacheStart := time.Now()
-		if err := cache.Set(ctx, cacheKey, value, storecache.StorageChainAuditCacheTTL()); err != nil {
-			logStorageChainAuditCacheError(options.Timings, cache.Source(), "set", err)
+		if err := storageChainAuditSnapshotFailure(*response, buildOptions); err == nil {
+			cacheStart := time.Now()
+			if err := lease.PublishResponse(workCtx, cacheKey, value); err != nil {
+				logStorageChainAuditCacheError(buildOptions.Timings, cache.Source(), "set", err)
+				return StorageChainAuditRefreshResult{}, fmt.Errorf("save storage chain audit snapshot: %w", err)
+			}
+			buildOptions.Timings.Record("audit_response_cache_store", time.Since(cacheStart))
 		}
-		options.Timings.Record("audit_response_cache_store", time.Since(cacheStart))
-		return value, nil
+		return StorageChainAuditRefreshResult{Response: value}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -135,41 +181,82 @@ func (service *Service) buildStorageChainAuditWithResponseCache(ctx context.Cont
 	if joinedRefresh {
 		options.Timings.Record("audit_response_refresh_join", 0)
 	}
-	projected := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
-	source := cache.Source()
+	source := refreshResult.CacheSource
+	if source == "" {
+		source = cache.Source()
+	}
 	if joinedRefresh {
 		source += ":refresh_join"
 	}
-	applyStorageChainAuditCacheMetadata(projected, false, cached.CachedAt, cached.RefreshDurationMillis, source, "")
-	return projected, nil
+	return cachedStorageChainAuditResponse(refreshResult.Response, refreshResult.CacheHit, source, options), nil
 }
 
-func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions) (*model.ChainAuditResponse, bool, error) {
-	cache := service.ChainAuditResponseCache
-	syfonRevision, err := service.deps.Records.LoadStorageAuditSyfonRevision(ctx, authorizationHeader, organization, project)
-	if err != nil {
-		return nil, false, err
+func storageChainAuditResponseCacheKey(organization string, project string, ref string, gitSubpath string, options model.StorageChainAuditOptions) string {
+	return storecache.StorageChainAuditResponseCacheKey(organization, project, ref, gitSubpath, options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, options.BucketPathPrefix)
+}
+
+func storageChainAuditRootResponseProjectionAllowed(gitSubpath string, options model.StorageChainAuditOptions) bool {
+	return sarecord.NormalizeRepoSubpath(gitSubpath) != "" && sarecord.NormalizeRepoSubpath(options.BucketPathPrefix) == ""
+}
+
+func storageChainAuditRequiresBucketInventory(options model.StorageChainAuditOptions) bool {
+	if options.BucketInventoryMode == model.StorageChainBucketModeItems {
+		return true
 	}
-	cacheKey := storecache.StorageChainAuditResponseCacheKey(organization, project, ref, "", options.ProbeMode, options.ValidationMode, options.BucketInventoryMode, "", hash.String(), syfonRevision)
+	return options.BucketInventoryMode == model.StorageChainBucketModeValidate && options.ValidationMode == model.StorageChainValidationModeList
+}
+
+func storageChainAuditSnapshotFailure(response model.ChainAuditResponse, options model.StorageChainAuditOptions) error {
+	if (storageChainAuditRequiresBucketInventory(options) || options.ForceBucketRefresh) && (!response.Summary.BucketInventoryAvailable || !response.Summary.BucketInventoryComplete) {
+		message := strings.TrimSpace(response.Summary.BucketInventoryWarning)
+		if message == "" {
+			message = strings.TrimSpace(response.Summary.BucketInventoryError)
+		}
+		if message == "" {
+			message = "Syfon bucket inventory is incomplete"
+		}
+		return fmt.Errorf("storage chain audit refresh has incomplete bucket inventory: %s", message)
+	}
+	if count := response.Summary.CountsByKind["probe_error"]; count > 0 {
+		return fmt.Errorf("storage chain audit refresh contains %d unverified probe results", count)
+	}
+	return nil
+}
+
+func cachedStorageChainAuditResponse(cached storecache.CachedResponse, hit bool, source string, options model.StorageChainAuditOptions) *model.ChainAuditResponse {
+	response := projectStorageChainAuditResponse(cached.Response, options.FindingKind, options.FindingLimit)
+	applyStorageChainAuditCacheMetadata(response, hit, cached.CachedAt, cached.RefreshDurationMillis, source, "")
+	if hit {
+		options.Timings.Record("audit_response_cache_hit", 0)
+		options.Timings.RecordMemory(
+			"audit_response_cache_hit",
+			"total_findings", response.Summary.TotalFindings,
+			"returned_findings", response.Summary.ReturnedFindings,
+			"finding_limit", options.FindingLimit,
+		)
+	}
+	return response
+}
+
+func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx context.Context, organization string, project string, ref string, gitSubpath string, exactCachedAt time.Time, options model.StorageChainAuditOptions) (storecache.CachedResponse, bool, error) {
+	cache := service.ChainAuditResponseCache
+	cacheKey := storageChainAuditResponseCacheKey(organization, project, ref, "", options)
 	start := time.Now()
 	cached, ok, err := cache.Get(ctx, cacheKey)
 	options.Timings.Record("audit_response_root_cache_lookup", time.Since(start))
 	if err != nil {
 		logStorageChainAuditCacheError(options.Timings, cache.Source(), "get_root", err)
-		return nil, false, nil
+		return storecache.CachedResponse{}, false, fmt.Errorf("load root storage chain audit snapshot from %s cache: %w", cache.Source(), err)
 	}
 	if !ok {
 		options.Timings.Record("audit_response_root_cache_miss", 0)
-		return nil, false, nil
+		return storecache.CachedResponse{}, false, nil
 	}
-	inventoryStart := time.Now()
-	inventory, err := service.loadStorageChainInventory(ctx, ref, gitSubpath, mirrorPath, repo, hash)
-	options.Timings.Record("audit_response_root_cache_project_inventory", time.Since(inventoryStart))
-	if err != nil {
-		return nil, false, err
+	if !cached.CachedAt.After(exactCachedAt) {
+		return storecache.CachedResponse{}, false, nil
 	}
-	response := projectStorageChainAuditResponseForSubpath(cached.Response, gitSubpath, inventory, options.FindingKind, options.FindingLimit)
-	applyStorageChainAuditCacheMetadata(response, true, cached.CachedAt, cached.RefreshDurationMillis, cache.Source()+":root", "")
+	inventory := filterStorageChainInventory(cached.Inventory, gitSubpath)
+	response := projectStorageChainAuditResponseForSubpath(cached.Response, gitSubpath, inventory, "", -1)
 	options.Timings.Record("audit_response_root_cache_hit", 0)
 	options.Timings.RecordMemory(
 		"audit_response_root_cache_hit",
@@ -178,16 +265,21 @@ func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx contex
 		"total_findings", response.Summary.TotalFindings,
 		"returned_findings", response.Summary.ReturnedFindings,
 	)
-	return response, true, nil
+	return storecache.CachedResponse{
+		CachedAt:              cached.CachedAt,
+		RefreshDurationMillis: cached.RefreshDurationMillis,
+		Response:              *response,
+		Inventory:             inventory,
+	}, true, nil
 }
 
-func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions) (*model.ChainAuditResponse, error) {
+func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authorizationHeader string, organization string, project string, ref string, gitSubpath string, mirrorPath string, repo *gogit.Repository, hash plumbing.Hash, options model.StorageChainAuditOptions, lease storecache.ProjectAuditLease) (*model.ChainAuditResponse, []model.RepoInventoryFile, error) {
 	bucketMode := options.BucketInventoryMode
 	validationMode := options.ValidationMode
 	bucketPathPrefix := options.BucketPathPrefix
 	start := time.Now()
 	options.Timings.StageStart("chain_setup_total")
-	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, validationMode, bucketPathPrefix, options.ForceBucketRefresh, options.Timings)
+	inputs, err := service.loadStorageChainInputs(ctx, authorizationHeader, organization, project, ref, gitSubpath, mirrorPath, repo, hash, bucketMode, validationMode, bucketPathPrefix, options.ForceAuditRefresh, options.ForceBucketRefresh, options.Timings, lease)
 	options.Timings.Record("chain_setup_total", time.Since(start))
 	if inputs != nil && inputs.recordSet != nil {
 		options.Timings.RecordMemory(
@@ -198,11 +290,11 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 		)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	storageViewStart := time.Now()
 	options.Timings.StageStart("storage_view")
-	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.BucketObjects, inputs.BucketObjectsByURL, inputs.bucketInventoryErr, inputs.BucketMetadata, bucketMode, validationMode, options.Timings)
+	storageView, err := service.buildStorageChainView(ctx, authorizationHeader, organization, project, inputs.recordSet, inputs.inventory, inputs.scopes, inputs.BucketObjects, inputs.BucketObjectsByURL, inputs.bucketInventoryErr, inputs.BucketMetadata, bucketMode, validationMode, bucketPathPrefix, options.ForceStorageRevalidation, options.Timings)
 	options.Timings.Record("storage_view", time.Since(storageViewStart))
 	if storageView != nil {
 		options.Timings.RecordMemory(
@@ -212,14 +304,17 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 		)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	modelStart := time.Now()
 	options.Timings.StageStart("model_build")
-	includeBucketOrigin := storageView.BucketInventoryAvailable &&
-		!storageView.BucketInventoryStale &&
+	usableBucketInventory := storageView.BucketInventoryAvailable &&
+		storageView.BucketInventoryComplete &&
+		!storageView.BucketInventoryStale
+	includeBucketOrigin := usableBucketInventory &&
 		(bucketMode == model.StorageChainBucketModeItems || validationMode == model.StorageChainValidationModeList)
-	auditModel := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.RecordsByChecksum, storageView.AllProjectRecords, storageView.BucketObjectsByURL, inputs.scopes, organization, project, includeBucketOrigin)
+	countCompleteFromSyfon := !storageChainAuditRequiresBucketInventory(options)
+	auditModel := buildStorageChainAuditModel(gitSubpath, inputs.inventory, storageView.RecordsByChecksum, storageView.AllProjectRecords, storageView.BucketObjectsByURL, inputs.scopes, organization, project, includeBucketOrigin, countCompleteFromSyfon)
 	options.Timings.Record("model_build", time.Since(modelStart))
 	options.Timings.RecordMemory(
 		"model_build",
@@ -236,6 +331,7 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 	auditModel.Summary.BucketInventorySource = storageView.BucketInventorySource
 	auditModel.Summary.ValidationMode = validationMode
 	auditModel.Summary.GitRevision = hash.String()
+	auditModel.Summary.SyfonRevision = inputs.syfonRevision
 	auditModel.Summary.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if inputs.BucketSummary != nil {
 		exists := inputs.BucketSummary.Exists
@@ -262,7 +358,7 @@ func (service *Service) buildStorageChainAuditFresh(ctx context.Context, authori
 		Summary:          summary,
 		PathPrefix:       auditModel.PathPrefix,
 		BucketPathPrefix: bucketPathPrefix,
-	}, nil
+	}, append([]model.RepoInventoryFile(nil), inputs.inventory...), nil
 }
 
 func logStorageChainAuditCacheError(timings *model.StorageChainAuditTimings, source string, operation string, err error) {
@@ -284,47 +380,18 @@ func applyStorageChainAuditCacheMetadata(response *model.ChainAuditResponse, hit
 	response.Summary.AuditCacheError = strings.TrimSpace(cacheError)
 }
 
-type InflightResponseRefresh struct {
-	done               chan struct{}
-	forceBucketRefresh bool
-	value              storecache.CachedResponse
-	err                error
+func (service *Service) coalesceStorageChainAuditRefresh(ctx context.Context, organization string, project string, authorizationHeader string, key string, forceRefresh bool, forceBucketRefresh bool, forceStorageRevalidation bool, refresh func(context.Context) (StorageChainAuditRefreshResult, error)) (StorageChainAuditRefreshResult, bool, error) {
+	return service.auditWork.Do(ctx, projectChainWorkKey(organization, project), sharedwork.Demand{
+		AuthorizationScope: sharedwork.AuthorizationScope(authorizationHeader),
+		SemanticKey:        key,
+		ForceAudit:         forceRefresh,
+		ForceBuckets:       forceBucketRefresh,
+		ForceStorage:       forceStorageRevalidation,
+	}, refresh)
 }
 
-// coalesceStorageChainAuditRefresh ensures a root audit has one authoritative
-// refresh result per cache key. The UI can issue overlapping forced refreshes;
-// without this guard, a partial bucket LIST from the later request can replace
-// the completed response from the earlier request.
-func (service *Service) coalesceStorageChainAuditRefresh(ctx context.Context, key string, forceBucketRefresh bool, refresh func() (storecache.CachedResponse, error)) (storecache.CachedResponse, bool, error) {
-	var work *InflightResponseRefresh
-	for {
-		service.ChainAuditRefreshMu.Lock()
-		work = service.ChainAuditRefreshWork[key]
-		if work == nil {
-			work = &InflightResponseRefresh{done: make(chan struct{}), forceBucketRefresh: forceBucketRefresh}
-			service.ChainAuditRefreshWork[key] = work
-			service.ChainAuditRefreshMu.Unlock()
-			break
-		}
-		service.ChainAuditRefreshMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return storecache.CachedResponse{}, true, ctx.Err()
-		case <-work.done:
-			if !forceBucketRefresh || work.forceBucketRefresh {
-				return storecache.CloneCachedResponse(work.value), true, work.err
-			}
-		}
-	}
-
-	value, err := refresh()
-	service.ChainAuditRefreshMu.Lock()
-	work.value = storecache.CloneCachedResponse(value)
-	work.err = err
-	delete(service.ChainAuditRefreshWork, key)
-	close(work.done)
-	service.ChainAuditRefreshMu.Unlock()
-	return value, false, err
+func projectChainWorkKey(organization string, project string) string {
+	return strings.TrimSpace(organization) + "\x00" + strings.TrimSpace(project)
 }
 
 func cloneStorageChainAuditResponse(in model.ChainAuditResponse) model.ChainAuditResponse {

@@ -163,20 +163,25 @@ func (s *Server) PostGitProjectStorageChainAudit(ctx context.Context, request ge
 		Logf:        s.Logger.Info,
 		DebugPrefix: fmt.Sprintf("org=%s project=%s", organization, project),
 	}
-	target, opErr := s.resolveAnalyticsContext(ctx, organization, project, queryValue(request.Params.Ref), true)
-	if opErr != nil {
-		return nil, opErr
-	}
 	var body storageaudit.ChainAuditRequest
 	if request.Body != nil {
-		if err := decodeBody(*request.Body, &body, map[string]any{"project_id": target.ProjectID}); err != nil {
+		if err := decodeBody(*request.Body, &body, map[string]any{"project_id": project}); err != nil {
 			return nil, err
 		}
 	}
-	target.ApplyRef(body.Ref)
 	normalized, err := storageaudit.NormalizeStorageChainAuditRequest(body)
 	if err != nil {
-		return nil, newOpError(http.StatusBadRequest, "invalid_request", err.Error(), map[string]any{"project_id": target.ProjectID})
+		return nil, newOpError(http.StatusBadRequest, "invalid_request", err.Error(), map[string]any{"project_id": project})
+	}
+	requestedRef := queryValue(request.Params.Ref)
+	if bodyRef := strings.TrimSpace(body.Ref); bodyRef != "" {
+		requestedRef = bodyRef
+	}
+	// Every audit resolves the selected ref against a current mirror before it
+	// can build or serve a snapshot. A saved report keeps its own revision metadata.
+	target, opErr := s.resolveAnalyticsContext(ctx, organization, project, requestedRef, true)
+	if opErr != nil {
+		return nil, opErr
 	}
 	gitSubpath := normalized.GitSubpath
 	normalized.Options.Timings = timings

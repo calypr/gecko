@@ -90,3 +90,13 @@ func TestNormalizeStorageChainAuditRequestRejectsInvalidOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeStorageChainAuditForceStorageRevalidationImpliesFullRefresh(t *testing.T) {
+	normalized, err := NormalizeStorageChainAuditRequest(ChainAuditRequest{ForceStorageRevalidation: true})
+	if err != nil {
+		t.Fatalf("normalize force storage revalidation: %v", err)
+	}
+	if !normalized.Options.ForceAuditRefresh || !normalized.Options.ForceBucketRefresh || !normalized.Options.ForceStorageRevalidation {
+		t.Fatalf("full storage revalidation did not imply all refresh flags: %+v", normalized.Options)
+	}
+}

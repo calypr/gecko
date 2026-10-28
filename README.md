@@ -57,9 +57,10 @@ Environment variables read inside `internal/repo`:
 | Env var | Purpose |
 | --- | --- |
 | `SYFON_DATA_API_BASE_URL` | Syfon data API base URL. |
-| `STORAGE_CHAIN_AUDIT_CACHE_ENABLED` | Switch for the storage chain audit cache. Default on. |
-| `STORAGE_CHAIN_AUDIT_CACHE_TTL_SECONDS` | Cache TTL. Default 5 minutes, minimum 60 seconds. |
-| `STORAGE_CHAIN_AUDIT_CACHE_REDIS_URL` | Redis URL for the audit cache. Falls back to `REDIS_URL`. |
+| `STORAGE_CHAIN_AUDIT_CACHE_ENABLED` | Legacy setting. Omit or set to `true`; `false` or an invalid value fails startup because storage audit caches require Redis. |
+| `STORAGE_EXACT_PROJECT_JOIN_CACHE_TTL_SECONDS` | Exact-join cache TTL. Default 5 minutes, minimum 60 seconds. |
+| `STORAGE_CHAIN_AUDIT_CACHE_TTL_SECONDS` | Deprecated alias for the exact-join cache TTL; it does not expire saved audit reports. |
+| `STORAGE_CHAIN_AUDIT_CACHE_REDIS_URL` | Required Redis URL for response, exact-join, and bucket-inventory caches. Falls back to `REDIS_URL`; startup verifies the connection. |
 | `STORAGE_CHAIN_AUDIT_CACHE_REDIS_PASSWORD` | Redis password. |
 
 ## tests

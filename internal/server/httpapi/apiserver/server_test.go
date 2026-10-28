@@ -12,24 +12,24 @@ import (
 	"github.com/calypr/gecko/apgen/server/gecko"
 	"github.com/calypr/gecko/internal/access"
 	geckologging "github.com/calypr/gecko/internal/logging"
-	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/adaptor"
 )
 
-func newTestApp(t *testing.T) *fiber.App {
+func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
 	impl := &Server{Logger: &geckologging.Handler{Logger: log.New(io.Discard, "", 0)}}
-	app := fiber.New()
-	app.Use(adaptor.HTTPHandler(NewRouter(impl)))
-	return app
+	return NewRouter(impl)
+}
+
+func serveAPI(handler http.Handler, request *http.Request) *http.Response {
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder.Result()
 }
 
 func TestOpenAPIRouterServesConfigTypes(t *testing.T) {
-	app := newTestApp(t)
-	resp, err := app.Test(httptest.NewRequest("GET", "/config/types", nil))
-	if err != nil {
-		t.Fatalf("unexpected app.Test error: %v", err)
-	}
+	router := newTestRouter(t)
+	resp := serveAPI(router, httptest.NewRequest("GET", "/config/types", nil))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -49,11 +49,9 @@ func TestOpenAPIRouterServesConfigTypes(t *testing.T) {
 }
 
 func TestOpenAPIRouterRejectsUnknownConfigType(t *testing.T) {
-	app := newTestApp(t)
-	resp, err := app.Test(httptest.NewRequest("GET", "/config/list?type=bogus", nil))
-	if err != nil {
-		t.Fatalf("unexpected app.Test error: %v", err)
-	}
+	router := newTestRouter(t)
+	resp := serveAPI(router, httptest.NewRequest("GET", "/config/list?type=bogus", nil))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
@@ -70,11 +68,9 @@ func TestOpenAPIRouterRejectsUnknownConfigType(t *testing.T) {
 }
 
 func TestOpenAPIRouterRequiresTokenForGitProjects(t *testing.T) {
-	app := newTestApp(t)
-	resp, err := app.Test(httptest.NewRequest("GET", "/git/projects", nil))
-	if err != nil {
-		t.Fatalf("unexpected app.Test error: %v", err)
-	}
+	router := newTestRouter(t)
+	resp := serveAPI(router, httptest.NewRequest("GET", "/git/projects", nil))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without a token, got %d", resp.StatusCode)
 	}
@@ -103,8 +99,7 @@ func TestNestedSubpathRoutesMatch(t *testing.T) {
 		Logger: &geckologging.Handler{Logger: log.New(io.Discard, "", 0)},
 		Authz:  access.NewFenceUserAccessHandler(nil),
 	}
-	app := fiber.New()
-	app.Use(adaptor.HTTPHandler(NewRouter(impl)))
+	router := NewRouter(impl)
 
 	for _, path := range []string{
 		"/git/projects/org/proj/file/src/pkg/main.go",
@@ -112,10 +107,8 @@ func TestNestedSubpathRoutesMatch(t *testing.T) {
 		"/git/projects/org/proj/manifest/x/y",
 		"/git/projects/org/proj/download/d/e.bin",
 	} {
-		resp, err := app.Test(httptest.NewRequest("GET", path, nil))
-		if err != nil {
-			t.Fatalf("unexpected app.Test error: %v", err)
-		}
+		resp := serveAPI(router, httptest.NewRequest("GET", path, nil))
+		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound {
 			t.Fatalf("nested subpath %q was not routed (got 404); wildcard upgrade failed", path)
 		}
@@ -129,11 +122,9 @@ func TestNestedSubpathRoutesMatch(t *testing.T) {
 // non-integer limit) is reported through the JSON error envelope rather than the
 // std-http default text/plain 400, matching the legacy error format.
 func TestBindingErrorReturnsJSONEnvelope(t *testing.T) {
-	app := newTestApp(t)
-	resp, err := app.Test(httptest.NewRequest("GET", "/git/projects/org/proj/storage/children?limit=abc", nil))
-	if err != nil {
-		t.Fatalf("unexpected app.Test error: %v", err)
-	}
+	router := newTestRouter(t)
+	resp := serveAPI(router, httptest.NewRequest("GET", "/git/projects/org/proj/storage/children?limit=abc", nil))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for non-integer limit, got %d", resp.StatusCode)
 	}
@@ -152,11 +143,9 @@ func TestBindingErrorReturnsJSONEnvelope(t *testing.T) {
 // TestDocEndpointServesFullSpec guards the original documentation gap: the
 // served contract must be the full generated spec, not a stale 4-path stub.
 func TestDocEndpointServesFullSpec(t *testing.T) {
-	app := newTestApp(t)
-	resp, err := app.Test(httptest.NewRequest("GET", "/swagger/doc.json", nil))
-	if err != nil {
-		t.Fatalf("unexpected app.Test error: %v", err)
-	}
+	router := newTestRouter(t)
+	resp := serveAPI(router, httptest.NewRequest("GET", "/swagger/doc.json", nil))
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for doc endpoint, got %d", resp.StatusCode)
 	}

@@ -201,6 +201,8 @@ func AccessProbesForRecord(record State) []model.CleanupAccessProbe {
 				NameMatch:            probe.NameMatch,
 				SHA256Match:          probe.SHA256Match,
 				ValidationMismatches: append([]string(nil), probe.ValidationMismatches...),
+				ObservedAt:           strings.TrimSpace(probe.ObservedAt),
+				CacheHit:             probe.CacheHit,
 			})
 		}
 		return probes

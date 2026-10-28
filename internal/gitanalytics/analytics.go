@@ -148,7 +148,7 @@ func (service *Service) RegisterGitOnly(ctx context.Context, target *Target, req
 }
 
 func (service *Service) ApplyCleanup(ctx context.Context, target *Target, request storageaudit.CleanupApplyRequest) (*storageaudit.CleanupApplyResponse, error) {
-	return service.analytics.ApplyStorageCleanup(ctx, target.AuthorizationHeader, target.Organization, target.Project, request.SelectedRepoPaths, request.Actions, request.Findings, request.DeleteRepoOrphans, request.DeleteStaleDuplicates, request.DeleteBucketOnlyObjects, request.RepairBrokenBucketMappings, request.DryRun)
+	return service.analytics.ApplyStorageCleanupWithRevisions(ctx, target.AuthorizationHeader, target.Organization, target.Project, target.Hash.String(), request)
 }
 
 func WrapError(err error, target *Target, gitSubpath string) error {
@@ -164,6 +164,10 @@ func WrapError(err error, target *Target, gitSubpath string) error {
 	errorKind := domain.ErrorKindIntegration
 	errorMessage := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(errorMessage, "cleanup audit is stale"):
+		statusCode = http.StatusConflict
+		errorType = apierror.Type("conflict")
+		errorKind = domain.ErrorKindValidation
 	case strings.Contains(errorMessage, "storage children cursor"):
 		statusCode = http.StatusBadRequest
 		errorType = apierror.Type("invalid_request")

@@ -2,33 +2,26 @@ package storageaudit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
 	"github.com/calypr/gecko/internal/storageaudit/chain"
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
+	"github.com/calypr/gecko/internal/storageaudit/sharedwork"
 	"github.com/calypr/gecko/internal/storageaudit/storecache"
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
-const projectJoinCacheTTL = 45 * time.Second
-
-type cachedProjectJoinState struct {
-	expiresAt         time.Time
+type projectJoinResult struct {
 	RecordsByChecksum map[string][]sarecord.State
 	usageByObjectID   map[string]gintegrationsyfon.FileUsage
-}
-
-type inflightProjectJoinState struct {
-	done              chan struct{}
-	RecordsByChecksum map[string][]sarecord.State
-	usageByObjectID   map[string]gintegrationsyfon.FileUsage
-	err               error
 }
 
 type projectFileUsageBackend interface {
@@ -37,119 +30,84 @@ type projectFileUsageBackend interface {
 }
 
 type projectJoinCache struct {
-	mu       sync.RWMutex
-	entries  map[string]cachedProjectJoinState
-	inflight map[string]*inflightProjectJoinState
-	exact    storecache.ExactJoinCache
-	chain    *chain.Service
-	storage  projectFileUsageBackend
+	work    *sharedwork.Group[projectJoinResult]
+	exact   storecache.ExactJoinCache
+	chain   *chain.Service
+	storage projectFileUsageBackend
 }
 
 func newProjectJoinCache(chainSvc *chain.Service, storage projectFileUsageBackend) *projectJoinCache {
 	return &projectJoinCache{
-		entries:  map[string]cachedProjectJoinState{},
-		inflight: map[string]*inflightProjectJoinState{},
-		chain:    chainSvc,
-		storage:  storage,
+		work:    sharedwork.New[projectJoinResult](sharedwork.DefaultBudget),
+		chain:   chainSvc,
+		storage: storage,
 	}
-}
-
-func (cache *projectJoinCache) enableExactCacheFromEnv() {
-	cache.exact = storecache.NewStorageExactProjectJoinCacheFromEnv()
 }
 
 func (cache *projectJoinCache) load(ctx context.Context, authorizationHeader string, organization string, project string, hash plumbing.Hash, inventory []RepoInventoryFile, forceRefresh bool) (map[string][]sarecord.State, map[string]gintegrationsyfon.FileUsage, error) {
+	started := time.Now()
 	cacheKey := cache.key(organization, project, hash.String())
 	redisKey := storecache.StorageExactProjectJoinCacheKey(organization, project, hash.String())
-	cache.mu.Lock()
-	if !forceRefresh {
-		if cached, ok := cache.entries[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
-			cache.mu.Unlock()
-			log.Printf("storage_folder_exact_join_cache_hit org=%s project=%s source=memory records_by_checksum=%d usage_rows=%d", organization, project, len(cached.RecordsByChecksum), len(cached.usageByObjectID))
-			return cloneRecordStateMap(cached.RecordsByChecksum), storecache.CloneFileUsageMap(cached.usageByObjectID), nil
-		}
-	}
-	if inflight, ok := cache.inflight[cacheKey]; ok {
-		cache.mu.Unlock()
-		<-inflight.done
-		return cloneRecordStateMap(inflight.RecordsByChecksum), storecache.CloneFileUsageMap(inflight.usageByObjectID), inflight.err
-	}
-	inflight := &inflightProjectJoinState{done: make(chan struct{})}
-	cache.inflight[cacheKey] = inflight
-	cache.mu.Unlock()
-	defer func() {
-		cache.mu.Lock()
-		delete(cache.inflight, cacheKey)
-		close(inflight.done)
-		cache.mu.Unlock()
-	}()
-
-	if !forceRefresh && cache.exact != nil {
-		redisStart := time.Now()
-		cached, ok, err := cache.exact.Get(ctx, redisKey)
-		if err != nil {
-			log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=get error=%q", organization, project, cache.exact.Source(), err.Error())
-		}
-		if ok {
-			state := cachedProjectJoinState{
-				expiresAt:         time.Now().Add(projectJoinCacheTTL),
-				RecordsByChecksum: cloneRecordStateMap(cached.RecordsByChecksum),
-				usageByObjectID:   storecache.CloneFileUsageMap(cached.UsageByObjectID),
-			}
-			cache.mu.Lock()
-			cache.entries[cacheKey] = state
-			cache.mu.Unlock()
-			log.Printf("storage_folder_exact_join_cache_hit org=%s project=%s source=%s age_seconds=%d records_by_checksum=%d usage_rows=%d duration_ms=%d", organization, project, cache.exact.Source(), int64(time.Since(cached.CachedAt).Seconds()), len(cached.RecordsByChecksum), len(cached.UsageByObjectID), time.Since(redisStart).Milliseconds())
-			inflight.RecordsByChecksum = cloneRecordStateMap(cached.RecordsByChecksum)
-			inflight.usageByObjectID = storecache.CloneFileUsageMap(cached.UsageByObjectID)
-			return cloneRecordStateMap(cached.RecordsByChecksum), storecache.CloneFileUsageMap(cached.UsageByObjectID), nil
-		}
-		log.Printf("storage_folder_exact_join_cache_miss org=%s project=%s source=%s duration_ms=%d", organization, project, cache.exact.Source(), time.Since(redisStart).Milliseconds())
-	}
-
-	recordStart := time.Now()
-	projectRecords, err := cache.chain.LoadCachedProjectAuditRecords(ctx, authorizationHeader, organization, project)
-	if err != nil {
-		inflight.err = err
-		return nil, nil, inflight.err
-	}
 	checksums := inventoryChecksumSet(inventory)
-	matchedRecords := filterProjectRecordsByChecksum(projectRecords, checksums)
-	log.Printf("storage_folder_exact_syfon_local_join org=%s project=%s git_checksums=%d project_records=%d matched_records=%d duration_ms=%d", organization, project, len(checksums), len(projectRecords), len(matchedRecords), time.Since(recordStart).Milliseconds())
+	workKey := projectJoinWorkKey(cacheKey, checksums)
+	result, joined, err := cache.work.Do(ctx, projectAuditKey(organization, project), sharedwork.Demand{
+		AuthorizationScope: sharedwork.AuthorizationScope(authorizationHeader),
+		SemanticKey:        workKey,
+		ForceAudit:         forceRefresh,
+	}, func(workCtx context.Context) (projectJoinResult, error) {
+		if !forceRefresh && cache.exact != nil {
+			redisStart := time.Now()
+			cached, ok, err := cache.exact.Get(workCtx, redisKey)
+			if err != nil {
+				log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=get error=%q", organization, project, cache.exact.Source(), err.Error())
+				return projectJoinResult{}, fmt.Errorf("load storage folder exact join from %s cache: %w", cache.exact.Source(), err)
+			}
+			if ok {
+				log.Printf("storage_folder_exact_join_cache_hit org=%s project=%s source=%s age_seconds=%d records_by_checksum=%d usage_rows=%d duration_ms=%d", organization, project, cache.exact.Source(), int64(time.Since(cached.CachedAt).Seconds()), len(cached.RecordsByChecksum), len(cached.UsageByObjectID), time.Since(redisStart).Milliseconds())
+				return projectJoinResult{RecordsByChecksum: cloneRecordStateMap(cached.RecordsByChecksum), usageByObjectID: storecache.CloneFileUsageMap(cached.UsageByObjectID)}, nil
+			}
+			log.Printf("storage_folder_exact_join_cache_miss org=%s project=%s source=%s duration_ms=%d", organization, project, cache.exact.Source(), time.Since(redisStart).Milliseconds())
+		}
 
-	usageStart := time.Now()
-	objectIDs := projectRecordObjectIDs(matchedRecords)
-	usageByObjectID, err := cache.listProjectFileUsageByObjectIDs(ctx, authorizationHeader, organization, project, objectIDs, cleanupInactiveDays)
-	if err != nil {
-		inflight.err = fmt.Errorf("list syfon project file usage: %w", err)
-		return nil, nil, inflight.err
-	}
-	log.Printf("storage_folder_exact_bulk_usage_lookup org=%s project=%s object_ids=%d usage_rows=%d duration_ms=%d", organization, project, len(objectIDs), len(usageByObjectID), time.Since(usageStart).Milliseconds())
-
-	recordsByChecksum := buildProjectJoinRecordsByChecksum(matchedRecords, usageByObjectID)
-	cache.mu.Lock()
-	cache.entries[cacheKey] = cachedProjectJoinState{
-		expiresAt:         time.Now().Add(projectJoinCacheTTL),
-		RecordsByChecksum: cloneRecordStateMap(recordsByChecksum),
-		usageByObjectID:   storecache.CloneFileUsageMap(usageByObjectID),
-	}
-	cache.mu.Unlock()
-	if cache.exact != nil {
-		setStart := time.Now()
-		err := cache.exact.Set(ctx, redisKey, storecache.CachedExactJoinState{
-			CachedAt:          time.Now(),
-			RecordsByChecksum: recordsByChecksum,
-			UsageByObjectID:   usageByObjectID,
-		}, storecache.StorageChainAuditCacheTTL())
+		recordStart := time.Now()
+		projectRecords, err := cache.chain.LoadProjectAuditRecords(workCtx, authorizationHeader, organization, project)
 		if err != nil {
-			log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=set error=%q", organization, project, cache.exact.Source(), err.Error())
-		} else {
+			return projectJoinResult{}, err
+		}
+		matchedRecords := filterProjectRecordsByChecksum(projectRecords, checksums)
+		log.Printf("storage_folder_exact_syfon_local_join org=%s project=%s git_checksums=%d project_records=%d matched_records=%d duration_ms=%d", organization, project, len(checksums), len(projectRecords), len(matchedRecords), time.Since(recordStart).Milliseconds())
+
+		usageStart := time.Now()
+		objectIDs := projectRecordObjectIDs(matchedRecords)
+		usageByObjectID, err := cache.listProjectFileUsageByObjectIDs(workCtx, authorizationHeader, organization, project, objectIDs, cleanupInactiveDays)
+		if err != nil {
+			return projectJoinResult{}, fmt.Errorf("list syfon project file usage: %w", err)
+		}
+		log.Printf("storage_folder_exact_bulk_usage_lookup org=%s project=%s object_ids=%d usage_rows=%d duration_ms=%d", organization, project, len(objectIDs), len(usageByObjectID), time.Since(usageStart).Milliseconds())
+
+		recordsByChecksum := buildProjectJoinRecordsByChecksum(matchedRecords, usageByObjectID)
+		if cache.exact != nil {
+			setStart := time.Now()
+			err := cache.exact.Set(workCtx, redisKey, storecache.CachedExactJoinState{
+				CachedAt:          time.Now(),
+				RecordsByChecksum: recordsByChecksum,
+				UsageByObjectID:   usageByObjectID,
+			}, storecache.StorageExactProjectJoinCacheTTL())
+			if err != nil {
+				log.Printf("storage_folder_exact_join_cache_error org=%s project=%s source=%s operation=set error=%q", organization, project, cache.exact.Source(), err.Error())
+				return projectJoinResult{}, fmt.Errorf("save storage folder exact join to %s cache: %w", cache.exact.Source(), err)
+			}
 			log.Printf("storage_folder_exact_join_cache_store org=%s project=%s source=%s records_by_checksum=%d usage_rows=%d duration_ms=%d", organization, project, cache.exact.Source(), len(recordsByChecksum), len(usageByObjectID), time.Since(setStart).Milliseconds())
 		}
+		return projectJoinResult{RecordsByChecksum: recordsByChecksum, usageByObjectID: usageByObjectID}, nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	inflight.RecordsByChecksum = cloneRecordStateMap(recordsByChecksum)
-	inflight.usageByObjectID = storecache.CloneFileUsageMap(usageByObjectID)
-	return recordsByChecksum, usageByObjectID, nil
+	if joined {
+		log.Printf("storage_folder_exact_join_refresh_join org=%s project=%s duration_ms=%d", organization, project, time.Since(started).Milliseconds())
+	}
+	return cloneRecordStateMap(result.RecordsByChecksum), storecache.CloneFileUsageMap(result.usageByObjectID), nil
 }
 
 func inventoryChecksumSet(inventory []RepoInventoryFile) map[string]struct{} {
@@ -232,13 +190,16 @@ func (cache *projectJoinCache) key(organization string, project string, commitHa
 	return strings.TrimSpace(organization) + "/" + strings.TrimSpace(project) + "::" + strings.TrimSpace(commitHash)
 }
 
-func (cache *projectJoinCache) evict(organization string, project string) {
-	prefix := strings.TrimSpace(organization) + "/" + strings.TrimSpace(project) + "::"
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	for key := range cache.entries {
-		if strings.HasPrefix(key, prefix) {
-			delete(cache.entries, key)
-		}
+func projectAuditKey(organization string, project string) string {
+	return strings.TrimSpace(organization) + "\x00" + strings.TrimSpace(project)
+}
+
+func projectJoinWorkKey(cacheKey string, checksums map[string]struct{}) string {
+	values := make([]string, 0, len(checksums))
+	for checksum := range checksums {
+		values = append(values, checksum)
 	}
+	sort.Strings(values)
+	sum := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return cacheKey + "::inventory::" + hex.EncodeToString(sum[:])
 }

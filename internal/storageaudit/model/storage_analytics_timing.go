@@ -21,15 +21,16 @@ const (
 )
 
 type StorageChainAuditOptions struct {
-	ProbeMode           string
-	ValidationMode      string
-	BucketInventoryMode string
-	BucketPathPrefix    string
-	FindingKind         string
-	FindingLimit        int
-	ForceAuditRefresh   bool
-	ForceBucketRefresh  bool
-	Timings             *StorageChainAuditTimings
+	ProbeMode                string
+	ValidationMode           string
+	BucketInventoryMode      string
+	BucketPathPrefix         string
+	FindingKind              string
+	FindingLimit             int
+	ForceAuditRefresh        bool
+	ForceBucketRefresh       bool
+	ForceStorageRevalidation bool
+	Timings                  *StorageChainAuditTimings
 }
 
 type StorageChainAuditStageTiming struct {

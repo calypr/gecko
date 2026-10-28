@@ -2,6 +2,7 @@ package storageaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -508,7 +509,7 @@ func TestBuildStorageChainAuditIgnoresBucketBasenameMismatch(t *testing.T) {
 	}
 }
 
-func TestBuildStorageChainAuditCachesProjectChainInputs(t *testing.T) {
+func TestBuildStorageChainAuditReloadsRecordsAndBucketItemsButCachesScopes(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -532,8 +533,8 @@ func TestBuildStorageChainAuditCachesProjectChainInputs(t *testing.T) {
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options); err != nil {
 		t.Fatalf("build second chain audit: %v", err)
 	}
-	if backend.listProjectAuditRecordsCalls != 1 {
-		t.Fatalf("expected cached project records, got %d calls", backend.listProjectAuditRecordsCalls)
+	if backend.listProjectAuditRecordsCalls != 2 {
+		t.Fatalf("expected fresh project records for each audit, got %d calls", backend.listProjectAuditRecordsCalls)
 	}
 	if backend.listProjectAuditRecordsPathPrefix != "" {
 		t.Fatalf("expected cached project records to load the full project, got %q", backend.listProjectAuditRecordsPathPrefix)
@@ -544,8 +545,8 @@ func TestBuildStorageChainAuditCachesProjectChainInputs(t *testing.T) {
 	if backend.listProjectScopesCalls != 1 {
 		t.Fatalf("expected cached project scopes, got %d calls", backend.listProjectScopesCalls)
 	}
-	if backend.listProjectBucketObjectsCalls != 1 {
-		t.Fatalf("expected cached project bucket inventory, got %d calls", backend.listProjectBucketObjectsCalls)
+	if backend.listProjectBucketObjectsCalls != 2 {
+		t.Fatalf("expected fresh item inventory for each audit, got %d calls", backend.listProjectBucketObjectsCalls)
 	}
 }
 
@@ -567,9 +568,9 @@ func TestBuildStorageChainAuditCachesFullResponseAcrossFindingViews(t *testing.T
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
-	service.chainSvc.ChainAuditResponseCache = storecache.NewMemoryStorageChainAuditResponseCache()
+	configureTestAuditResponseCache(service, newTestResponseCache())
 
-	first, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+	first, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
 		BucketInventoryMode: StorageChainBucketModeValidate,
 		FindingKind:         "git_only_no_syfon",
 		FindingLimit:        -1,
@@ -583,8 +584,9 @@ func TestBuildStorageChainAuditCachesFullResponseAcrossFindingViews(t *testing.T
 	if first.Summary.ReturnedFindings != 0 || first.Summary.FindingsTruncated {
 		t.Fatalf("expected first response to apply request finding kind, got %+v", first.Summary)
 	}
+	metricsCalls := backend.getProjectMetricsSummaryCalls
 
-	second, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+	second, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
 		BucketInventoryMode: StorageChainBucketModeValidate,
 		FindingKind:         "bucket_syfon_no_git",
 		FindingLimit:        -1,
@@ -604,12 +606,73 @@ func TestBuildStorageChainAuditCachesFullResponseAcrossFindingViews(t *testing.T
 	if backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected cached full response to skip bucket inventory reload, got %d calls", backend.listProjectBucketInventoryCalls)
 	}
+	if backend.getProjectMetricsSummaryCalls != metricsCalls {
+		t.Fatalf("expected saved response hit to skip all Syfon calls, metrics summaries changed from %d to %d", metricsCalls, backend.getProjectMetricsSummaryCalls)
+	}
+}
+
+func TestBuildStorageChainAuditRequiresProjectCoordinatorForCacheRefresh(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/file.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{}
+	service := NewStorageAnalyticsService(backend)
+	service.chainSvc.ChainAuditResponseCache = newTestResponseCache()
+	_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
+	if err == nil || !strings.Contains(err.Error(), "project coordinator is required") {
+		t.Fatalf("expected a missing project coordinator to stop fresh audit work, got %v", err)
+	}
+	if backend.getProjectMetricsSummaryCalls != 0 || backend.listProjectAuditRecordsCalls != 0 || backend.listProjectBucketInventoryCalls != 0 {
+		t.Fatalf("audit started without project coordination: metrics=%d records=%d bucket=%d", backend.getProjectMetricsSummaryCalls, backend.listProjectAuditRecordsCalls, backend.listProjectBucketInventoryCalls)
+	}
+}
+
+func TestBuildStorageChainAuditSavedSnapshotIgnoresGitAndSyfonRevisions(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	configureTestAuditResponseCache(service, newTestResponseCache())
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+
+	first, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build initial snapshot: %v", err)
+	}
+	metricsCalls := backend.getProjectMetricsSummaryCalls
+	recordsCalls := backend.listProjectAuditRecordsCalls
+	bucketCalls := backend.listProjectBucketInventoryCalls
+
+	changedGitHash := plumbing.NewHash(strings.Repeat("f", 40))
+	backend.mu.Lock()
+	backend.projectRecords = append(backend.projectRecords, gintegrationsyfon.ProjectRecord{
+		ObjectID: "obj-new", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, AccessURLs: []string{"s3://bucket/data/new.txt"},
+	})
+	backend.mu.Unlock()
+	second, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, changedGitHash, options)
+	if err != nil {
+		t.Fatalf("serve snapshot after source revisions changed: %v", err)
+	}
+	if !second.Summary.AuditCacheHit || second.Summary.GitRevision != first.Summary.GitRevision || second.Summary.SyfonRevision != first.Summary.SyfonRevision {
+		t.Fatalf("expected saved snapshot and its revision metadata to remain stable, first=%+v second=%+v", first.Summary, second.Summary)
+	}
+	if backend.getProjectMetricsSummaryCalls != metricsCalls || backend.listProjectAuditRecordsCalls != recordsCalls || backend.listProjectBucketInventoryCalls != bucketCalls {
+		t.Fatalf("expected saved snapshot hit to make zero Syfon calls, metrics=%d/%d records=%d/%d buckets=%d/%d", metricsCalls, backend.getProjectMetricsSummaryCalls, recordsCalls, backend.listProjectAuditRecordsCalls, bucketCalls, backend.listProjectBucketInventoryCalls)
+	}
 }
 
 func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
-		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
-		"other/clean.txt":  lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 300),
+		"data/present.txt":  lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/git-only.txt": lfsPointer("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 400),
+		"other/clean.txt":   lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 300),
 	})
 	backend := &fakeStorageAnalyticsBackend{
 		projectRecords: []gintegrationsyfon.ProjectRecord{
@@ -627,8 +690,8 @@ func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testin
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
-	cache := storecache.NewMemoryStorageChainAuditResponseCache()
-	service.chainSvc.ChainAuditResponseCache = cache
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
 	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
 
 	root, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
@@ -641,12 +704,7 @@ func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testin
 	if backend.listProjectAuditRecordsCalls != 1 || backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected root audit to load Syfon records and bucket inventory once, got records=%d bucket=%d", backend.listProjectAuditRecordsCalls, backend.listProjectBucketInventoryCalls)
 	}
-	cache.Mu.Lock()
-	for key, entry := range cache.Entries {
-		entry.Value.RefreshDurationMillis = 123
-		cache.Entries[key] = entry
-	}
-	cache.Mu.Unlock()
+	cache.setRefreshDuration(123)
 	cachedRoot, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
 	if err != nil {
 		t.Fatalf("build cached root chain audit: %v", err)
@@ -658,13 +716,13 @@ func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testin
 	if err != nil {
 		t.Fatalf("build subpath chain audit: %v", err)
 	}
-	if !subpath.Summary.AuditCacheHit || subpath.Summary.AuditCacheSource != "memory:root" {
+	if !subpath.Summary.AuditCacheHit || subpath.Summary.AuditCacheSource != "test:root" {
 		t.Fatalf("expected subpath audit to project from root response cache, got %+v", subpath.Summary)
 	}
 	if subpath.Summary.AuditRefreshDurationMs != 123 {
 		t.Fatalf("expected subpath audit to include root refresh duration, got %+v", subpath.Summary)
 	}
-	if subpath.PathPrefix != "data" || subpath.Summary.GitTrackedFileCount != 1 {
+	if subpath.PathPrefix != "data" || subpath.Summary.GitTrackedFileCount != 2 {
 		t.Fatalf("expected data-scoped audit projection, got path=%q summary=%+v", subpath.PathPrefix, subpath.Summary)
 	}
 	if got := subpath.Summary.CountsByKind["bucket_syfon_git_complete"]; got != 1 {
@@ -673,14 +731,119 @@ func TestBuildStorageChainAuditProjectsGitSubpathFromRootResponseCache(t *testin
 	if got := subpath.Summary.CountsByKind["bucket_syfon_no_git"]; got != 1 {
 		t.Fatalf("expected subpath Syfon-only finding from root cache, got summary %+v findings=%+v", subpath.Summary, subpath.Findings)
 	}
+	filteredSubpath, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		FindingKind:         "bucket_syfon_no_git",
+		FindingLimit:        1,
+	})
+	if err != nil || len(filteredSubpath.Findings) != 1 {
+		t.Fatalf("build filtered subpath view: findings=%+v err=%v", filteredSubpath.Findings, err)
+	}
+	otherKind, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		FindingKind:         "git_only_no_syfon",
+		FindingLimit:        -1,
+	})
+	if err != nil || len(otherKind.Findings) != 1 || otherKind.Findings[0].Kind != "git_only_no_syfon" {
+		t.Fatalf("expected root projection to retain full findings across filtered views, findings=%+v err=%v", otherKind.Findings, err)
+	}
 	if backend.listProjectAuditRecordsCalls != 1 || backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected subpath projection to skip Syfon records and bucket inventory, got records=%d bucket=%d", backend.listProjectAuditRecordsCalls, backend.listProjectBucketInventoryCalls)
 	}
-	cache.Mu.RLock()
-	cacheEntryCount := len(cache.Entries)
-	cache.Mu.RUnlock()
+	cacheEntryCount := cache.count()
 	if cacheEntryCount != 1 {
-		t.Fatalf("expected only root response cache entry, got %d", cacheEntryCount)
+		t.Fatalf("expected root snapshot cache entry, got %d", cacheEntryCount)
+	}
+}
+
+func TestBuildStorageChainAuditSubpathProjectionUsesSavedGitInventory(t *testing.T) {
+	rootRepo, rootMirrorPath, refName, rootHash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"other/clean.txt":  lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 300),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	configureTestAuditResponseCache(service, newTestResponseCache())
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", rootMirrorPath, rootRepo, rootHash, options); err != nil {
+		t.Fatalf("build root snapshot: %v", err)
+	}
+
+	changedRepo, changedMirrorPath, changedRef, changedHash := buildAnalyticsMirror(t, map[string]string{
+		"other/clean.txt": lfsPointer("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", 300),
+	})
+	if changedRef != refName {
+		t.Fatalf("fixture refs differ: initial=%q changed=%q", refName, changedRef)
+	}
+	response, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", changedRef, "data", changedMirrorPath, changedRepo, changedHash, options)
+	if err != nil {
+		t.Fatalf("project saved root snapshot for subpath: %v", err)
+	}
+	if !response.Summary.AuditCacheHit || response.Summary.GitTrackedFileCount != 1 || response.Summary.GitRevision != rootHash.String() {
+		t.Fatalf("expected subpath to use the saved Git inventory and revision, got %+v", response.Summary)
+	}
+	if backend.getProjectMetricsSummaryCalls != 1 || backend.listProjectAuditRecordsCalls != 1 || backend.listProjectBucketInventoryCalls != 1 {
+		t.Fatalf("expected subpath projection to make no Syfon calls, metrics=%d records=%d buckets=%d", backend.getProjectMetricsSummaryCalls, backend.listProjectAuditRecordsCalls, backend.listProjectBucketInventoryCalls)
+	}
+}
+
+func TestNewerRootRefreshSupersedesOlderSubpathSnapshot(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
+	configureTestProjectBucketCache(service, newTestBucketCache())
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+
+	oldSubpath, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build initial subpath snapshot: %v", err)
+	}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build root snapshot: %v", err)
+	}
+	pathKey := storecache.StorageChainAuditResponseCacheKey("org", "proj", refName, "data", "full", "list", "validate", "")
+	cache.setCachedAt(pathKey, time.Now().Add(-time.Hour))
+
+	backend.mu.Lock()
+	backend.projectRecords = append(backend.projectRecords, gintegrationsyfon.ProjectRecord{
+		ObjectID: "obj-new-orphan", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, AccessURLs: []string{"s3://bucket/data/new-orphan.txt"},
+	})
+	backend.BucketObjects = append(backend.BucketObjects, gintegrationsyfon.ProjectBucketObject{ObjectURL: "s3://bucket/data/new-orphan.txt", Bucket: "bucket", Key: "data/new-orphan.txt", Path: "data/new-orphan.txt", SizeBytes: 200})
+	backend.mu.Unlock()
+	options.ForceAuditRefresh = true
+	options.ForceBucketRefresh = true
+	refreshedRoot, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("force root refresh: %v", err)
+	}
+
+	options.ForceAuditRefresh = false
+	options.ForceBucketRefresh = false
+	newSubpath, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("read subpath after root refresh: %v", err)
+	}
+	if newSubpath.Summary.AuditCachedAt != refreshedRoot.Summary.AuditCachedAt || newSubpath.Summary.AuditCacheSource != "test:root" {
+		t.Fatalf("expected newer root snapshot to supersede old subpath snapshot: old=%+v root=%+v new=%+v", oldSubpath.Summary, refreshedRoot.Summary, newSubpath.Summary)
+	}
+	if got := newSubpath.Summary.CountsByKind["bucket_syfon_no_git"]; got != 1 {
+		t.Fatalf("expected the refreshed Syfon evidence in projected subpath, got summary=%+v findings=%+v", newSubpath.Summary, newSubpath.Findings)
 	}
 }
 
@@ -700,8 +863,8 @@ func TestBuildStorageChainAuditForceRefreshBypassesResponseCache(t *testing.T) {
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
-	service.chainSvc.ChainAuditResponseCache = storecache.NewMemoryStorageChainAuditResponseCache()
-	service.chainSvc.ProjectBucketCache = storecache.NewMemoryProjectBucketInventoryCache()
+	configureTestAuditResponseCache(service, newTestResponseCache())
+	configureTestProjectBucketCache(service, newTestBucketCache())
 	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
 
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
@@ -716,7 +879,269 @@ func TestBuildStorageChainAuditForceRefreshBypassesResponseCache(t *testing.T) {
 		t.Fatalf("expected forced response to rebuild fresh, got %+v", refreshed.Summary)
 	}
 	if backend.listProjectBucketInventoryCalls != 1 {
-		t.Fatalf("expected forced refresh to reuse the bucket inventory during its cooldown, got %d calls", backend.listProjectBucketInventoryCalls)
+		t.Fatalf("expected force_audit_refresh to reuse usable bucket inventory, got %d calls", backend.listProjectBucketInventoryCalls)
+	}
+	if backend.listProjectAuditRecordsCalls != 2 || backend.listProjectScopesCalls != 2 {
+		t.Fatalf("expected force_audit_refresh to reload record and scope evidence, got records=%d scopes=%d", backend.listProjectAuditRecordsCalls, backend.listProjectScopesCalls)
+	}
+}
+
+func TestBuildStorageChainAuditFailedForcedRefreshPreservesSavedSnapshot(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+	initial, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build initial snapshot: %v", err)
+	}
+	backend.mu.Lock()
+	backend.listProjectBucketObjectsErr = fmt.Errorf("provider unavailable")
+	backend.mu.Unlock()
+	options.ForceAuditRefresh = true
+	options.ForceBucketRefresh = true
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err == nil {
+		t.Fatal("expected forced refresh to fail when bucket inventory cannot be refreshed")
+	}
+
+	options.ForceAuditRefresh = false
+	options.ForceBucketRefresh = false
+	saved, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("serve prior snapshot after failed refresh: %v", err)
+	}
+	if !saved.Summary.AuditCacheHit || saved.Summary.AuditCachedAt != initial.Summary.AuditCachedAt || saved.Summary.TotalFindings != initial.Summary.TotalFindings || saved.Summary.GitRevision != initial.Summary.GitRevision {
+		t.Fatalf("expected failed refresh to preserve previous response, initial=%+v saved=%+v", initial.Summary, saved.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditIncompleteForcedRefreshPreservesSavedSnapshot(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
+	configureTestProjectBucketCache(service, newTestBucketCache())
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+	initial, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build initial snapshot: %v", err)
+	}
+	backend.mu.Lock()
+	backend.bucketInventoryIncomplete = true
+	backend.BucketInventoryWarning = "partial provider listing"
+	backend.mu.Unlock()
+	options.ForceAuditRefresh = true
+	options.ForceBucketRefresh = true
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err == nil || !strings.Contains(err.Error(), "incomplete bucket inventory") {
+		t.Fatalf("expected incomplete forced refresh to fail explicitly, got %v", err)
+	}
+
+	options.ForceAuditRefresh = false
+	options.ForceBucketRefresh = false
+	saved, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("serve prior snapshot after incomplete refresh: %v", err)
+	}
+	if !saved.Summary.AuditCacheHit || saved.Summary.AuditCachedAt != initial.Summary.AuditCachedAt || saved.Summary.BucketInventoryWarning == "partial provider listing" {
+		t.Fatalf("expected incomplete refresh not to replace saved snapshot, initial=%+v saved=%+v", initial.Summary, saved.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditFailedCacheWritePreservesSavedSnapshot(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
+	initial, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("build initial snapshot: %v", err)
+	}
+	configureTestAuditResponseCache(service, responseCacheSetFailure{delegate: cache, err: fmt.Errorf("redis write failed")})
+	options.ForceAuditRefresh = true
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err == nil || !strings.Contains(err.Error(), "redis write failed") {
+		t.Fatalf("expected response cache write failure, got %v", err)
+	}
+
+	configureTestAuditResponseCache(service, cache)
+	options.ForceAuditRefresh = false
+	saved, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("serve prior snapshot after cache write failure: %v", err)
+	}
+	if !saved.Summary.AuditCacheHit || saved.Summary.AuditCachedAt != initial.Summary.AuditCachedAt {
+		t.Fatalf("expected cache write failure to preserve previous response, initial=%+v saved=%+v", initial.Summary, saved.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditWarmResponseCacheGetFailureDoesNotRebuild(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+		}},
+		projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	cache := newTestResponseCache()
+	configureTestAuditResponseCache(service, cache)
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ValidationMode: StorageChainValidationModeInventory}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build initial response snapshot: %v", err)
+	}
+	recordLoads := backend.listProjectAuditRecordsCalls
+	cache.mu.Lock()
+	cache.getErr = errors.New("redis unavailable")
+	cache.mu.Unlock()
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err == nil || !strings.Contains(err.Error(), "redis unavailable") {
+		t.Fatalf("expected warm snapshot Redis read failure, got %v", err)
+	}
+	if backend.listProjectAuditRecordsCalls != recordLoads {
+		t.Fatalf("expected Redis read failure to stop fresh rebuilding, record loads changed from %d to %d", recordLoads, backend.listProjectAuditRecordsCalls)
+	}
+}
+
+func TestBuildStorageChainAuditBucketCacheFailuresAreFatal(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		getErr error
+		setErr error
+	}{
+		{name: "get", getErr: errors.New("get failed")},
+		{name: "set", setErr: errors.New("set failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+				"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+			})
+			backend := &fakeStorageAnalyticsBackend{
+				projectRecords: []gintegrationsyfon.ProjectRecord{{
+					ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"},
+				}},
+				projectScopes: []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+				BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+			}
+			service := NewStorageAnalyticsService(backend)
+			cache := newTestBucketCache()
+			cache.getErr = test.getErr
+			cache.setErr = test.setErr
+			configureTestProjectBucketCache(service, cache)
+			_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
+			if err == nil || !storecache.IsCacheOperationError(err) || !strings.Contains(err.Error(), test.name+" failed") {
+				t.Fatalf("expected Redis %s failure to fail the request, got %v", test.name, err)
+			}
+			if test.getErr != nil && backend.listProjectBucketInventoryCalls != 0 {
+				t.Fatalf("expected Redis GET failure to stop live refresh, got %d inventory calls", backend.listProjectBucketInventoryCalls)
+			}
+			if test.setErr != nil && backend.listProjectBucketInventoryCalls != 1 {
+				t.Fatalf("expected Redis SET failure after one live list, got %d inventory calls", backend.listProjectBucketInventoryCalls)
+			}
+		})
+	}
+}
+
+type responseCacheSetFailure struct {
+	delegate storecache.ResponseCache
+	err      error
+}
+
+func (cache responseCacheSetFailure) Get(ctx context.Context, key string) (storecache.CachedResponse, bool, error) {
+	return cache.delegate.Get(ctx, key)
+}
+
+func (cache responseCacheSetFailure) Set(context.Context, string, storecache.CachedResponse) error {
+	return cache.err
+}
+
+func (cache responseCacheSetFailure) Source() string {
+	return cache.delegate.Source()
+}
+
+func TestBuildStorageChainAuditColdBucketListFailureDoesNotProbeEveryRecord(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt":   lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/uncertain.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{
+			{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"}},
+			{ObjectID: "obj-uncertain", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, AccessURLs: []string{"s3://bucket/data/uncertain.txt"}},
+		},
+		projectScopes:               []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		listProjectBucketObjectsErr: fmt.Errorf("provider unavailable"),
+	}
+	service := NewStorageAnalyticsService(backend)
+	response, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
+	if err != nil {
+		t.Fatalf("build cold incomplete audit: %v", err)
+	}
+	if backend.probeCalls != 0 || len(backend.probeItems) != 0 {
+		t.Fatalf("expected failed bucket LIST to avoid broad HEAD fallback, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
+	}
+	if response.Summary.BucketInventoryAvailable || response.Summary.BucketInventoryError == "" {
+		t.Fatalf("expected report to explicitly show unavailable bucket inventory, got %+v", response.Summary)
+	}
+	if response.Summary.CountsByKind["syfon_git_no_bucket"] != 0 || response.Summary.CountsByKind["bucket_syfon_git_complete"] != 0 {
+		t.Fatalf("expected unavailable inventory not to claim missing or complete bucket evidence, got %+v", response.Summary)
+	}
+}
+
+func TestBuildStorageChainAuditPartialBucketListDoesNotMislabelInventoryMiss(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt":   lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+		"data/uncertain.txt": lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 200),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID: "obj-uncertain", Checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Organization: "org", Project: "proj", Size: 200, AccessURLs: []string{"s3://bucket/data/uncertain.txt"},
+		}},
+		projectScopes:             []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		bucketInventoryIncomplete: true,
+		BucketInventoryWarning:    "partial provider listing",
+	}
+	service := NewStorageAnalyticsService(backend)
+	response, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
+	if err != nil {
+		t.Fatalf("build partial inventory audit: %v", err)
+	}
+	if backend.probeCalls != 0 {
+		t.Fatalf("expected incomplete listing not to fan out targeted probes, got %d calls", backend.probeCalls)
+	}
+	if response.Summary.BucketInventoryComplete || response.Summary.CountsByKind["probe_error"] != 1 || response.Summary.CountsByKind["syfon_git_no_bucket"] != 0 || response.Summary.CountsByKind["bucket_syfon_git_complete"] != 0 {
+		t.Fatalf("expected partial listing misses to remain unverified without missing or complete claims, got %+v findings=%+v", response.Summary, response.Findings)
+	}
+	if len(response.Findings) != 2 || response.Findings[1].Kind != "probe_error" || response.Findings[1].EvidenceStatus != "unknown" || response.Findings[1].ErrorKind != "inventory_miss" {
+		t.Fatalf("expected inventory miss to remain explicitly unverified, got %+v", response.Findings)
 	}
 }
 
@@ -732,8 +1157,8 @@ func TestBuildStorageChainAuditForceBucketRefreshBypassesInventoryCache(t *testi
 		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
 	}
 	service := NewStorageAnalyticsService(backend)
-	service.chainSvc.ChainAuditResponseCache = storecache.NewMemoryStorageChainAuditResponseCache()
-	service.chainSvc.ProjectBucketCache = storecache.NewMemoryProjectBucketInventoryCache()
+	configureTestAuditResponseCache(service, newTestResponseCache())
+	configureTestProjectBucketCache(service, newTestBucketCache())
 	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate}
 
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
@@ -749,7 +1174,53 @@ func TestBuildStorageChainAuditForceBucketRefreshBypassesInventoryCache(t *testi
 	}
 }
 
-func TestBuildStorageChainAuditForceBucketRefreshWaitsForOrdinaryRefresh(t *testing.T) {
+func TestForcedInventoryRefreshRunsAndRequiresCompleteInventoryInMetadataMode(t *testing.T) {
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{ObjectID: "obj-present", Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Organization: "org", Project: "proj", Size: 100, AccessURLs: []string{"s3://bucket/data/present.txt"}}},
+		projectScopes:  []domain.StorageBucketScope{{Bucket: "bucket", Organization: "org", ProjectID: "proj", Path: "s3://bucket"}},
+		BucketObjects:  []gintegrationsyfon.ProjectBucketObject{{ObjectURL: "s3://bucket/data/present.txt", Bucket: "bucket", Key: "data/present.txt", Path: "data/present.txt", SizeBytes: 100}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	configureTestProjectBucketCache(service, newTestBucketCache())
+	options := StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ValidationMode: StorageChainValidationModeMetadata}
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err != nil {
+		t.Fatalf("build ordinary metadata audit: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 0 {
+		t.Fatalf("ordinary metadata audit unexpectedly listed the bucket, calls=%d", backend.listProjectBucketInventoryCalls)
+	}
+	options.ForceBucketRefresh = true
+	complete, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("force metadata-mode inventory refresh: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 1 || !complete.Summary.BucketInventoryComplete {
+		t.Fatalf("forced metadata refresh did not return a complete inventory: calls=%d summary=%+v", backend.listProjectBucketInventoryCalls, complete.Summary)
+	}
+	options.ForceBucketRefresh = false
+	options.ForceStorageRevalidation = true
+	full, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options)
+	if err != nil {
+		t.Fatalf("force full metadata-mode storage revalidation: %v", err)
+	}
+	if backend.listProjectBucketInventoryCalls != 2 || !full.Summary.BucketInventoryComplete {
+		t.Fatalf("full revalidation did not list a complete bucket inventory: calls=%d summary=%+v", backend.listProjectBucketInventoryCalls, full.Summary)
+	}
+	if backend.probeCalls != 3 || backend.listProjectAuditRecordsCalls != 3 {
+		t.Fatalf("full revalidation did not refresh records and probes: records=%d probes=%d", backend.listProjectAuditRecordsCalls, backend.probeCalls)
+	}
+	backend.mu.Lock()
+	backend.bucketInventoryIncomplete = true
+	backend.mu.Unlock()
+	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, options); err == nil || !strings.Contains(err.Error(), "incomplete bucket inventory") {
+		t.Fatalf("expected forced incomplete inventory to fail in metadata mode, got %v", err)
+	}
+}
+
+func TestBuildStorageChainAuditForceRefreshWaitsForOrdinaryRefresh(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -765,12 +1236,12 @@ func TestBuildStorageChainAuditForceBucketRefreshWaitsForOrdinaryRefresh(t *test
 		listProjectBucketInventoryRelease: release,
 	}
 	service := NewStorageAnalyticsService(backend)
-	service.chainSvc.ChainAuditResponseCache = storecache.NewMemoryStorageChainAuditResponseCache()
-	service.chainSvc.ProjectBucketCache = storecache.NewMemoryProjectBucketInventoryCache()
+	configureTestAuditResponseCache(service, newTestResponseCache())
+	configureTestProjectBucketCache(service, newTestBucketCache())
 
 	ordinaryDone := make(chan error, 1)
 	go func() {
-		_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate, ForceAuditRefresh: true})
+		_, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
 		ordinaryDone <- err
 	}()
 	<-started
@@ -802,21 +1273,15 @@ func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
 		}},
 	}
 	service := NewStorageAnalyticsService(backend)
-	cache := storecache.NewMemoryProjectBucketInventoryCache()
-	service.chainSvc.ProjectBucketCache = cache
+	cache := newTestBucketCache()
+	configureTestProjectBucketCache(service, cache)
 
 	objects, _, _, err := service.LoadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "", false)
 	if err != nil || len(objects) != 1 {
 		t.Fatalf("seed cached bucket inventory: objects=%d err=%v", len(objects), err)
 	}
 	key := storecache.ProjectBucketInventoryCacheKey("org", "proj", "")
-	cache.Mu.Lock()
-	entry := cache.Entries[key]
-	entry.Value.CachedAt = time.Now().Add(-storecache.ProjectBucketInventoryRefreshInterval - time.Second)
-	cache.Entries[key] = entry
-	cache.Mu.Unlock()
-	chainKey := service.chainSvc.ProjectChainInputCacheKey("org", "proj") + "::bucket-validation-inventory::"
-	service.chainSvc.ExpireChainInputCacheEntry(chainKey)
+	cache.setCachedAt(key, time.Now().Add(-storecache.ProjectBucketInventoryRefreshInterval-time.Second))
 	backend.listProjectBucketObjectsErr = fmt.Errorf("provider returned an incomplete listing")
 
 	objects, lookup, metadata, err := service.LoadCachedProjectBucketValidationInventory(context.Background(), "Bearer token", "org", "proj", "", false)
@@ -834,7 +1299,7 @@ func TestProjectBucketInventoryUsesStaleCacheWhenRefreshFails(t *testing.T) {
 	}
 }
 
-func TestStorageFolderExactReusesAuditProjectRecordCache(t *testing.T) {
+func TestStorageFolderExactReloadsProjectRecordsAfterAudit(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -864,8 +1329,8 @@ func TestStorageFolderExactReusesAuditProjectRecordCache(t *testing.T) {
 	if summary.RecordCount != 1 || summary.DownloadCount != 3 {
 		t.Fatalf("expected exact summary to join cached record and usage, got %+v", summary)
 	}
-	if backend.listProjectAuditRecordsCalls != 1 {
-		t.Fatalf("expected audit and exact summary to share one project record enumeration, got %d", backend.listProjectAuditRecordsCalls)
+	if backend.listProjectAuditRecordsCalls != 2 {
+		t.Fatalf("expected separate audit and exact summary builds to load project records, got %d", backend.listProjectAuditRecordsCalls)
 	}
 	if backend.getProjectMetricsSummaryCalls != 2 {
 		t.Fatalf("expected one cheap metrics validation per request, got %d", backend.getProjectMetricsSummaryCalls)
@@ -875,7 +1340,7 @@ func TestStorageFolderExactReusesAuditProjectRecordCache(t *testing.T) {
 	}
 }
 
-func TestStorageFolderExactWarmsAuditProjectRecordCache(t *testing.T) {
+func TestStorageFolderExactDoesNotCacheProjectRecordsForAudit(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/present.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -898,8 +1363,8 @@ func TestStorageFolderExactWarmsAuditProjectRecordCache(t *testing.T) {
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{ProbeMode: StorageChainProbeModeInventoryOnly}); err != nil {
 		t.Fatalf("build chain audit: %v", err)
 	}
-	if backend.listProjectAuditRecordsCalls != 1 {
-		t.Fatalf("expected exact summary and audit to share one project record enumeration, got %d", backend.listProjectAuditRecordsCalls)
+	if backend.listProjectAuditRecordsCalls != 2 {
+		t.Fatalf("expected exact summary and audit to load project records independently, got %d", backend.listProjectAuditRecordsCalls)
 	}
 	if backend.getProjectMetricsSummaryCalls != 2 {
 		t.Fatalf("expected one cheap metrics validation per request, got %d", backend.getProjectMetricsSummaryCalls)
@@ -953,7 +1418,7 @@ func TestStorageFolderExactAndAuditCoalesceProjectRecordRefresh(t *testing.T) {
 	}
 }
 
-func TestBuildStorageChainAuditCachesProjectRecordsPerPathPrefix(t *testing.T) {
+func TestBuildStorageChainAuditLoadsProjectRecordsPerAuditPath(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"CONFIG/a.json": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 		"DATA/b.json":   lfsPointer("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100),
@@ -976,8 +1441,8 @@ func TestBuildStorageChainAuditCachesProjectRecordsPerPathPrefix(t *testing.T) {
 	if _, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "DATA", mirrorPath, repo, hash, options); err != nil {
 		t.Fatalf("build second chain audit: %v", err)
 	}
-	if backend.listProjectAuditRecordsCalls != 1 {
-		t.Fatalf("expected project-scoped record cache to serve both prefixes, got %d calls", backend.listProjectAuditRecordsCalls)
+	if backend.listProjectAuditRecordsCalls != 2 {
+		t.Fatalf("expected both audit paths to load current project records, got %d calls", backend.listProjectAuditRecordsCalls)
 	}
 }
 
@@ -1229,8 +1694,8 @@ func TestBuildStorageChainAuditForwardsBucketPathPrefixForExplicitInventory(t *t
 		ProbeMode:           StorageChainProbeModeInventoryOnly,
 		ForceAuditRefresh:   true,
 		ForceBucketRefresh:  true,
-	}); err != nil {
-		t.Fatalf("force items inventory refresh: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "incomplete bucket inventory") {
+		t.Fatalf("expected forced incomplete items inventory refresh to fail explicitly, got %v", err)
 	}
 	if backend.listProjectBucketObjectsCalls != 2 {
 		t.Fatalf("expected force bucket refresh to bypass the items cache, got %d calls", backend.listProjectBucketObjectsCalls)
@@ -2123,10 +2588,7 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 			ProjectID:    "BForePC",
 			Path:         "s3://bforepc/bforepc-prod",
 		}},
-		usageByObject:             map[string]gintegrationsyfon.FileUsage{},
-		bucketInventoryIncomplete: true,
-		BucketInventoryWarning:    "terminal replay returned different page content",
-		bucketInventoryObservedAt: "2026-09-03T21:20:22Z",
+		usageByObject: map[string]gintegrationsyfon.FileUsage{},
 		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{
 			ObjectURL: canonicalPresentURL,
 			Bucket:    "bforepc",
@@ -2168,8 +2630,8 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	if !containsProbeTarget(backend.probeItems, canonicalMissingURL) || containsProbeTarget(backend.probeItems, canonicalPresentURL) {
 		t.Fatalf("expected only the unresolved access method to be probed, got %+v", backend.probeItems)
 	}
-	if chain.Summary.BucketInventoryComplete || !strings.Contains(chain.Summary.BucketInventoryWarning, "terminal replay") || chain.Summary.BucketInventoryObserved != "2026-09-03T21:20:22Z" || chain.Summary.BucketInventorySource != "live" {
-		t.Fatalf("expected degraded live inventory metadata, got %+v", chain.Summary)
+	if !chain.Summary.BucketInventoryComplete || chain.Summary.BucketInventoryWarning != "" || chain.Summary.BucketInventorySource != "live" {
+		t.Fatalf("expected complete live inventory metadata, got %+v", chain.Summary)
 	}
 	findings := loadAllChainFindings(t, chain)
 	finding := assertHasChainFinding(t, findings, "syfon_broken_bucket_mapping", repoPath)
@@ -2182,6 +2644,60 @@ func TestBuildStorageChainAuditReportsMissingAccessMethodWhenAnotherMethodExists
 	remaining := cleanup.RemainingAccessMethodsAfterBrokenRemoval(finding.Records[0])
 	if len(remaining) != 1 || remaining[0].URL != presentURL {
 		t.Fatalf("expected repair to retain only the working access method, got %+v", remaining)
+	}
+}
+
+func TestBuildStorageChainAuditPartialInventoryDoesNotOfferBrokenMappingRemoval(t *testing.T) {
+	const checksum = "13b9f3b94f83dda05ceac0c95ca7168d7db5c7cd79f28f0b4c448be3373387ef"
+	const missingURL = "s3://bforepc-prod/6595b01b-64a2-5b68-a607-d4bbb489bf17/" + checksum
+	const presentURL = "s3://bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const canonicalPresentURL = "s3://bforepc/bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const repoPath = "OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5"
+	const size = int64(529952905)
+
+	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
+		repoPath: lfsPointer(checksum, size),
+	})
+	backend := &fakeStorageAnalyticsBackend{
+		projectRecords: []gintegrationsyfon.ProjectRecord{{
+			ObjectID:   "record-with-two-methods",
+			Checksum:   checksum,
+			Size:       size,
+			AccessURLs: []string{missingURL, presentURL},
+			AccessMethods: []gintegrationsyfon.ProjectAccessMethod{
+				{AccessID: "missing", Type: "s3", URL: missingURL},
+				{AccessID: "present", Type: "s3", URL: presentURL},
+			},
+		}},
+		projectScopes:             []domain.StorageBucketScope{{Bucket: "bforepc", Organization: "org", ProjectID: "proj", Path: "s3://bforepc/bforepc-prod"}},
+		bucketInventoryIncomplete: true,
+		BucketInventoryWarning:    "provider listing incomplete",
+		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{
+			ObjectURL: canonicalPresentURL,
+			Bucket:    "bforepc",
+			Key:       "bforepc-prod/OHSU/koei_chin/visium_hd/2-R1/outs/feature_slice.h5",
+			Path:      repoPath,
+			SizeBytes: size,
+		}},
+	}
+	service := NewStorageAnalyticsService(backend)
+	response, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "", mirrorPath, repo, hash, StorageChainAuditOptions{
+		BucketInventoryMode: StorageChainBucketModeValidate,
+		ValidationMode:      StorageChainValidationModeList,
+	})
+	if err != nil {
+		t.Fatalf("build incomplete inventory audit: %v", err)
+	}
+	if backend.probeCalls != 0 || !response.Summary.BucketInventoryAvailable || response.Summary.BucketInventoryComplete {
+		t.Fatalf("expected partial inventory to remain available but unverified without probes, calls=%d summary=%+v", backend.probeCalls, response.Summary)
+	}
+	if response.Summary.CountsByKind["syfon_broken_bucket_mapping"] != 0 || response.Summary.CountsByKind["syfon_git_no_bucket"] != 0 || response.Summary.CountsByKind["bucket_syfon_git_complete"] != 0 {
+		t.Fatalf("expected partial inventory not to claim broken mapping, missing, or complete evidence, got %+v", response.Summary)
+	}
+	for _, finding := range response.Findings {
+		if finding.Kind == "syfon_broken_bucket_mapping" && contains(finding.AvailableActions, sarecord.ActionRemoveBrokenAccessURLs) {
+			t.Fatalf("incomplete inventory offered broken mapping removal: %+v", finding)
+		}
 	}
 }
 
@@ -2254,7 +2770,7 @@ func TestBuildStorageChainAuditNormalizesChecksumJoinKeys(t *testing.T) {
 	}
 }
 
-func TestBuildStorageChainAuditFallsBackToHeadWhenProjectBucketListFails(t *testing.T) {
+func TestBuildStorageChainAuditDoesNotFallbackToHeadWhenProjectBucketListFails(t *testing.T) {
 	repo, mirrorPath, refName, hash := buildAnalyticsMirror(t, map[string]string{
 		"data/a.txt": lfsPointer("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 100),
 	})
@@ -2300,13 +2816,13 @@ func TestBuildStorageChainAuditFallsBackToHeadWhenProjectBucketListFails(t *test
 
 	chain, err := service.BuildStorageChainAuditWithOptions(context.Background(), "Bearer token", "org", "proj", refName, "data", mirrorPath, repo, hash, StorageChainAuditOptions{BucketInventoryMode: StorageChainBucketModeValidate})
 	if err != nil {
-		t.Fatalf("expected HEAD fallback instead of a hard error, got %v", err)
+		t.Fatalf("expected an explicitly unavailable inventory report, got %v", err)
 	}
 	if backend.listProjectBucketInventoryCalls != 1 {
 		t.Fatalf("expected one bucket validation inventory attempt, got %d", backend.listProjectBucketInventoryCalls)
 	}
-	if backend.probeCalls != 1 || len(backend.probeItems) != 1 || backend.probeItems[0].ObjectURL != "s3://bucket/prefix/a.txt" {
-		t.Fatalf("expected one HEAD fallback after bucket inventory failure, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
+	if backend.probeCalls != 0 || len(backend.probeItems) != 0 {
+		t.Fatalf("expected failed bucket inventory not to fan out HEAD probes, got calls=%d items=%+v", backend.probeCalls, backend.probeItems)
 	}
 	if chain.Summary.BucketInventoryAvailable || !strings.Contains(chain.Summary.BucketInventoryError, "mapped bucket target may be missing or inaccessible") {
 		t.Fatalf("expected degraded inventory details in successful audit, got %+v", chain.Summary)

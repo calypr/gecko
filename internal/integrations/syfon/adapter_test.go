@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGetProjectMetricsSummaryReadsRecordValidator(t *testing.T) {
@@ -474,6 +476,104 @@ func TestBulkProbeStorageObjectsBatchesRequests(t *testing.T) {
 	}
 	if len(results) != len(items) {
 		t.Fatalf("expected %d results, got %d", len(items), len(results))
+	}
+}
+
+func TestBulkProbeStorageObjectsStopsLaunchingBatchesAfterCancellation(t *testing.T) {
+	started := make(chan struct{}, bulkStorageProbeConcurrency+1)
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		started <- struct{}{}
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	manager := NewManager("http://syfon.example", client)
+	items := make([]BulkStorageProbeItem, 0, bulkStorageProbeBatchSize*(bulkStorageProbeConcurrency+1))
+	for i := 0; i < cap(items); i++ {
+		items = append(items, BulkStorageProbeItem{ID: "item-" + strconv.Itoa(i), ObjectURL: "s3://bucket/object-" + strconv.Itoa(i)})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.BulkProbeStorageObjectsWithProgress(ctx, "Bearer token", items, nil)
+		done <- err
+	}()
+	for range bulkStorageProbeConcurrency {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("initial batch requests did not start")
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bulk request did not wait for canceled batches to finish")
+	}
+	if got := requests.Load(); got != bulkStorageProbeConcurrency {
+		t.Fatalf("expected only %d batches to start, got %d", bulkStorageProbeConcurrency, got)
+	}
+}
+
+func TestBulkProbeStorageObjectsWithProgressPreservesSuccessfulBatchOnSiblingFailure(t *testing.T) {
+	var successfulCallbacks atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request struct {
+			Items []struct {
+				ID        string `json:"id"`
+				ObjectURL string `json:"object_url"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Items[0].ID == "item-200" {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"temporary failure"}`)),
+			}, nil
+		}
+		respItems := make([]map[string]any, 0, len(request.Items))
+		for _, item := range request.Items {
+			respItems = append(respItems, map[string]any{"id": item.ID, "object_url": item.ObjectURL, "exists": true, "status": "present"})
+		}
+		body, err := json.Marshal(map[string]any{"items": respItems})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	manager := NewManager("http://syfon.example", client)
+	items := make([]BulkStorageProbeItem, 0, bulkStorageProbeBatchSize+1)
+	for i := 0; i < bulkStorageProbeBatchSize+1; i++ {
+		items = append(items, BulkStorageProbeItem{ID: "item-" + strconv.Itoa(i), ObjectURL: "s3://bucket/object-" + strconv.Itoa(i)})
+	}
+	var checkpointed int
+	_, err := manager.BulkProbeStorageObjectsWithProgress(context.Background(), "Bearer token", items, func(batchItems []BulkStorageProbeItem, results []BulkStorageProbeResult) error {
+		if len(batchItems) != bulkStorageProbeBatchSize || len(results) != len(batchItems) {
+			t.Fatalf("progress callback received items=%d results=%d", len(batchItems), len(results))
+		}
+		if strings.TrimSpace(results[0].ObservedAt) == "" {
+			t.Fatal("progress callback result did not retain its observation time")
+		}
+		checkpointed += len(results)
+		successfulCallbacks.Add(1)
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("expected sibling batch failure, got %v", err)
+	}
+	if checkpointed != bulkStorageProbeBatchSize || successfulCallbacks.Load() != 1 {
+		t.Fatalf("expected one successful batch checkpoint of %d items, checkpointed=%d callbacks=%d", bulkStorageProbeBatchSize, checkpointed, successfulCallbacks.Load())
 	}
 }
 

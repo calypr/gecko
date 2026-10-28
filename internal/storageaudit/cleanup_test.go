@@ -3,13 +3,14 @@ package storageaudit
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/calypr/gecko/internal/domain"
 	gintegrationsyfon "github.com/calypr/gecko/internal/integrations/syfon"
-	"github.com/calypr/gecko/internal/storageaudit/chain"
 	"github.com/calypr/gecko/internal/storageaudit/cleanup"
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 )
@@ -485,24 +486,11 @@ func TestApplyStorageCleanupBucketOnlyDeletionEvictsChainInputCache(t *testing.T
 		},
 	}
 	service := NewStorageAnalyticsService(backend)
-	cacheKey := service.chainSvc.ProjectChainInputCacheKey("org", "proj")
-	service.chainSvc.ChainInputCache[cacheKey] = chain.ChainInputCacheEntry{
-		ExpiresAt:     time.Now().Add(time.Minute),
-		ProjectScopes: backend.projectScopes,
+	if _, err := service.chainSvc.LoadProjectChainScopeMappings(context.Background(), "Bearer token", "org", "proj"); err != nil {
+		t.Fatalf("seed project scope cache: %v", err)
 	}
-	service.chainSvc.ChainInputCache[cacheKey+"::bucket-validation-inventory::"] = chain.ChainInputCacheEntry{
-		ExpiresAt: time.Now().Add(time.Minute),
-		BucketObjects: []gintegrationsyfon.ProjectBucketObject{{
-			ObjectURL: "s3://bucket/only",
-			Bucket:    "bucket",
-			Key:       "only",
-		}},
-		BucketObjectsByURL: map[string]gintegrationsyfon.ProjectBucketObject{
-			"s3://bucket/only": {ObjectURL: "s3://bucket/only", Bucket: "bucket", Key: "only"},
-		},
-	}
-	service.chainSvc.ChainInputCache["org/other::bucket-validation-inventory::"] = chain.ChainInputCacheEntry{
-		ExpiresAt: time.Now().Add(time.Minute),
+	if backend.listProjectScopesCalls != 1 {
+		t.Fatalf("expected one project scope load before cleanup, got %d", backend.listProjectScopesCalls)
 	}
 
 	_, err := service.ApplyStorageCleanup(
@@ -522,14 +510,12 @@ func TestApplyStorageCleanupBucketOnlyDeletionEvictsChainInputCache(t *testing.T
 	if err != nil {
 		t.Fatalf("apply bucket-only cleanup: %v", err)
 	}
-	if _, ok := service.chainSvc.ChainInputCache[cacheKey]; ok {
-		t.Fatalf("expected project chain input cache to be evicted, got %+v", service.chainSvc.ChainInputCache)
+	scopeLoadsBeforePostCleanup := backend.listProjectScopesCalls
+	if _, err := service.chainSvc.LoadProjectChainScopeMappings(context.Background(), "Bearer token", "org", "proj"); err != nil {
+		t.Fatalf("reload project scopes after cleanup: %v", err)
 	}
-	if _, ok := service.chainSvc.ChainInputCache[cacheKey+"::bucket-validation-inventory::"]; ok {
-		t.Fatalf("expected project bucket inventory cache to be evicted, got %+v", service.chainSvc.ChainInputCache)
-	}
-	if _, ok := service.chainSvc.ChainInputCache["org/other::bucket-validation-inventory::"]; !ok {
-		t.Fatalf("expected another project's cache entry to remain, got %+v", service.chainSvc.ChainInputCache)
+	if backend.listProjectScopesCalls != scopeLoadsBeforePostCleanup+1 {
+		t.Fatalf("expected cleanup to evict project scope cache, loads before=%d after=%d", scopeLoadsBeforePostCleanup, backend.listProjectScopesCalls)
 	}
 }
 
@@ -1726,5 +1712,154 @@ func TestApplyStorageCleanupDeletesSelectedProbeErrorRecords(t *testing.T) {
 	}
 	if len(backend.deletedIDs) != 1 || backend.deletedIDs[0] != "probe-object" {
 		t.Fatalf("expected Syfon deletion only, got %+v", backend)
+	}
+}
+
+func TestApplyStorageCleanupWithRevisionsRejectsStaleSyfonRevisionBeforePlanning(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run_%t", dryRun), func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{
+				projectMetricsSummary: &gintegrationsyfon.ProjectMetricsSummary{
+					RecordCount:    1,
+					RecordRevision: "current",
+				},
+			}
+			service := NewStorageAnalyticsService(backend)
+			request := CleanupApplyRequest{
+				ExpectedGitRevision:   "git-current",
+				ExpectedSyfonRevision: "1::stale",
+				SelectedRepoPaths:     []string{"probe-row"},
+				DryRun:                dryRun,
+				Actions: []CleanupApplyAction{{
+					Kind:           "probe_error",
+					NormalizedPath: "probe-row",
+					Action:         sarecord.ActionDeleteSyfonRecord,
+				}},
+				Findings: []CleanupApplyFinding{{
+					Kind:           "probe_error",
+					NormalizedPath: "probe-row",
+					ObjectIDs:      []string{"probe-object"},
+				}},
+			}
+
+			_, err := service.ApplyStorageCleanupWithRevisions(context.Background(), "Bearer token", "org", "project", "git-current", request)
+			if err == nil || !strings.Contains(err.Error(), "refresh audit") {
+				t.Fatalf("expected stale Syfon revision to require audit refresh, got %v", err)
+			}
+			if backend.listProjectAuditRecordsCalls != 0 || len(backend.deletedIDs) != 0 || len(backend.deletedStorageIDs) != 0 || len(backend.deletedBucketObjects) != 0 || len(backend.updatedAccessMethods) != 0 {
+				t.Fatalf("stale cleanup request reached planning or mutations: reads=%d deleted=%v storage=%v bucket=%v updates=%v", backend.listProjectAuditRecordsCalls, backend.deletedIDs, backend.deletedStorageIDs, backend.deletedBucketObjects, backend.updatedAccessMethods)
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupWithRevisionsFailsClosedWhenSyfonRevisionCannotBeLoaded(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run_%t", dryRun), func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{getProjectMetricsSummaryErr: errors.New("metrics unavailable")}
+			service := NewStorageAnalyticsService(backend)
+			request := CleanupApplyRequest{
+				ExpectedGitRevision:   "git-current",
+				ExpectedSyfonRevision: "1::current",
+				DryRun:                dryRun,
+				Findings:              []CleanupApplyFinding{{Kind: "probe_error", NormalizedPath: "probe-row", ObjectIDs: []string{"probe-object"}}},
+			}
+
+			_, err := service.ApplyStorageCleanupWithRevisions(context.Background(), "Bearer token", "org", "project", "git-current", request)
+			if err == nil || !strings.Contains(err.Error(), "get Syfon revision for storage audit") {
+				t.Fatalf("expected Syfon revision lookup error, got %v", err)
+			}
+			if backend.getProjectMetricsSummaryCalls != 1 || backend.listProjectAuditRecordsCalls != 0 || len(backend.deletedIDs) != 0 || len(backend.deletedStorageIDs) != 0 || len(backend.deletedBucketObjects) != 0 || len(backend.updatedAccessMethods) != 0 {
+				t.Fatalf("revision lookup failure reached cleanup planning or mutations: summaries=%d reads=%d deleted=%v storage=%v bucket=%v updates=%v", backend.getProjectMetricsSummaryCalls, backend.listProjectAuditRecordsCalls, backend.deletedIDs, backend.deletedStorageIDs, backend.deletedBucketObjects, backend.updatedAccessMethods)
+			}
+		})
+	}
+}
+
+func TestApplyStorageCleanupWithRevisionsRejectsStaleGitRevisionBeforeReadingSyfon(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{}
+	service := NewStorageAnalyticsService(backend)
+	request := CleanupApplyRequest{
+		ExpectedGitRevision:   "git-stale",
+		ExpectedSyfonRevision: "1::current",
+		Findings:              []CleanupApplyFinding{{Kind: "probe_error", NormalizedPath: "probe-row", ObjectIDs: []string{"probe-object"}}},
+	}
+
+	_, err := service.ApplyStorageCleanupWithRevisions(context.Background(), "Bearer token", "org", "project", "git-current", request)
+	if err == nil || !strings.Contains(err.Error(), "Git revision changed") || !strings.Contains(err.Error(), "refresh audit") {
+		t.Fatalf("expected stale Git revision to require audit refresh, got %v", err)
+	}
+	if backend.getProjectMetricsSummaryCalls != 0 || backend.listProjectAuditRecordsCalls != 0 || len(backend.deletedIDs) != 0 {
+		t.Fatalf("stale Git cleanup request reached Syfon or cleanup: summaries=%d reads=%d deleted=%v", backend.getProjectMetricsSummaryCalls, backend.listProjectAuditRecordsCalls, backend.deletedIDs)
+	}
+}
+
+func TestApplyStorageCleanupWithRevisionsAllowsLegacyRequestWithoutPreconditions(t *testing.T) {
+	backend := &fakeStorageAnalyticsBackend{}
+	service := NewStorageAnalyticsService(backend)
+	request := CleanupApplyRequest{
+		Actions: []CleanupApplyAction{{
+			Kind:           "probe_error",
+			NormalizedPath: "probe-row",
+			Action:         sarecord.ActionDeleteSyfonRecord,
+		}},
+		Findings: []CleanupApplyFinding{{
+			Kind:           "probe_error",
+			NormalizedPath: "probe-row",
+			ObjectIDs:      []string{"probe-object"},
+		}},
+	}
+
+	response, err := service.ApplyStorageCleanupWithRevisions(context.Background(), "Bearer token", "org", "project", "git-current", request)
+	if err != nil {
+		t.Fatalf("apply legacy cleanup request: %v", err)
+	}
+	if len(response.DeletedRecordIDs) != 1 || response.DeletedRecordIDs[0] != "probe-object" || len(backend.deletedIDs) != 1 {
+		t.Fatalf("legacy cleanup request did not proceed: response=%+v deleted=%v", response, backend.deletedIDs)
+	}
+	if backend.getProjectMetricsSummaryCalls != 0 {
+		t.Fatalf("legacy request without Syfon precondition loaded revision %d times", backend.getProjectMetricsSummaryCalls)
+	}
+}
+
+func TestApplyStorageCleanupWithRevisionsAcceptsCurrentRevisions(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry_run_%t", dryRun), func(t *testing.T) {
+			backend := &fakeStorageAnalyticsBackend{
+				projectMetricsSummary: &gintegrationsyfon.ProjectMetricsSummary{
+					RecordCount:    1,
+					RecordRevision: "current",
+				},
+				probeResults: map[string]gintegrationsyfon.BulkStorageProbeResult{
+					"cleanup-revalidate-0": {
+						ID:                 "cleanup-revalidate-0",
+						Status:             "not_found",
+						ErrorKind:          "object_not_found",
+						VerificationMethod: "ranged_get",
+					},
+				},
+			}
+			service := NewStorageAnalyticsService(backend)
+			request := CleanupApplyRequest{
+				ExpectedGitRevision:   "git-current",
+				ExpectedSyfonRevision: "1::current",
+				DryRun:                dryRun,
+				Findings:              []CleanupApplyFinding{applyFinding("syfon_git_no_bucket", "data/file.bin", []string{"probe-object"}, []string{"s3://bucket/data/file.bin"})},
+			}
+
+			response, err := service.ApplyStorageCleanupWithRevisions(context.Background(), "Bearer token", "org", "project", "git-current", request)
+			if err != nil {
+				t.Fatalf("apply cleanup with current revisions: %v", err)
+			}
+			if len(response.DeletedRecordIDs) != 1 || response.DeletedRecordIDs[0] != "probe-object" || response.DryRun != dryRun {
+				t.Fatalf("current revision cleanup did not proceed: response=%+v", response)
+			}
+			if (dryRun && len(backend.deletedIDs) != 0) || (!dryRun && (len(backend.deletedIDs) != 1 || backend.deletedIDs[0] != "probe-object")) {
+				t.Fatalf("unexpected Syfon deletions for dry_run=%t: %v", dryRun, backend.deletedIDs)
+			}
+			if !dryRun && backend.probeCalls != 1 {
+				t.Fatalf("expected existing exact storage revalidation before cleanup, got %d probes", backend.probeCalls)
+			}
+		})
 	}
 }

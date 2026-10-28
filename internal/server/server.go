@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log"
 
 	geckologging "github.com/calypr/gecko/internal/logging"
 	"github.com/calypr/gecko/internal/presentation"
 	"github.com/calypr/gecko/internal/repo"
+	"github.com/calypr/gecko/internal/server/httpapi/apiserver"
 	"github.com/calypr/gecko/internal/thumbnail"
 	"github.com/jmoiron/sqlx"
 )
@@ -17,6 +20,7 @@ type Server struct {
 	repoService       *repo.Service
 	thumbnailStore    thumbnail.Manager
 	presentationStore presentation.Manager
+	apiServer         *apiserver.Server
 }
 
 func NewServer() *Server { return &Server{} }
@@ -60,6 +64,19 @@ func (server *Server) Init() (*Server, error) {
 	} else {
 		server.Logger.Warning("Git endpoints will be disabled.")
 	}
+	apiServer, err := server.newAPIServer()
+	if err != nil {
+		return nil, fmt.Errorf("initialize API dependencies: %w", err)
+	}
+	server.apiServer = apiServer
 	server.Logger.Info("Gecko server initialized successfully.")
 	return server, nil
+}
+
+// Shutdown cancels service-owned audit work during process shutdown.
+func (server *Server) Shutdown(ctx context.Context) error {
+	if server.apiServer == nil || server.apiServer.StorageAnalytics == nil {
+		return nil
+	}
+	return server.apiServer.StorageAnalytics.Shutdown(ctx)
 }
