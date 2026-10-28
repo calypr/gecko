@@ -1,8 +1,8 @@
 package storecache
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -209,12 +209,25 @@ func TestRedisProjectAuditLeasePublicationKeepsResponseWithoutTTL(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read published response: %v", err)
 	}
-	var got CachedResponse
-	if err := json.Unmarshal(raw, &got); err != nil {
+	if len(raw) < responseCacheCodecHeaderSize || !bytes.Equal(raw[:responseCacheCodecHeaderSize], responseCacheCodecHeader[:]) {
+		t.Fatalf("published response header = %q, want compressed codec header %q", raw[:min(len(raw), responseCacheCodecHeaderSize)], responseCacheCodecHeader)
+	}
+	got, err := decodeCachedResponse(context.Background(), raw)
+	if err != nil {
 		t.Fatalf("decode published response: %v", err)
 	}
 	if !got.CachedAt.Equal(want.CachedAt) {
 		t.Fatalf("published response CachedAt = %v, want %v", got.CachedAt, want.CachedAt)
+	}
+
+	canceledResponseKey := responseKey + ":canceled"
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := lease.PublishResponse(canceledCtx, canceledResponseKey, want); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PublishResponse() with canceled context error = %v, want context canceled", err)
+	}
+	if exists, err := admin.Exists(context.Background(), canceledResponseKey).Result(); err != nil || exists != 0 {
+		t.Fatalf("canceled response was published, exists=%d err=%v", exists, err)
 	}
 
 	bucketKey := projectAuditCacheTestKey(t, BucketInventoryKeyPrefix, admin)

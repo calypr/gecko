@@ -187,8 +187,8 @@ func (cache *RedisResponseCache) Get(ctx context.Context, key string) (CachedRes
 	if err != nil {
 		return CachedResponse{}, false, err
 	}
-	var value CachedResponse
-	if err := json.Unmarshal(raw, &value); err != nil {
+	value, err := decodeCachedResponse(ctx, raw)
+	if err != nil {
 		return CachedResponse{}, false, err
 	}
 	if value.CachedAt.IsZero() {
@@ -198,7 +198,7 @@ func (cache *RedisResponseCache) Get(ctx context.Context, key string) (CachedRes
 }
 
 func (cache *RedisResponseCache) Set(ctx context.Context, key string, value CachedResponse) error {
-	raw, err := json.Marshal(value)
+	raw, err := encodeCachedResponse(ctx, value)
 	if err != nil {
 		return err
 	}

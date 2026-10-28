@@ -1,7 +1,9 @@
 package storecache
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -146,6 +148,13 @@ func TestRedisCachesRetainAuditSnapshotsAndKeepInputTTLs(t *testing.T) {
 	if err := responseCache.Set(ctx, key, first); err != nil {
 		t.Fatalf("set first saved response: %v", err)
 	}
+	rawResponse, err := responseCache.client.Get(ctx, key).Bytes()
+	if err != nil {
+		t.Fatalf("read first saved response bytes: %v", err)
+	}
+	if len(rawResponse) < responseCacheCodecHeaderSize || !bytes.Equal(rawResponse[:responseCacheCodecHeaderSize], responseCacheCodecHeader[:]) {
+		t.Fatalf("saved response header = %q, want compressed codec header %q", rawResponse[:min(len(rawResponse), responseCacheCodecHeaderSize)], responseCacheCodecHeader)
+	}
 	ttl, err := responseCache.client.Do(ctx, "TTL", key).Int64()
 	if err != nil || ttl != -1 {
 		t.Fatalf("expected Redis response snapshot to have no expiry, TTL=%d err=%v", ttl, err)
@@ -153,6 +162,28 @@ func TestRedisCachesRetainAuditSnapshotsAndKeepInputTTLs(t *testing.T) {
 	got, ok, err := responseCache.Get(ctx, key)
 	if err != nil || !ok || !reflect.DeepEqual(got, first) {
 		t.Fatalf("read first saved response: value=%+v ok=%t err=%v", got, ok, err)
+	}
+	legacyKey := key + ":legacy-json"
+	defer responseCache.client.Del(ctx, legacyKey)
+	legacyJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal legacy response: %v", err)
+	}
+	if err := responseCache.client.Set(ctx, legacyKey, legacyJSON, 0).Err(); err != nil {
+		t.Fatalf("write legacy JSON response: %v", err)
+	}
+	legacy, ok, err := responseCache.Get(ctx, legacyKey)
+	if err != nil || !ok || !reflect.DeepEqual(legacy, first) {
+		t.Fatalf("read legacy JSON response: value=%+v ok=%t err=%v", legacy, ok, err)
+	}
+	corruptKey := key + ":corrupt"
+	defer responseCache.client.Del(ctx, corruptKey)
+	corruptValue := append(append([]byte(nil), responseCacheCodecHeader[:]...), []byte("invalid frame")...)
+	if err := responseCache.client.Set(ctx, corruptKey, corruptValue, 0).Err(); err != nil {
+		t.Fatalf("write corrupt response fixture: %v", err)
+	}
+	if value, ok, err := responseCache.Get(ctx, corruptKey); err == nil || ok {
+		t.Fatalf("read corrupt response = (%+v, %t, %v), want decode error and no cache hit", value, ok, err)
 	}
 
 	updated := first

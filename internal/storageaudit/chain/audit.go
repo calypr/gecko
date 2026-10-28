@@ -256,7 +256,7 @@ func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx contex
 		return storecache.CachedResponse{}, false, nil
 	}
 	inventory := filterStorageChainInventory(cached.Inventory, gitSubpath)
-	response := projectStorageChainAuditResponseForSubpath(cached.Response, gitSubpath, inventory, "", -1)
+	response := storageChainAuditResponseForSubpathView(cached.Response, gitSubpath, inventory)
 	options.Timings.Record("audit_response_root_cache_hit", 0)
 	options.Timings.RecordMemory(
 		"audit_response_root_cache_hit",
@@ -268,7 +268,7 @@ func (service *Service) projectStorageChainAuditFromRootResponseCache(ctx contex
 	return storecache.CachedResponse{
 		CachedAt:              cached.CachedAt,
 		RefreshDurationMillis: cached.RefreshDurationMillis,
-		Response:              *response,
+		Response:              response,
 		Inventory:             inventory,
 	}, true, nil
 }

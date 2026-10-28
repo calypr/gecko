@@ -252,19 +252,20 @@ func summarizeChainIssueGroups(findings []model.ChainFinding) []model.ChainIssue
 	groupPaths := make(map[string]map[string]struct{})
 	groupObjects := make(map[string]map[string]struct{})
 	for _, finding := range findings {
-		group := groups[finding.Kind]
+		kind := storageChainAuditJSONString(finding.Kind)
+		group := groups[kind]
 		if group == nil {
-			group = &model.ChainIssueGroup{Kind: finding.Kind}
-			groups[finding.Kind] = group
-			groupPaths[finding.Kind] = map[string]struct{}{}
-			groupObjects[finding.Kind] = map[string]struct{}{}
+			group = &model.ChainIssueGroup{Kind: kind}
+			groups[kind] = group
+			groupPaths[kind] = map[string]struct{}{}
+			groupObjects[kind] = map[string]struct{}{}
 		}
 		group.FindingCount++
 		group.RecordCount += finding.RecordCount
 		group.TotalBytes += finding.SizeBytes
-		groupPaths[finding.Kind][finding.NormalizedPath] = struct{}{}
+		groupPaths[kind][storageChainAuditJSONString(finding.NormalizedPath)] = struct{}{}
 		for _, objectID := range finding.ObjectIDs {
-			groupObjects[finding.Kind][objectID] = struct{}{}
+			groupObjects[kind][storageChainAuditJSONString(objectID)] = struct{}{}
 		}
 	}
 	kinds := make([]string, 0, len(groups))

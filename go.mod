@@ -12,6 +12,7 @@ require (
 	github.com/google/go-github/v87 v87.0.0
 	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
+	github.com/klauspost/compress v1.18.6
 	github.com/lib/pq v1.12.3
 	github.com/oapi-codegen/runtime v1.6.0
 	github.com/redis/go-redis/v9 v9.17.1
@@ -48,7 +49,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect

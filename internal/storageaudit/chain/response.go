@@ -2,11 +2,20 @@ package chain
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	sarecord "github.com/calypr/gecko/internal/storageaudit/record"
 
 	"github.com/calypr/gecko/internal/storageaudit/model"
 )
+
+// Grouping keys use the same replacement of invalid UTF-8 bytes as JSON encoding.
+func storageChainAuditJSONString(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return string([]rune(value))
+}
 
 func filterStorageChainInventory(inventory []model.RepoInventoryFile, gitSubpath string) []model.RepoInventoryFile {
 	pathPrefix := sarecord.NormalizeRepoSubpath(gitSubpath)
@@ -23,7 +32,7 @@ func filterStorageChainInventory(inventory []model.RepoInventoryFile, gitSubpath
 	return filtered
 }
 
-func projectStorageChainAuditResponseForSubpath(base model.ChainAuditResponse, gitSubpath string, inventory []model.RepoInventoryFile, findingKind string, findingLimit int) *model.ChainAuditResponse {
+func storageChainAuditResponseForSubpathView(base model.ChainAuditResponse, gitSubpath string, inventory []model.RepoInventoryFile) model.ChainAuditResponse {
 	pathPrefix := sarecord.NormalizeRepoSubpath(gitSubpath)
 	filteredFindings := make([]model.ChainFinding, 0, len(base.Findings))
 	for _, finding := range base.Findings {
@@ -78,13 +87,16 @@ func projectStorageChainAuditResponseForSubpath(base model.ChainAuditResponse, g
 	summary.SyfonRecordCount = completeCount + len(objectIDs)
 	summary.BucketObjectCount = completeCount + len(bucketObjects)
 
+	summary.ReturnedFindings = len(filteredFindings)
+	summary.FindingLimit = -1
+	summary.FindingsTruncated = false
 	projected := base
 	projected.Findings = filteredFindings
 	projected.Groups = summarizeChainIssueGroups(filteredFindings)
 	projected.Summary = summary
 	projected.PathPrefix = pathPrefix
 	projected.BucketPathPrefix = ""
-	return projectStorageChainAuditResponse(projected, findingKind, findingLimit)
+	return projected
 }
 
 func storageChainFindingHasGitPath(kind string) bool {
@@ -96,17 +108,18 @@ func storageChainFindingHasGitPath(kind string) bool {
 }
 
 func projectStorageChainAuditResponse(base model.ChainAuditResponse, findingKind string, findingLimit int) *model.ChainAuditResponse {
-	response := cloneStorageChainAuditResponse(base)
-	filteredFindings := filterStorageChainFindingsByKind(response.Findings, findingKind)
-	summary := filterStorageChainSummary(response.Summary, filteredFindings)
+	filteredFindings := filterStorageChainFindingsByKind(base.Findings, findingKind)
+	summary := filterStorageChainSummary(base.Summary, filteredFindings)
 	findings := limitStorageChainFindings(filteredFindings, findingLimit, findingKind)
 	summary.ReturnedFindings = len(findings)
 	summary.FindingLimit = findingLimit
 	summary.FindingsTruncated = len(findings) < len(filteredFindings)
+	response := base
 	response.Findings = findings
 	response.Groups = summarizeChainIssueGroups(filteredFindings)
 	response.Summary = summary
-	return &response
+	cloned := cloneStorageChainAuditResponse(response)
+	return &cloned
 }
 
 func storageChainFindingMatchesSubpath(finding model.ChainFinding, pathPrefix string) bool {
@@ -160,11 +173,11 @@ func storagePathMatchesRepoSubpath(raw string, pathPrefix string) bool {
 func filterStorageChainFindingsByKind(findings []model.ChainFinding, kind string) []model.ChainFinding {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
-		return append([]model.ChainFinding(nil), findings...)
+		return findings
 	}
 	filtered := make([]model.ChainFinding, 0, len(findings))
 	for _, finding := range findings {
-		if finding.Kind == kind {
+		if storageChainAuditJSONString(finding.Kind) == kind {
 			filtered = append(filtered, finding)
 		}
 	}
@@ -174,11 +187,11 @@ func filterStorageChainFindingsByKind(findings []model.ChainFinding, kind string
 func filterStorageChainSummary(summary model.ChainSummary, findings []model.ChainFinding) model.ChainSummary {
 	filteredCounts := make(map[string]int, len(summary.CountsByKind))
 	for kind := range summary.CountsByKind {
-		filteredCounts[kind] = 0
+		filteredCounts[storageChainAuditJSONString(kind)] = 0
 	}
 	filteredCounts["bucket_syfon_git_complete"] = summary.CountsByKind["bucket_syfon_git_complete"]
 	for _, finding := range findings {
-		filteredCounts[finding.Kind]++
+		filteredCounts[storageChainAuditJSONString(finding.Kind)]++
 	}
 	summary.CountsByKind = filteredCounts
 	summary.TotalFindings = len(findings)
@@ -193,11 +206,12 @@ func limitStorageChainFindings(findings []model.ChainFinding, limit int, kind st
 		limited := make([]model.ChainFinding, 0, len(findings))
 		countsByKind := make(map[string]int)
 		for _, finding := range findings {
-			if countsByKind[finding.Kind] >= limit {
+			kind := storageChainAuditJSONString(finding.Kind)
+			if countsByKind[kind] >= limit {
 				continue
 			}
 			limited = append(limited, finding)
-			countsByKind[finding.Kind]++
+			countsByKind[kind]++
 		}
 		return limited
 	}

@@ -241,7 +241,19 @@ func (lease *redisProjectAuditLease) renew() {
 }
 
 func (lease *redisProjectAuditLease) PublishResponse(ctx context.Context, key string, value CachedResponse) error {
-	return lease.publish(ctx, key, value, 0)
+	if err := lease.validatePublication(ctx, key); err != nil {
+		return err
+	}
+	raw, err := encodeCachedResponse(ctx, value)
+	if err != nil {
+		if ctx.Err() != nil {
+			if validationErr := lease.validatePublication(ctx, key); validationErr != nil {
+				return validationErr
+			}
+		}
+		return err
+	}
+	return lease.publishRaw(ctx, key, raw, 0)
 }
 
 func (lease *redisProjectAuditLease) PublishBucketInventory(ctx context.Context, key string, value CachedBucketInventory, ttl time.Duration) error {
@@ -252,6 +264,17 @@ func (lease *redisProjectAuditLease) PublishBucketInventory(ctx context.Context,
 }
 
 func (lease *redisProjectAuditLease) publish(ctx context.Context, key string, value any, ttl time.Duration) error {
+	if err := lease.validatePublication(ctx, key); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return lease.publishRaw(ctx, key, raw, ttl)
+}
+
+func (lease *redisProjectAuditLease) validatePublication(ctx context.Context, key string) error {
 	if strings.TrimSpace(key) == "" {
 		return errors.New("storage audit cache publication requires a key")
 	}
@@ -264,8 +287,11 @@ func (lease *redisProjectAuditLease) publish(ctx context.Context, key string, va
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(value)
-	if err != nil {
+	return nil
+}
+
+func (lease *redisProjectAuditLease) publishRaw(ctx context.Context, key string, raw []byte, ttl time.Duration) error {
+	if err := lease.validatePublication(ctx, key); err != nil {
 		return err
 	}
 	var ttlMilliseconds int64
