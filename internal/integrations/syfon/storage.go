@@ -67,7 +67,6 @@ func (manager *Manager) bulkStorageObjectRequestWithProgress(ctx context.Context
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			launchErr = ctx.Err()
-			break
 		}
 		if launchErr != nil {
 			break
