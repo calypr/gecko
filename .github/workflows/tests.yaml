@@ -9,6 +9,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
     - name: Checkout repository
@@ -109,6 +119,9 @@ jobs:
       run: go build -race -o bin/gecko .
 
     - name: Run Tests
+      env:
+        REDIS_URL: redis://localhost:6379/0
+        GECKO_TEST_REDIS_URL: redis://localhost:6379/0
       run: |
         ./bin/gecko \
           -db "postgresql://postgres:your_strong_password@localhost:8081/testdb?sslmode=disable" \
