@@ -49,17 +49,25 @@ func ValidateAuthorizationHeader(raw string) (string, error) {
 }
 
 func FenceUserEndpoint(authorizationHeader string) (string, error) {
-	baseURL, err := FenceIssuerBaseURL(authorizationHeader)
+	issuer, err := trustedFenceIssuer(authorizationHeader)
 	if err != nil {
 		return "", err
 	}
-	return baseURL + "/user", nil
+	return strings.TrimRight(issuer, "/") + "/user/", nil
 }
 
 // FenceIssuerBaseURL parses the issuer claim without verifying the signature,
 // then checks that the issuer belongs to the configured Fence trust allowlist.
 // The signature check stays with Fence, which receives the original token.
 func FenceIssuerBaseURL(authorizationHeader string) (string, error) {
+	issuer, err := trustedFenceIssuer(authorizationHeader)
+	if err != nil {
+		return "", err
+	}
+	return normalizeIssuerBaseURL(issuer)
+}
+
+func trustedFenceIssuer(authorizationHeader string) (string, error) {
 	token := CleanAccessToken(authorizationHeader)
 	if token == "" {
 		return "", fmt.Errorf("authorization header is required")
@@ -80,7 +88,7 @@ func FenceIssuerBaseURL(authorizationHeader string) (string, error) {
 	for _, allowed := range fenceTrust.AllowedIssuers {
 		normalized, err := normalizeIssuerBaseURL(allowed)
 		if err == nil && normalized == baseURL {
-			return baseURL, nil
+			return strings.TrimSpace(issuer), nil
 		}
 	}
 	return "", fmt.Errorf("authorization token issuer %q is not trusted", baseURL)
@@ -95,8 +103,8 @@ func normalizeIssuerBaseURL(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse issuer: %w", err)
 	}
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
-		return "", fmt.Errorf("issuer must be an http or https URL without userinfo")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return "", fmt.Errorf("issuer must be an http or https URL without userinfo, query, or fragment")
 	}
 	path := strings.TrimRight(parsed.Path, "/")
 	path = strings.TrimSuffix(path, "/user")

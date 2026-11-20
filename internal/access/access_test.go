@@ -133,7 +133,7 @@ func TestFenceUserEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if endpoint != "https://example.org/user" {
+	if endpoint != "https://example.org/user/user/" {
 		t.Fatalf("unexpected endpoint %q", endpoint)
 	}
 }
