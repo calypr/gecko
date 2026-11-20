@@ -930,6 +930,53 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /git/projects/{orgTitle}/{projectTitle}/pointer-inventory:
+    get:
+      tags: [git]
+      summary: Stream Git LFS data pointers from an exact commit
+      description: Requires READ permission on the project. Streams a JSON array from the Git mirror. META and CONFIG are excluded. Consume through the closing array bracket to verify the inventory is complete.
+      operationId: getGitProjectPointerInventory
+      parameters:
+        - $ref: '#/components/parameters/OrgTitle'
+        - $ref: '#/components/parameters/ProjectTitle'
+        - name: commit
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{40}$'
+      responses:
+        '200':
+          description: Data pointers in the pinned commit
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [path, sha256, size]
+                  properties:
+                    path:
+                      type: string
+                    sha256:
+                      type: string
+                      pattern: '^[0-9a-f]{64}$'
+                    size:
+                      type: integer
+                      format: int64
+                      minimum: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: Project authorization is unavailable
   /git/projects/{orgTitle}/{projectTitle}/manifest:
     get:
       tags: [git]

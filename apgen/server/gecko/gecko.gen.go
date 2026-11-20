@@ -230,6 +230,11 @@ type GetGitProjectManifestWildcardParams struct {
 	Cursor    *CursorQuery    `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// GetGitProjectPointerInventoryParams defines parameters for GetGitProjectPointerInventory.
+type GetGitProjectPointerInventoryParams struct {
+	Commit string `form:"commit" json:"commit"`
+}
+
 // PostGitProjectPresentationConfigJSONBody defines parameters for PostGitProjectPresentationConfig.
 type PostGitProjectPresentationConfigJSONBody map[string]interface{}
 
@@ -553,6 +558,9 @@ type ServerInterface interface {
 	// GetGitProjectManifestWildcard Read a nested manifest document
 	// (GET /git/projects/{orgTitle}/{projectTitle}/manifest/{path})
 	GetGitProjectManifestWildcard(w http.ResponseWriter, r *http.Request, orgTitle OrgTitle, projectTitle ProjectTitle, path string, params GetGitProjectManifestWildcardParams)
+	// GetGitProjectPointerInventory Stream Git LFS data pointers from an exact commit
+	// (GET /git/projects/{orgTitle}/{projectTitle}/pointer-inventory)
+	GetGitProjectPointerInventory(w http.ResponseWriter, r *http.Request, orgTitle OrgTitle, projectTitle ProjectTitle, params GetGitProjectPointerInventoryParams)
 	// GetGitProjectPresentationConfig Get a project's presentation configuration
 	// (GET /git/projects/{orgTitle}/{projectTitle}/presentationConfig)
 	GetGitProjectPresentationConfig(w http.ResponseWriter, r *http.Request, orgTitle OrgTitle, projectTitle ProjectTitle)
@@ -1520,6 +1528,57 @@ func (siw *ServerInterfaceWrapper) GetGitProjectManifestWildcard(w http.Response
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetGitProjectManifestWildcard(w, r, orgTitle, projectTitle, path, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetGitProjectPointerInventory operation middleware
+func (siw *ServerInterfaceWrapper) GetGitProjectPointerInventory(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgTitle" -------------
+	var orgTitle OrgTitle
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgTitle", r.PathValue("orgTitle"), &orgTitle, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "orgTitle", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "projectTitle" -------------
+	var projectTitle ProjectTitle
+
+	err = runtime.BindStyledParameterWithOptions("simple", "projectTitle", r.PathValue("projectTitle"), &projectTitle, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "projectTitle", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetGitProjectPointerInventoryParams
+
+	// ------------- Required query parameter "commit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "commit", r.URL.Query(), &params.Commit, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "commit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "commit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGitProjectPointerInventory(w, r, orgTitle, projectTitle, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3073,6 +3132,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/refs", wrapper.GetGitProjectRefs)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/tree", wrapper.GetGitProjectTree)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/tree/{path}", wrapper.GetGitProjectTreeSubpath)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/pointer-inventory", wrapper.GetGitProjectPointerInventory)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/manifest", wrapper.GetGitProjectManifest)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/manifest/{path}", wrapper.GetGitProjectManifestWildcard)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/git/projects/{orgTitle}/{projectTitle}/file/{path}", wrapper.GetGitProjectFile)
@@ -4777,6 +4837,112 @@ func (response GetGitProjectManifestWildcard500JSONResponse) VisitGetGitProjectM
 	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type GetGitProjectPointerInventoryRequestObject struct {
+	OrgTitle     OrgTitle     `json:"orgTitle"`
+	ProjectTitle ProjectTitle `json:"projectTitle"`
+	Params       GetGitProjectPointerInventoryParams
+}
+
+type GetGitProjectPointerInventoryResponseObject interface {
+	VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error
+}
+
+type GetGitProjectPointerInventory200JSONResponse []struct {
+	Path   string `json:"path"`
+	Sha256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+func (response GetGitProjectPointerInventory200JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetGitProjectPointerInventory400JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetGitProjectPointerInventory401JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetGitProjectPointerInventory403JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetGitProjectPointerInventory404JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetGitProjectPointerInventory500JSONResponse) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGitProjectPointerInventory503Response struct {
+}
+
+func (response GetGitProjectPointerInventory503Response) VisitGetGitProjectPointerInventoryResponse(w http.ResponseWriter) error {
+	w.WriteHeader(503)
+	return nil
 }
 
 type GetGitProjectPresentationConfigRequestObject struct {
@@ -6702,6 +6868,9 @@ type StrictServerInterface interface {
 	// GetGitProjectManifestWildcard Read a nested manifest document
 	// (GET /git/projects/{orgTitle}/{projectTitle}/manifest/{path})
 	GetGitProjectManifestWildcard(ctx context.Context, request GetGitProjectManifestWildcardRequestObject) (GetGitProjectManifestWildcardResponseObject, error)
+	// GetGitProjectPointerInventory Stream Git LFS data pointers from an exact commit
+	// (GET /git/projects/{orgTitle}/{projectTitle}/pointer-inventory)
+	GetGitProjectPointerInventory(ctx context.Context, request GetGitProjectPointerInventoryRequestObject) (GetGitProjectPointerInventoryResponseObject, error)
 	// GetGitProjectPresentationConfig Get a project's presentation configuration
 	// (GET /git/projects/{orgTitle}/{projectTitle}/presentationConfig)
 	GetGitProjectPresentationConfig(ctx context.Context, request GetGitProjectPresentationConfigRequestObject) (GetGitProjectPresentationConfigResponseObject, error)
@@ -7560,6 +7729,34 @@ func (sh *strictHandler) GetGitProjectManifestWildcard(w http.ResponseWriter, r 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetGitProjectManifestWildcardResponseObject); ok {
 		if err := validResponse.VisitGetGitProjectManifestWildcardResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetGitProjectPointerInventory operation middleware
+func (sh *strictHandler) GetGitProjectPointerInventory(w http.ResponseWriter, r *http.Request, orgTitle OrgTitle, projectTitle ProjectTitle, params GetGitProjectPointerInventoryParams) {
+	var request GetGitProjectPointerInventoryRequestObject
+
+	request.OrgTitle = orgTitle
+	request.ProjectTitle = projectTitle
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetGitProjectPointerInventory(ctx, request.(GetGitProjectPointerInventoryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetGitProjectPointerInventory")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetGitProjectPointerInventoryResponseObject); ok {
+		if err := validResponse.VisitGetGitProjectPointerInventoryResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
