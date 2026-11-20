@@ -137,15 +137,15 @@ type projectJoinObservedContext struct {
 	deadline time.Time
 }
 
-func (ctx projectJoinObservedContext) Deadline() (time.Time, bool) { return ctx.deadline, true }
+func (ctx *projectJoinObservedContext) Deadline() (time.Time, bool) { return ctx.deadline, true }
 
-func newProjectJoinObservedContext(observed chan struct{}, timeout time.Duration) (projectJoinObservedContext, context.CancelFunc) {
+func newProjectJoinObservedContext(observed chan struct{}, timeout time.Duration) (*projectJoinObservedContext, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	deadline, _ := ctx.Deadline()
-	return projectJoinObservedContext{Context: ctx, observed: observed, deadline: deadline}, cancel
+	return &projectJoinObservedContext{Context: ctx, observed: observed, deadline: deadline}, cancel
 }
 
-func (ctx projectJoinObservedContext) Done() <-chan struct{} {
+func (ctx *projectJoinObservedContext) Done() <-chan struct{} {
 	ctx.once.Do(func() { close(ctx.observed) })
 	return ctx.Context.Done()
 }

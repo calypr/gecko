@@ -7,7 +7,6 @@ require (
 	github.com/calypr/syfon/apigen v0.2.7
 	github.com/calypr/syfon/client v0.2.8
 	github.com/go-git/go-git/v5 v5.19.2
-	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-github/v87 v87.0.0
 	github.com/google/uuid v1.6.0
@@ -39,6 +38,7 @@ require (
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.9.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
+	github.com/gofiber/fiber/v3 v3.2.0 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
 	github.com/gofiber/utils/v2 v2.0.5 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect

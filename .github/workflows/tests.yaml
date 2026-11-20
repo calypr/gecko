@@ -140,7 +140,7 @@ jobs:
         fi
 
     - name: Upload coverage to Codecov
-      if: always()
+      if: always() && hashFiles('coverage.out') != ''
       uses: codecov/codecov-action@v5
       with:
         use_oidc: true
